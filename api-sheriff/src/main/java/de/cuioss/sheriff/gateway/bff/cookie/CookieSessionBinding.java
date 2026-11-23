@@ -388,6 +388,25 @@ public final class CookieSessionBinding implements SessionBinding {
         return Optional.of(session);
     }
 
+    /**
+     * Destroys nothing locally, ignores {@code basis} and reports the destruction done.
+     * <p>
+     * This binding holds no record to compare {@code basis} against, so it can observe neither a logout
+     * nor a concurrent widening and never reports the session gone or superseded — the same residual as
+     * {@link #persist}. A refused refresh and an overlapping widening each answer the browser, and
+     * whichever cookie the browser stores last is the session it presents next.
+     * <p>
+     * Thread-safe: the method reads only its argument.
+     *
+     * @param basis the session as the caller resolved it
+     * @return {@link DestroyResult#DESTROYED}, always
+     */
+    @Override
+    public DestroyResult destroyIfCurrent(SessionRecord basis) {
+        destroy(basis);
+        return DestroyResult.DESTROYED;
+    }
+
     @Override
     public int destroyBySid(String sid) {
         Objects.requireNonNull(sid, "sid");

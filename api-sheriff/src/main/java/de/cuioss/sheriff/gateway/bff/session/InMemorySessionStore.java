@@ -356,6 +356,31 @@ public final class InMemorySessionStore implements SessionStore {
         });
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * The comparison and the removal run under the instance monitor every write takes, so a widening's
+     * {@link #replaceAndReissueHandle} either ran before the comparison — and nothing is removed — or
+     * runs after the removal and finds the session gone. The end of the session is reported to the
+     * {@link SessionEndListener} after the monitor has been left; a refused destruction reports nothing.
+     */
+    @Override
+    public DestroyOutcome destroyIfCurrent(SessionRecord basis) {
+        Objects.requireNonNull(basis, "basis");
+        return announcingEnds(() -> {
+            HeldSession held = byId.get(basis.sessionId());
+            if (held == null) {
+                return DestroyOutcome.ABSENT;
+            }
+            if (!held.session.equals(basis)) {
+                // Another updating write replaced the record the caller decided the destruction on.
+                return DestroyOutcome.SUPERSEDED;
+            }
+            endInternal(basis.sessionId());
+            return DestroyOutcome.DESTROYED;
+        });
+    }
+
     @Override
     public int destroyBySid(String sid) {
         Objects.requireNonNull(sid, "sid");

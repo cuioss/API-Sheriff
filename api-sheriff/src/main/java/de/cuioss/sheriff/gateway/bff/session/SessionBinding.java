@@ -43,7 +43,9 @@ import org.jspecify.annotations.Nullable;
  * replaces the cookie value the browser holds, and is the write a step-up or a scope widening makes;
  * {@link #persist} is the refresh's write, and additionally names the record it was computed from, so
  * an implementation that can observe it reports a widening that landed in between as
- * {@link PersistResult.Superseded} instead of overwriting it.
+ * {@link PersistResult.Superseded} instead of overwriting it. {@link #destroyIfCurrent} is the refused
+ * refresh's destruction and names its basis the same way, so a widening that landed in between is not
+ * destroyed either.
  * <p>
  * <strong>Session identity.</strong> Every implementation populates {@link SessionRecord#sessionId()}
  * with a stable per-session identity, so callers that need to key per-session work — notably the
@@ -210,6 +212,40 @@ public interface SessionBinding {
     Optional<SessionRecord> destroy(SessionRecord session);
 
     /**
+     * Destroys the session <strong>only while it is still the record the caller read</strong> — the
+     * destruction a refused refresh makes.
+     * <p>
+     * The caller resolved {@code basis} earlier and decided from it that the session ends. Two things
+     * may have happened to the session since, and the result says which:
+     * <ul>
+     *   <li><strong>The session may be gone</strong> — a logout or a back-channel logout destroyed it.
+     *       The result is {@link DestroyResult#GONE}, and nothing was destroyed.</li>
+     *   <li><strong>The session may have moved on</strong> — a widening or a step-up replaced its record
+     *       through {@link #persistReissuingCookie}. The result is {@link DestroyResult#SUPERSEDED}:
+     *       nothing was destroyed, the later write's record stays, and the caller must not treat the
+     *       session as ended.</li>
+     * </ul>
+     * Otherwise the session is destroyed as {@link #destroy} destroys it and the result is
+     * {@link DestroyResult#DESTROYED}.
+     * <p>
+     * <strong>Which of these an implementation can observe is a property of the mode</strong>, as on
+     * {@link #persist}. An implementation that holds server-side state compares the stored record
+     * against {@code basis} and removes it in one atomic step. A stateless implementation holds nothing
+     * to compare against: it ignores {@code basis}, destroys as {@link #destroy} does and reports
+     * {@link DestroyResult#DESTROYED}.
+     * <p>
+     * Thread-safe, like every operation of this seam.
+     *
+     * @param basis the session as the caller resolved it and decided the destruction on; its identity
+     *              names the session
+     * @return {@link DestroyResult#DESTROYED} when the session was destroyed; {@link DestroyResult#GONE}
+     *         when the implementation observed that it no longer exists; {@link DestroyResult#SUPERSEDED}
+     *         when it observed that the session's record is no longer {@code basis}
+     * @since 1.0
+     */
+    DestroyResult destroyIfCurrent(SessionRecord basis);
+
+    /**
      * Destroys every session carrying the given IdP {@code sid} (back-channel logout).
      *
      * @param sid the IdP session id claim
@@ -255,6 +291,28 @@ public interface SessionBinding {
 
         /** The binding is stateless — it holds no index and cannot reach another browser's cookie. */
         UNSUPPORTED
+    }
+
+    /**
+     * The answer of {@link #destroyIfCurrent}: the session was destroyed, it was already gone, or its
+     * record had been superseded by another updating write. Only {@link #DESTROYED} destroyed anything.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    enum DestroyResult {
+
+        /** The session was the caller's basis and has been destroyed. */
+        DESTROYED,
+
+        /** The session no longer exists — a logout or a back-channel logout ended it; nothing was destroyed. */
+        GONE,
+
+        /**
+         * The session lives on, but its record is no longer the one the caller decided the destruction on —
+         * a widening or a step-up replaced it meanwhile; nothing was destroyed.
+         */
+        SUPERSEDED
     }
 
     /**

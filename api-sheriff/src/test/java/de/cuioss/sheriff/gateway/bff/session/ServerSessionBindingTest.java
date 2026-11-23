@@ -33,8 +33,10 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding.DestroyResult;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.PersistResult;
+import de.cuioss.sheriff.gateway.bff.session.SessionStore.DestroyOutcome;
 import de.cuioss.sheriff.gateway.bff.session.SessionStore.ReplaceOutcome;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import lombok.experimental.Delegate;
@@ -60,7 +62,9 @@ import org.junit.jupiter.params.provider.MethodSource;
  * And it pins the rule that keeps a widening a widening: persist writes only over the record the
  * caller names as its basis, so after a re-issuing write replaced that record it reports the update
  * superseded and the widened record stays. A re-issue that changed the handle alone does not
- * supersede, because the handle is store-side state, not a component of the record.
+ * supersede, because the handle is store-side state, not a component of the record. The
+ * {@code ConditionalDestroy} cases pin the same rule for the destruction a refused refresh makes: it
+ * removes the session only while the store holds the record the caller read.
  * <p>
  * The cookie value is an opaque handle the binding mints, never the session id. The
  * {@code ReissuingWrite} cases cover the write of a step-up or a widening — a new cookie value, the
@@ -418,6 +422,11 @@ class ServerSessionBindingTest {
         }
 
         @Override
+        public DestroyOutcome destroyIfCurrent(SessionRecord basis) {
+            return aroundWrite(() -> delegate.destroyIfCurrent(basis));
+        }
+
+        @Override
         public int destroyBySid(String sid) {
             return aroundWrite(() -> delegate.destroyBySid(sid));
         }
@@ -459,6 +468,8 @@ class ServerSessionBindingTest {
             boolean replaceAndReissueHandle(SessionRecord session, String newCookieHandle);
 
             Optional<SessionRecord> destroyById(String sessionId);
+
+            DestroyOutcome destroyIfCurrent(SessionRecord basis);
 
             int destroyBySid(String sid);
 
@@ -709,6 +720,58 @@ class ServerSessionBindingTest {
             assertInstanceOf(PersistResult.Written.class, persisted,
                     "the handle is store-side state, so a re-issue of it alone leaves the caller's basis current");
             assertEquals(Optional.of(rotated), binding.resolve(requestCookieOf(reissued), NOW));
+        }
+    }
+
+    @Nested
+    @DisplayName("Conditional destroy (the destruction of a refused refresh)")
+    class ConditionalDestroy {
+
+        @Test
+        @DisplayName("Should destroy the session and report DESTROYED when the store still holds the record the caller read")
+        void shouldDestroyCurrentRecord() {
+            SessionRecord session = session(SessionRecord.newSessionId(), "access-token-1");
+            BoundSession created = binding.bind(session, NOW);
+
+            DestroyResult destroyed = binding.destroyIfCurrent(session);
+
+            assertEquals(DestroyResult.DESTROYED, destroyed);
+            assertTrue(binding.resolve(requestCookieOf(created), NOW).isEmpty(), "the session no longer resolves");
+            assertEquals(0, store.size(), "the session is removed from the store");
+        }
+
+        @Test
+        @DisplayName("Should keep the widened session and report SUPERSEDED when a re-issue replaced the record the caller read")
+        void shouldKeepSessionAWideningReplaced() {
+            SessionRecord resolvedByRefresh = scopedSession(SessionRecord.newSessionId(), "access-token-1",
+                    Set.of("openid"), Set.of("openid"));
+            binding.bind(resolvedByRefresh, NOW);
+            SessionRecord widened = scopedSession(resolvedByRefresh.sessionId(), "access-token-2", GRANTED_SCOPES,
+                    GRANTED_SCOPES);
+            BoundSession reissued = binding.persistReissuingCookie(widened, NOW).orElseThrow();
+
+            DestroyResult destroyed = binding.destroyIfCurrent(resolvedByRefresh);
+
+            assertAll("a destruction computed from the record before the widening",
+                    () -> assertEquals(DestroyResult.SUPERSEDED, destroyed),
+                    () -> assertEquals(Optional.of(widened), binding.resolve(requestCookieOf(reissued), NOW),
+                            "nothing was destroyed: the widened record stays under its re-issued cookie"),
+                    () -> assertEquals(1, store.size(), "the session lives on as one entry"));
+        }
+
+        @ParameterizedTest(name = "after {0}, the conditional destroy reports the session gone")
+        @MethodSource(TERMINATIONS)
+        @DisplayName("Should report GONE when the session was already terminated")
+        void shouldReportTerminatedSessionGone(String label,
+                BiConsumer<ServerSessionBinding, SessionRecord> termination) {
+            SessionRecord session = session(SessionRecord.newSessionId(), "access-token-1");
+            binding.bind(session, NOW);
+            termination.accept(binding, session);
+
+            DestroyResult destroyed = binding.destroyIfCurrent(session);
+
+            assertEquals(DestroyResult.GONE, destroyed, () -> "after " + label + " there is no session to destroy");
+            assertEquals(0, store.size(), "the store is unchanged");
         }
     }
 

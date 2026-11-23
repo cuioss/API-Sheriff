@@ -49,7 +49,10 @@ import org.jspecify.annotations.Nullable;
  *       resolves nothing from then on;</li>
  *   <li>{@link #recordAccess} moves the session's last access in the store and returns no cookie;</li>
  *   <li>{@link #destroy} is {@code destroyById} and returns the record the store removed, so the
- *       caller sees the token material the session held when it ended.</li>
+ *       caller sees the token material the session held when it ended;</li>
+ *   <li>{@link #destroyIfCurrent} is the store's conditional {@code destroyIfCurrent} against the
+ *       caller's basis and maps its three outcomes onto the seam's: destroyed is destroyed, absent is
+ *       gone, superseded is superseded.</li>
  * </ul>
  * The store's O(1) secondary indexes back the IdP-driven destruction, so this binding reports
  * {@link IdpDestruction#SUPPORTED}. Those indexes are keyed on the session id, so a back-channel
@@ -65,7 +68,8 @@ import org.jspecify.annotations.Nullable;
  * against the record the refresh was computed from in that same atomic step: when a widening or a
  * step-up replaced it meanwhile, nothing is written and the refresh is told it was superseded, so the
  * widened scopes, the widening grant's refresh token, its {@code acr} and its {@code auth_time} stay
- * as the widening left them.
+ * as the widening left them. {@link #destroyIfCurrent} makes the same comparison for a refused
+ * refresh's destruction, so the widened session is not destroyed either.
  * <p>
  * The adapter adds no policy of its own and holds no state beyond its two collaborators; it is
  * thread-safe because both of them are.
@@ -178,6 +182,25 @@ public final class ServerSessionBinding implements SessionBinding {
     public Optional<SessionRecord> destroy(SessionRecord session) {
         Objects.requireNonNull(session, SESSION_PARAMETER);
         return sessionStore.destroyById(session.sessionId());
+    }
+
+    /**
+     * Destroys the session through the store's {@code destroyIfCurrent} against {@code basis} and maps
+     * its three outcomes onto the seam's: destroyed is destroyed, absent is gone, superseded is
+     * superseded. The comparison and the removal are one atomic step in the store, so a widening that
+     * replaced the record after the caller resolved it is never destroyed.
+     *
+     * @param basis the session as the caller resolved it
+     * @return the seam's answer to the store's outcome
+     */
+    @Override
+    public DestroyResult destroyIfCurrent(SessionRecord basis) {
+        Objects.requireNonNull(basis, "basis");
+        return switch (sessionStore.destroyIfCurrent(basis)) {
+            case DESTROYED -> DestroyResult.DESTROYED;
+            case ABSENT -> DestroyResult.GONE;
+            case SUPERSEDED -> DestroyResult.SUPERSEDED;
+        };
     }
 
     @Override

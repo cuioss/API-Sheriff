@@ -315,6 +315,11 @@ class CallbackEndpointTest {
         }
 
         @Override
+        public DestroyResult destroyIfCurrent(SessionRecord basis) {
+            return delegate.destroyIfCurrent(basis);
+        }
+
+        @Override
         public int destroyBySid(String sid) {
             return delegate.destroyBySid(sid);
         }

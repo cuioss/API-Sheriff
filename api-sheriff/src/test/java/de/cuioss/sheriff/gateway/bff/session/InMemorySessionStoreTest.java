@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
+import de.cuioss.sheriff.gateway.bff.session.SessionStore.DestroyOutcome;
 import de.cuioss.sheriff.gateway.bff.session.SessionStore.ReplaceOutcome;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
@@ -59,6 +60,11 @@ import org.junit.jupiter.params.provider.ValueSource;
  * ({@code SUPERSEDED}). Each refusal is paired with the replacement that succeeds on a stored record
  * that is still the basis, so a method that refused everything would fail too, and a re-issue of the
  * handle alone or a recorded access is shown not to supersede.
+ * <p>
+ * The {@code ConditionalDestroy} cases cover the destruction a refused refresh makes:
+ * {@code destroyIfCurrent} removes a stored record only while it is still the caller's basis, keeps a
+ * record a widening re-issued since ({@code SUPERSEDED}) and reports a session already gone
+ * ({@code ABSENT}).
  * <p>
  * A session is resolved by its cookie handle, never by its session id: every case creates a session
  * under a handle that differs from the id. The {@code HandleReissue} cases cover the re-issuing write
@@ -810,6 +816,95 @@ class InMemorySessionStoreTest {
 
             assertEquals(ReplaceOutcome.REPLACED, replaced,
                     "the last access is store-side state, so recording one does not supersede the basis");
+        }
+    }
+
+    /**
+     * The conditional destruction: {@code destroyIfCurrent} is how a refused refresh ends a session. It
+     * removes the stored record only while it is still the caller's basis, so a widening that replaced
+     * the record meanwhile is not destroyed, and it reports a session that is already gone.
+     */
+    @Nested
+    @DisplayName("Conditional destroy (the destruction of a refused refresh)")
+    class ConditionalDestroy {
+
+        /** The record every case of this group stores first and names as the caller's basis. */
+        private static final SessionRecord STORED = session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE);
+
+        @Test
+        @DisplayName("Should remove the stored record, its handle and its index entries when it is still the basis")
+        void shouldDestroyCurrentRecord() {
+            List<String> ended = new ArrayList<>();
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, ended::add);
+            create(store, STORED, T0);
+
+            DestroyOutcome destroyed = store.destroyIfCurrent(STORED);
+
+            assertAll("the record the caller read is the stored one",
+                    () -> assertEquals(DestroyOutcome.DESTROYED, destroyed),
+                    () -> assertEquals(0, store.size(), "the session is removed"),
+                    () -> assertTrue(resolve(store, SESSION_ID, T0).isEmpty(), "its handle resolves nothing"),
+                    () -> assertEquals(0, store.destroyBySid(OLD_SID), "the sid index was cleaned with it"),
+                    () -> assertEquals(0, store.destroyBySub(OLD_SUB), "the sub index was cleaned with it"),
+                    () -> assertEquals(List.of(SESSION_ID), ended, "the end is reported once"));
+        }
+
+        @Test
+        @DisplayName("Should keep the widened record and its handle and report SUPERSEDED when a re-issue replaced the basis")
+        void shouldKeepReissuedRecord() {
+            List<String> ended = new ArrayList<>();
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, ended::add);
+            create(store, STORED, T0);
+            SessionRecord widened = withRefreshToken(STORED, "refresh-widened");
+            assertTrue(store.replaceAndReissueHandle(widened, REISSUED_HANDLE),
+                    "precondition: a widening replaced the record after the refresh read it");
+
+            DestroyOutcome destroyed = store.destroyIfCurrent(STORED);
+
+            assertAll("a destruction computed from the record before the widening",
+                    () -> assertEquals(DestroyOutcome.SUPERSEDED, destroyed,
+                            "a record is stored under the id, but it is no longer the basis"),
+                    () -> assertEquals(widened, store.resolve(REISSUED_HANDLE, T0).orElseThrow(),
+                            "nothing was removed: the widened record stays under its re-issued handle"),
+                    () -> assertEquals(1, store.size(), "the session lives on as one entry"),
+                    () -> assertEquals(List.of(), ended, "no session ended"));
+        }
+
+        @ParameterizedTest(name = "{0} followed by the conditional destroy reports the session absent")
+        @MethodSource(DESTRUCTIONS)
+        @DisplayName("Should report ABSENT and change nothing when the session is already gone, however it was destroyed")
+        void shouldReportAbsentSession(String label, Consumer<InMemorySessionStore> destruction) {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+            create(store, STORED, T0);
+            destruction.accept(store);
+
+            DestroyOutcome destroyed = store.destroyIfCurrent(STORED);
+
+            assertEquals(DestroyOutcome.ABSENT, destroyed, () -> "after " + label + " there is no record to remove");
+            assertEquals(0, store.size(), () -> "the store stays empty after " + label);
+        }
+
+        @Test
+        @DisplayName("Should destroy when a re-issue changed only the handle, removing the re-issued handle too")
+        void shouldDestroyAfterHandleOnlyReissue() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+            create(store, STORED, T0);
+            assertTrue(store.replaceAndReissueHandle(STORED, REISSUED_HANDLE),
+                    "precondition: a re-issue swapped the handle and stored an equal record");
+
+            DestroyOutcome destroyed = store.destroyIfCurrent(STORED);
+
+            assertEquals(DestroyOutcome.DESTROYED, destroyed,
+                    "the handle is store-side state, not a record component, so the basis is still current");
+            assertTrue(store.resolve(REISSUED_HANDLE, T0).isEmpty(), "the re-issued handle went with the session");
+        }
+
+        @Test
+        @DisplayName("Should reject a null basis")
+        void shouldRejectNullBasis() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+
+            assertThrows(NullPointerException.class, () -> store.destroyIfCurrent(null));
         }
     }
 

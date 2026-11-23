@@ -1689,6 +1689,13 @@ class TokenRefreshCoordinatorTest {
      * rotated token exactly once and the missing revocation is caused by the lost race alone. The
      * single-flight cases show that a coalesced waiter shares the superseded outcome over one exchange,
      * and that the in-flight entry is released so the widened session refreshes next.
+     * <p>
+     * A refused refresh meets the widening the same way. The refusals that end a session — a rejected
+     * credential and a refused redeemed response — destroy the session only while the store still holds
+     * the record the leader resolved, through {@link SessionBinding#destroyIfCurrent}. A refusal whose
+     * exchange stub makes the widening's write is answered {@code NO_SESSION}, leaves the widened record
+     * stored and revokes nothing; the matched control runs the same stub with no concurrent write and
+     * still destroys the session, revoking exactly what the refusal revoked before.
      */
     @Nested
     @DisplayName("Refresh versus a widening that lands while it is in flight (server mode)")
@@ -1960,6 +1967,80 @@ class TokenRefreshCoordinatorTest {
                             "and it was computed from the widened record, so the widened S survives it"),
                     () -> assertEquals(List.of(), revoked,
                             "neither refresh revokes: the superseded one abandons its rotated token, the second persists"));
+        }
+
+        /**
+         * The two refusals that end a session: the label, the exception the engine raises, the reason
+         * {@code ApiSheriff-111} records and the refresh tokens the refusal revokes when it does end the
+         * session — none for a rejected credential, the successor for a refused redeemed response.
+         */
+        static Stream<Arguments> sessionEndingRefusals() {
+            return Stream.of(
+                    Arguments.of("credential rejected", credentialRejected(),
+                            TokenRefreshCoordinator.REASON_CREDENTIAL_REJECTED, List.of()),
+                    Arguments.of("redeemed response refused",
+                            new RedeemedScopeRefusalException("granted a broader scope than requested",
+                                    RefreshRedemption.rotated(ROTATED_REFRESH)),
+                            TokenRefreshCoordinator.REASON_REDEEMED_RESPONSE_REFUSED, List.of(ROTATED_REFRESH)));
+        }
+
+        /**
+         * An exchange that runs {@code concurrentWrite} against the live session and then refuses with
+         * {@code refusal} — the identity provider answered while the other write landed.
+         */
+        private static RefreshExchange refusingWith(SessionRecord live, Consumer<SessionRecord> concurrentWrite,
+                RuntimeException refusal, AtomicInteger calls) {
+            return (presented, _) -> {
+                calls.incrementAndGet();
+                concurrentWrite.accept(live);
+                throw refusal;
+            };
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("sessionEndingRefusals")
+        @DisplayName("Should keep the widened session, answer NO_SESSION and revoke nothing when a refused refresh finds its record replaced by a widening")
+        void shouldNotDestroyWideningWhenRefusalLandsAfterIt(String label, RuntimeException refusal, String reason) {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, refusingWith(live, this::widen, refusal, calls));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertAll(label,
+                    () -> assertEquals(RefreshOutcome.Kind.NO_SESSION, outcome.kind(),
+                            "the request is unauthenticated, and the browser's cookie must not be cleared"),
+                    () -> assertFalse(outcome.isFailure(), "no session was destroyed"),
+                    () -> assertEquals(1, calls.get(), "the exchange ran, so the widening landed in flight"),
+                    () -> assertEquals(1, store.size(), "the widened session is still held"),
+                    () -> assertEquals(widened(live), storedUnderWidenedCookie(),
+                            "the record the widening wrote is still the stored one"),
+                    () -> assertEquals(List.of(), revoked,
+                            "nothing is revoked: the replacing write may share the identity provider's user session"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, reason);
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("sessionEndingRefusals")
+        @DisplayName("Should still destroy the session and revoke as before when the same refusal finds the record it read (matched control)")
+        void shouldDestroySessionWhenRefusalFindsItsRecord(String label, RuntimeException refusal, String reason,
+                List<String> revokedWhenEnded) {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR,
+                    refusingWith(live, NO_CONCURRENT_WRITE, refusal, calls));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertAll(label,
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind()),
+                    () -> assertEquals(1, calls.get()),
+                    () -> assertEquals(0, store.size(), "the session the refusal read is destroyed"),
+                    () -> assertFalse(sessionResolvable(NOW)),
+                    () -> assertEquals(revokedWhenEnded, revoked,
+                            "the refusal revokes exactly what it revoked before, at most once"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, reason);
         }
     }
 
@@ -3026,6 +3107,11 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Override
+        public DestroyResult destroyIfCurrent(SessionRecord basis) {
+            return delegate.destroyIfCurrent(basis);
+        }
+
+        @Override
         public int destroyBySid(String sid) {
             return delegate.destroyBySid(sid);
         }
@@ -3100,6 +3186,11 @@ class TokenRefreshCoordinatorTest {
         @Override
         public Optional<SessionRecord> destroy(SessionRecord session) {
             return delegate.destroy(session);
+        }
+
+        @Override
+        public DestroyResult destroyIfCurrent(SessionRecord basis) {
+            return delegate.destroyIfCurrent(basis);
         }
 
         @Override

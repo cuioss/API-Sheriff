@@ -121,10 +121,14 @@ took before the destruction is in the record the destruction returns, so the log
 rotation that completes after the destruction finds the session terminated. The refresh coordinator
 then abandons the rotated token without revoking it (ADR-0046): the refresh lost a race to a session
 destruction, and the coordinator cannot tell a logout from a login callback that replaced the session
-with one that may share the identity provider's user session, which a revocation could end. For a
-logout the revocation would be redundant, because this logout has already revoked the session's own
-refresh token. The abandoned token is held nowhere and lapses under the provider's refresh-token
-lifetime.
+with one that may share the identity provider's user session, which a revocation could end.
+
+That abandonment leaves a residual risk. The logout revoked the refresh token of the record it
+resolved, and the rotation had already spent that token. Whether the provider also invalidates the
+rotated successor is the provider's decision, as RFC 7009 allows but does not require (see the
+previous list). The successor is held by nobody: it is never sent to the browser and no copy is kept.
+It can stay valid at the identity provider until the provider's refresh-token lifetime ends. That is
+the same accepted residual as a refresh whose record a widening superseded (ADR-0046).
 
 === The latency bound
 

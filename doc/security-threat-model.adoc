@@ -3251,10 +3251,14 @@ that replaced the session destroyed it while its refresh was in flight. The rota
 not written back (<<bff-09>>), the request is answered as session-ended, and `ApiSheriff-111` records
 `session-terminated`, but the refresh token the exchange returned is abandoned, not revoked: the
 refresh lost a race to the destruction, and a login callback's replacement session may share the
-identity provider's user session, which a grant-level revocation could end. For a genuine logout the
-revocation would be redundant -- the RP-initiated leg revokes the session's own refresh token and a
-back-channel logout comes from a provider that has already ended the session. The abandoned token is
-held nowhere and lapses under the provider's refresh-token lifetime. Revocation on the refresh path
+identity provider's user session, which a grant-level revocation could end. *Residual risk
+(accepted):* on a genuine logout the RP-initiated leg revokes the refresh token of the record it
+resolved, which the rotation had already spent, and a back-channel logout comes from a provider that
+has ended its own session; whether the provider also invalidates the rotated successor is provider
+policy (RFC 7009 allows it but does not require it). The abandoned successor is held by nobody -- it
+never reaches the browser and no copy is kept -- but it can stay valid at the provider until the
+provider's refresh-token lifetime ends, the same residual as a refresh superseded by a widening
+(<<bff-17>>). Revocation on the refresh path
 is therefore confined to the two dispositions in which the refresh itself ends the session. The gateway's own part in the
 concurrency half is `TokenRefreshCoordinator`'s single-flight *per session, per instance*: concurrent
 requests on one session share one redemption, so one instance never presents the same token twice
@@ -3470,9 +3474,11 @@ RP-initiated logout and nothing else:
 * *The rotated token of a refresh the logout overtook.* A server-mode refresh in flight when a
   logout, a back-channel logout or a login callback destroys its session is answered as
   session-ended and abandons the refresh token its exchange returned without revoking it
-  (<<bff-08>>). For a logout that revocation would be redundant -- the RP-initiated leg revokes the
-  session's own refresh token, and a back-channel logout comes from a provider that has already ended
-  the session -- and after a login callback it could end the replacement session at the provider.
+  (<<bff-08>>), because after a login callback a revocation could end the replacement session at the
+  provider. The RP-initiated leg revokes the refresh token of the record it resolved, which the
+  rotation had already spent; whether the provider also invalidates the rotated successor is provider
+  policy. The successor is held by nobody but can stay valid until the provider's refresh-token
+  lifetime ends -- an accepted residual.
 * *Nothing at all, where no request can be sent.* A session that holds no refresh token -- with
   `oidc.session.refresh.enabled=false`, or when the provider granted none -- and a provider that
   publishes no `revocation_endpoint` get no revocation request. The missing endpoint is recorded at

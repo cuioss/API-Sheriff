@@ -994,10 +994,14 @@ and the two signing keys, any replica serves any session.
   while a token refresh or a widening for it is in flight. The ending wins: the refreshed or widened
   session is not stored, and the refreshing request is answered as unauthenticated with the session
   cookie cleared. The refresh token the IdP had just issued is abandoned, not revoked: after a new
-  login that reused the IdP's session, revoking it could end the new session at the IdP, and a
-  logout needs no revocation from the refresh because `oidc.logout.path` revokes the session's own
-  refresh token and a back-channel logout comes from an IdP that has already ended the session. The
-  abandoned token is held nowhere and expires under the IdP's refresh-token lifetime. The log shows `ApiSheriff-111` with
+  login that reused the IdP's session, revoking it could end the new session at the IdP, and the
+  gateway cannot tell that case from a logout. This is a residual risk. `oidc.logout.path` revokes
+  the refresh token of the session it found, which the refresh had already spent, and a back-channel
+  logout comes from an IdP that has ended its own session; whether the IdP also invalidates the newly
+  issued refresh token is the IdP's own policy (RFC 7009 allows it but does not require it). The
+  abandoned token is held by nobody -- it never reaches the browser and no copy is kept -- but it can
+  stay valid at the IdP until the IdP's refresh-token lifetime ends. A refresh that a widening
+  overtook leaves the same residual. The log shows `ApiSheriff-111` with
   the reason `session-terminated` for a refresh and `ApiSheriff-131` with the same reason for a
   widening. Neither is a fault; `persist-failure` is the reason to look into.
 * *Refresh failures, IdP reachability and a private-CA IdP* are the same in both variants; see

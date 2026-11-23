@@ -131,6 +131,33 @@ could end the client session the widened grant shares (ADR-0046). Only `persist`
 a basis: when a refresh and a widening overlap, the refresh gives way. A new caller that updates a session picks one of the two
 by one question: does the privilege of the session change? If it does, re-issue.
 
+=== Two destructions
+
+[cols="1,1,3", options="header"]
+|===
+| `SessionBinding` | `InMemorySessionStore` | Used by
+
+| `destroy`
+| `destroyById`
+| `LogoutEndpoint`, and `TokenRefreshCoordinator` when a persist failed or found the session gone.
+  Removes the session whatever record it holds and hands back the record it removed.
+
+| `destroyIfCurrent`
+| `destroyIfCurrent`
+| `TokenRefreshCoordinator`, when a refresh is refused as `CREDENTIAL_REJECTED` or `REDEEMED`.
+  Removes the session only while its record is still the basis the refresh resolved.
+|===
+
+A refused refresh decided to end the session on the record it resolved, but a widening or a step-up
+writes through `persistReissuingCookie` without passing the coordinator's single-flight, so it can
+replace the record while the exchange is in flight. A destruction by identity would then remove the
+record the widening just wrote and log the user out. `destroyIfCurrent` therefore has three answers,
+in the style of `persist`: `DESTROYED`, `GONE` and `SUPERSEDED`. On `SUPERSEDED` nothing is destroyed,
+and `TokenRefreshCoordinator` answers the request `NO_SESSION`, marks nothing ended and revokes
+nothing, for the reason the superseded persist gives (ADR-0046). On `DESTROYED` and `GONE` the refusal
+ends the session as before, and a `REDEEMED` refusal still revokes its live refresh token. The
+cookie-mode binding holds no record to compare, ignores the basis and always answers `DESTROYED`.
+
 === The handle beside the record
 
 The cookie value is a random handle, not `SessionRecord.sessionId()`. The store holds three things
@@ -160,7 +187,9 @@ Every public method of `InMemorySessionStore` runs under the instance monitor, a
 split across two calls. The updating writes are the reason: "is the session still there" -- and, for
 `replaceIfCurrent`, "is it still the record I read" -- and "write it" must be one step under the lock
 `destroyById`, `destroyBySid`, `destroyBySub` and the other updating write take, or a logout between
-the two would be undone and a widening between them overwritten. Keep it that way when you add an
+the two would be undone and a widening between them overwritten. `destroyIfCurrent` follows the same
+rule for a destruction: "is it still the record I read" and "remove it" are one step, or a widening
+between them would be destroyed. Keep it that way when you add an
 operation: a check-then-act across two store calls reopens that window. Three consequences:
 
 * `recordAccess` writes the last-access instant alone, never the record, so it cannot overwrite
@@ -183,7 +212,7 @@ sweep runs without the binding.
 
 === What ends with a session
 
-Every path on which the store *ends* a session -- the three destroy methods, the lazy eviction in
+Every path on which the store *ends* a session -- the four destroy methods, the lazy eviction in
 `resolve`, the sweep and the per-subject eviction -- reports the session identity to the
 `SessionEndListener`. `SessionRelayRegistry` is that listener: it closes the WebSocket relays
 tracked under the identity. A write that replaces the record or re-issues the handle goes through

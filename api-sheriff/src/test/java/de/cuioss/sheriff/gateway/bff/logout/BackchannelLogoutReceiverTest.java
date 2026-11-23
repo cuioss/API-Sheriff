@@ -513,6 +513,11 @@ class BackchannelLogoutReceiverTest {
         }
 
         @Override
+        public DestroyResult destroyIfCurrent(SessionRecord basis) {
+            throw new UnsupportedOperationException("the back-channel path destroys by sid/sub only");
+        }
+
+        @Override
         public Optional<BoundSession> persistReissuingCookie(SessionRecord updated, Instant now) {
             throw new UnsupportedOperationException("the back-channel path never re-issues a cookie");
         }

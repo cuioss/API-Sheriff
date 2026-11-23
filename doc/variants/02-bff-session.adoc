@@ -200,10 +200,13 @@ attached. Same-origin deployments need neither.
   destroyed -- by a logout, a back-channel logout or a login callback that replaced it -- does not
   write it back: the refresh is answered as session-ended (`ApiSheriff-111`, `session-terminated`)
   and abandons the refresh token it just obtained without revoking it, because a session that
-  replaced the destroyed one may share the IdP's user session and a revocation could end it; a
-  logout needs no revocation from the refresh, since RP-initiated logout revokes the session's own
-  refresh token and a back-channel logout comes from an IdP that has already ended the session. The
-  widening callback answers `403` (`ApiSheriff-131`)
+  replaced the destroyed one may share the IdP's user session and a revocation could end it. That
+  leaves a residual risk: RP-initiated logout revokes the refresh token of the session it found,
+  which the refresh had already spent, and a back-channel logout comes from an IdP that has ended its
+  own session; whether the IdP also invalidates the newly obtained token is its own policy (RFC 7009
+  allows it but does not require it). The abandoned token is held by nobody, but it can stay valid at
+  the IdP until its refresh-token lifetime ends -- the same accepted residual as a superseded refresh
+  (see <<_transparent_token_refresh>>). The widening callback answers `403` (`ApiSheriff-131`)
   (link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
 
 [[_transparent_token_refresh]]

@@ -1249,9 +1249,14 @@ a session destruction abandons its rotated token, which lapses under the IdP's r
 
 *A logout wins over a refresh in server mode.* The rotated session is written only while the store
 still holds the session, so a session destroyed by `oidc.logout.path`, a back-channel logout or a
-login callback during the refresh stays ended (last row, its own reason, no exception). A logout
-needs no revocation from the refresh: `oidc.logout.path` revokes the session's own refresh token, and
-a back-channel logout comes from an IdP that has already ended the session. In `cookie` mode the row never
+login callback during the refresh stays ended (last row, its own reason, no exception). The refresh
+revokes nothing, and that leaves a residual: `oidc.logout.path` revokes the refresh token of the
+session it resolved, which the rotation had already spent, and a back-channel logout comes from an IdP
+that has ended its own session. Whether the IdP also invalidates the rotated successor is its own
+policy (RFC 7009 allows it but does not require it). The successor is held by nobody -- never sent to
+the browser, no copy kept -- and can stay valid at the IdP until its refresh-token lifetime ends, the
+same accepted residual as a refresh superseded by a concurrent widening, which abandons its rotated
+token too. In `cookie` mode the row never
 applies: the gateway cannot observe a logout and re-seals the rotated session -- see
 link:../variants/03-bff-cookie.adoc#_logout[Variant 3 -- Logout].
 

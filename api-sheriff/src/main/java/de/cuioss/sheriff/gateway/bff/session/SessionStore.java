@@ -46,7 +46,8 @@ import java.util.Optional;
  * for a session that already exists: neither ever creates, so a write that was in flight when the
  * session was destroyed cannot bring the session back. {@link #replaceIfCurrent} additionally writes
  * only over the exact record its caller read, so a refresh that was in flight while a widening
- * replaced the record cannot overwrite the widening.
+ * replaced the record cannot overwrite the widening. {@link #destroyIfCurrent} applies the same basis
+ * check to a destruction, so a refused refresh cannot end the session a widening left.
  * <p>
  * <strong>Two deadlines.</strong> A session is expired at the earlier of its absolute lifetime
  * ({@link SessionRecord#expiresAt()}) and its idle deadline — the last access recorded through
@@ -217,6 +218,36 @@ public interface SessionStore {
     Optional<SessionRecord> destroyById(String sessionId);
 
     /**
+     * Destroys the session stored under {@code basis}'s session id together with its cookie handle,
+     * <strong>only if the record stored there is still {@code basis}</strong> — the record the caller
+     * read — and reports what it found — the destruction a refused refresh makes.
+     * <p>
+     * Three outcomes, and only one of them removes anything:
+     * <ul>
+     *   <li>{@link DestroyOutcome#DESTROYED} — the stored record equals {@code basis}; the session is
+     *       removed exactly as {@link #destroyById} removes it.</li>
+     *   <li>{@link DestroyOutcome#ABSENT} — no record is stored under the id; the session was already
+     *       ended. Nothing is changed.</li>
+     *   <li>{@link DestroyOutcome#SUPERSEDED} — a record is stored under the id but it is no longer
+     *       {@code basis}: another updating write — a widening or a step-up through
+     *       {@link #replaceAndReissueHandle} — replaced it after the caller read it. Nothing is removed,
+     *       so a destruction decided on the earlier record cannot end the session the later write
+     *       left.</li>
+     * </ul>
+     * <p>
+     * The comparison and the removal are <strong>one atomic step</strong>, and the comparison is the
+     * record equality {@link #replaceIfCurrent} uses: a re-issue of the handle alone or a recorded access
+     * does not supersede the caller's basis. The removal does not test liveness.
+     *
+     * @param basis the record the caller read; its session id names the session to destroy
+     * @return {@link DestroyOutcome#DESTROYED} when the stored record was {@code basis} and has been
+     *         removed; {@link DestroyOutcome#ABSENT} or {@link DestroyOutcome#SUPERSEDED} otherwise, in
+     *         which case the store is unchanged
+     * @since 1.0
+     */
+    DestroyOutcome destroyIfCurrent(SessionRecord basis);
+
+    /**
      * Destroys every session carrying the given IdP {@code sid} (back-channel logout), O(1) via
      * the secondary index, each together with its cookie handle.
      *
@@ -270,6 +301,28 @@ public interface SessionStore {
         /**
          * A record is stored under the id but it is no longer the caller's basis — another updating
          * write replaced it after the caller read it; nothing was written.
+         */
+        SUPERSEDED
+    }
+
+    /**
+     * What {@link #destroyIfCurrent} found under the session id, and therefore whether it removed the
+     * session.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    enum DestroyOutcome {
+
+        /** The stored record was the caller's basis and the session has been removed. */
+        DESTROYED,
+
+        /** No record is stored under the id — the session was already ended; nothing was removed. */
+        ABSENT,
+
+        /**
+         * A record is stored under the id but it is no longer the caller's basis — another updating
+         * write replaced it after the caller read it; nothing was removed.
          */
         SUPERSEDED
     }
