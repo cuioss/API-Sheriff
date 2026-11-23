@@ -240,6 +240,13 @@ class TokenRefreshCoordinatorTest {
                 EndedRefreshTokens.inert());
     }
 
+    /** A coordinator over the real binding that marks ended refresh tokens into {@code marker}. */
+    private TokenRefreshCoordinator coordinatorMarkingInto(EndedRefreshTokens marker, Instant accessExpiry,
+            RefreshExchange exchange) {
+        return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, binding, revoked::add, DIRECT,
+                marker);
+    }
+
     private SessionRecord storedSession() {
         SessionRecord live = session(CURRENT_REFRESH);
         create(store, live, NOW);
@@ -1454,12 +1461,6 @@ class TokenRefreshCoordinatorTest {
         /** The ended-token marker of these cases, so a session end the refresh did not cause stays observable. */
         private final EndedRefreshTokens marker = EndedRefreshTokens.bounded();
 
-        /** A coordinator over the real binding that marks ended refresh tokens into {@link #marker}. */
-        private TokenRefreshCoordinator markingCoordinator(Instant accessExpiry, RefreshExchange exchange) {
-            return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, binding, revoked::add, DIRECT,
-                    marker);
-        }
-
         static Stream<Arguments> terminations() {
             BiConsumer<SessionBinding, SessionRecord> bySessionIdentity = SessionBinding::destroy;
             BiConsumer<SessionBinding, SessionRecord> bySid = (target, session) -> target.destroyBySid(IDP_SID);
@@ -1507,7 +1508,7 @@ class TokenRefreshCoordinatorTest {
         void shouldNotRecreateOnNearExpiryLeg(String label, BiConsumer<SessionBinding, SessionRecord> termination) {
             SessionRecord live = storedSessionWithSid();
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = markingCoordinator(NEAR,
+            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker, NEAR,
                     terminatingExchange(live, termination, rotation(), calls));
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
@@ -1521,8 +1522,9 @@ class TokenRefreshCoordinatorTest {
         void shouldNotRecreateOnScopeLeg(String label, BiConsumer<SessionBinding, SessionRecord> termination) {
             SessionRecord live = storedSessionWithSid();
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = markingCoordinator(NOT_NEAR, terminatingExchange(live, termination,
-                    rotation(REQUESTED_SCOPE, RotationResult.ScopeDelta.EQUAL), calls));
+            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker, NOT_NEAR,
+                    terminatingExchange(live, termination, rotation(REQUESTED_SCOPE, RotationResult.ScopeDelta.EQUAL),
+                            calls));
 
             RefreshOutcome outcome = coordinator.refreshForScopes(live, COOKIE_HEADER, REQUESTED, NOW);
 
@@ -1643,7 +1645,7 @@ class TokenRefreshCoordinatorTest {
             AtomicInteger calls = new AtomicInteger();
             CountDownLatch exchangeEntered = new CountDownLatch(1);
             AtomicReference<Thread> waiterThread = new AtomicReference<>();
-            TokenRefreshCoordinator coordinator = markingCoordinator(NEAR, (presented, _) -> {
+            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker, NEAR, (presented, _) -> {
                 calls.incrementAndGet();
                 exchangeEntered.countDown();
                 awaitParked(waiterThread);
@@ -1869,7 +1871,7 @@ class TokenRefreshCoordinatorTest {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
             EndedRefreshTokens marker = EndedRefreshTokens.bounded();
-            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker,
+            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker, NEAR,
                     exchangeWith(live, binding::destroy, rotation(), calls));
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
@@ -2051,7 +2053,7 @@ class TokenRefreshCoordinatorTest {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
             EndedRefreshTokens marker = EndedRefreshTokens.bounded();
-            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker,
+            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker, NEAR,
                     refusingWith(live, NO_CONCURRENT_WRITE, refusal, calls));
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
@@ -2087,11 +2089,6 @@ class TokenRefreshCoordinatorTest {
             });
         }
 
-        /** A coordinator over the real binding that marks ended refresh tokens into {@code marker}. */
-        private TokenRefreshCoordinator coordinatorMarkingInto(EndedRefreshTokens marker, RefreshExchange exchange) {
-            return new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, revoked::add, DIRECT, marker);
-        }
-
         @ParameterizedTest(name = "{0}")
         @MethodSource("refusalsLosingToADestruction")
         @DisplayName("Should answer NO_SESSION, revoke nothing and record no session end when a refused refresh finds its session already destroyed")
@@ -2100,7 +2097,7 @@ class TokenRefreshCoordinatorTest {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
             EndedRefreshTokens marker = EndedRefreshTokens.bounded();
-            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker,
+            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker, NEAR,
                     refusingWith(live, read -> destruction.accept(binding, read), refusal, calls));
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
