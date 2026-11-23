@@ -1078,8 +1078,8 @@ public final class TokenRefreshCoordinator {
              * re-issued meanwhile (server mode), or may have reached a deadline — or the leader's persist
              * was superseded: a widening replaced the session's record while the refresh was in flight
              * (server mode), the rotated session was not written, and the refresh token the exchange
-             * returned is revoked. The caller treats the request as unauthenticated and must
-             * <strong>not</strong> clear the browser's cookie.
+             * returned is abandoned without revocation. The caller treats the request as
+             * unauthenticated and must <strong>not</strong> clear the browser's cookie.
              */
             NO_SESSION,
             /**
