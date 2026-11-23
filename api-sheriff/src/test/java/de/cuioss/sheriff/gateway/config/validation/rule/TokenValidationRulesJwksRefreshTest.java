@@ -19,9 +19,13 @@ import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.issuer;
 import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.issuerName;
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.BiConsumer;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
@@ -53,6 +57,12 @@ import org.junit.jupiter.params.provider.MethodSource;
  * literals on purpose: each is the exact number the rule admits or refuses, so the literal is the
  * contract under test. Every refusal has a matched admission that differs from it only in the value
  * or only in the source, so the refusal is attributable to that one difference.
+ * <p>
+ * Because the keys are re-listed here rather than read from {@link TokenValidationRules.JwksRefreshKey},
+ * a completeness guard ties the two lists together: the {@link RefreshKey} spellings must equal the
+ * production spellings as a set, so a key production gains (which no case here would generate and
+ * whose errors the pointer filter would drop) or loses turns this class red. A matched negative
+ * control shows the guard's comparison reports such a key.
  */
 @EnableGeneratorController
 @DisplayName("ConfigValidator — jwks refresh keys: ranges and file-source refusal")
@@ -66,7 +76,7 @@ class TokenValidationRulesJwksRefreshTest {
     enum RefreshKey {
 
         REFRESH_INTERVAL("refresh_interval_seconds", 60, 86_400,
-            IssuerConfig.Jwks.JwksBuilder::refreshIntervalSeconds),
+                IssuerConfig.Jwks.JwksBuilder::refreshIntervalSeconds),
         GRACE_PERIOD("key_rotation_grace_period_seconds", 0, 3_600,
                 IssuerConfig.Jwks.JwksBuilder::keyRotationGracePeriodSeconds),
         UNKNOWN_KID_WINDOW("unknown_kid_refresh_window_seconds", 5, 3_600,
@@ -94,6 +104,28 @@ class TokenValidationRulesJwksRefreshTest {
         String range() {
             return minimum + " to " + maximum;
         }
+
+        /**
+         * The spellings present on one side only: in {@code productionKeys} but not among the
+         * {@link RefreshKey} spellings, or among them but not in {@code productionKeys}.
+         *
+         * @param productionKeys the key spellings the production rule iterates
+         * @return the symmetric difference, sorted; empty when both sides list the same keys
+         */
+        static Set<String> keysOnOneSideOnly(Set<String> productionKeys) {
+            Set<String> covered = Stream.of(values()).map(refreshKey -> refreshKey.key).collect(Collectors.toSet());
+            Set<String> oneSideOnly = new TreeSet<>(productionKeys);
+            oneSideOnly.addAll(covered);
+            oneSideOnly.removeIf(key -> productionKeys.contains(key) && covered.contains(key));
+            return oneSideOnly;
+        }
+    }
+
+    /** The spellings of the production rule's {@link TokenValidationRules.JwksRefreshKey} constants. */
+    private static Set<String> productionKeys() {
+        return Stream.of(TokenValidationRules.JwksRefreshKey.values())
+                .map(TokenValidationRules.JwksRefreshKey::key)
+                .collect(Collectors.toSet());
     }
 
     private final ConfigValidator validator = new ConfigValidator();
@@ -140,6 +172,48 @@ class TokenValidationRulesJwksRefreshTest {
                 () -> assertFalse(message.contains(JWKS_URL), () -> "the JWKS url must never be echoed: " + message),
                 () -> assertFalse(message.contains("idp.example"),
                         () -> "no part of the JWKS url may be echoed: " + message));
+    }
+
+    @Nested
+    @DisplayName("completeness — the keys under test are exactly the keys the rule bounds")
+    class Completeness {
+
+        private static final String INVENTED_KEY = "extra_refresh_seconds";
+
+        @Test
+        @DisplayName("the test's keys equal the production JwksRefreshKey spellings")
+        void coversEveryProductionKey() {
+            Set<String> production = productionKeys();
+
+            Set<String> oneSideOnly = RefreshKey.keysOnOneSideOnly(production);
+
+            assertEquals(Set.of(), oneSideOnly,
+                    () -> "keys listed on one side only — extend RefreshKey to match JwksRefreshKey: " + oneSideOnly);
+        }
+
+        @Test
+        @DisplayName("a key production gains is reported (matched negative control)")
+        void reportsAKeyProductionGains() {
+            Set<String> production = new HashSet<>(productionKeys());
+            production.add(INVENTED_KEY);
+
+            Set<String> oneSideOnly = RefreshKey.keysOnOneSideOnly(production);
+
+            assertEquals(Set.of(INVENTED_KEY), oneSideOnly,
+                    "a production key the test does not cover must be named, and nothing else");
+        }
+
+        @Test
+        @DisplayName("a key production drops is reported (matched negative control)")
+        void reportsAKeyProductionDrops() {
+            Set<String> production = new HashSet<>(productionKeys());
+            production.remove(RefreshKey.MAX_STALENESS.key);
+
+            Set<String> oneSideOnly = RefreshKey.keysOnOneSideOnly(production);
+
+            assertEquals(Set.of(RefreshKey.MAX_STALENESS.key), oneSideOnly,
+                    "a test key production no longer bounds must be named, and nothing else");
+        }
     }
 
     @Nested
