@@ -619,7 +619,7 @@ public final class TokenRefreshCoordinator {
             case SessionBinding.PersistResult.Gone _ ->
                 endSession(sessionId, latest, now, null, REASON_SESSION_TERMINATED, null);
             // The rotated refresh token is abandoned, not revoked: see superseded(...).
-            case SessionBinding.PersistResult.Superseded _ -> superseded(sessionId);
+            case SessionBinding.PersistResult.Superseded _ -> superseded(sessionId, "persist");
         };
     }
 
@@ -645,11 +645,18 @@ public final class TokenRefreshCoordinator {
      * is never sent to the browser and no copy is held, so it lapses under the provider's own
      * refresh-token lifetime — exactly as the rotated token of a refresh a widening overwrites after it
      * persisted.
+     * <p>
+     * {@link #endRefusedSession} takes the same disposition for a refusal whose destruction found the
+     * record superseded.
+     *
+     * @param sessionId the session whose back-off entry is dropped
+     * @param step      which step found the record superseded — {@code persist} or {@code refusal} —
+     *                  named in the {@code DEBUG} line only
      */
-    private Disposition superseded(String sessionId) {
+    private Disposition superseded(String sessionId, String step) {
         retryNotBefore.remove(sessionId);
         // Neither the token nor the session id: the line says only which disposition was taken.
-        LOGGER.debug("Refresh persist superseded by a concurrent widening — nothing written, rotated token not revoked");
+        LOGGER.debug("Refresh %s superseded by a concurrent widening — nothing written, destroyed or revoked", step);
         return Disposition.of(RefreshOutcome.noSession());
     }
 
@@ -694,10 +701,7 @@ public final class TokenRefreshCoordinator {
     private Disposition endRefusedSession(String sessionId, SessionRecord latest, Instant now,
             RuntimeException failure, String reason, @Nullable String liveRefreshToken) {
         if (sessionBinding.destroyIfCurrent(latest) == SessionBinding.DestroyResult.SUPERSEDED) {
-            retryNotBefore.remove(sessionId);
-            // Neither the token nor the session id: the line says only which disposition was taken.
-            LOGGER.debug("Refresh refusal superseded by a concurrent widening — nothing destroyed, nothing revoked");
-            return Disposition.of(RefreshOutcome.noSession());
+            return superseded(sessionId, "refusal");
         }
         return recordSessionEnd(sessionId, latest, now, failure, reason, liveRefreshToken);
     }
