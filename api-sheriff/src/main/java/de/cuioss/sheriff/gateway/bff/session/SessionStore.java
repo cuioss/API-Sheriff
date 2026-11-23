@@ -148,9 +148,12 @@ public interface SessionStore {
      * access are unchanged; the secondary indexes follow the replacement record as they do for
      * {@link #replaceIfCurrent}.
      * <p>
-     * Unlike {@link #replaceIfCurrent} this write checks presence only: the widening it serves merges
-     * its grant into the record it resolved, and a refresh that replaces that record meanwhile is the
-     * one that is told it was superseded — the refresh side gives way, never the widening.
+     * Unlike {@link #replaceIfCurrent} this write checks presence only, so the widening it serves wins
+     * over an overlapping refresh in either order. A refresh that persists after this write finds its
+     * basis replaced and is told it was superseded. A refresh that persisted between the widening's
+     * resolve and this write was told its update was written; this write then replaces that record with
+     * the widening's merge, and the refresh is never told it was superseded. Either way the refresh side
+     * gives way, never the widening.
      * <p>
      * When no record is stored under the id, nothing is written: no record is stored and
      * {@code newCookieHandle} is not registered.

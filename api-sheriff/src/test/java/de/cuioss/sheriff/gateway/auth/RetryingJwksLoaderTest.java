@@ -559,20 +559,24 @@ class RetryingJwksLoaderTest {
         @Test
         @DisplayName("while a retry's fresh delegate loads the wrapper reports that delegate's status, not OK")
         void retryDelegateLoadingReportsItsOwnStatus() throws Exception {
-            // Arrange — the first fetch fails, and the fast retry's fetch is held at the endpoint
+            // Arrange — the first fetch fails, and the fast retry's fetch is held at the endpoint. The
+            // gate is installed when the retry builds its fresh delegate, before that delegate fetches,
+            // so a test thread paused past the retry delay cannot let the retry load ungated
             failuresBeforeSuccess.set(1);
             List<HttpJwksLoader> built = new CopyOnWriteArrayList<>();
+            CountDownLatch gate = new CountDownLatch(1);
             RetryingJwksLoader loader = loader(() -> {
+                if (!built.isEmpty()) {
+                    responseGate.set(gate);
+                }
                 HttpJwksLoader delegate = new HttpJwksLoader(httpConfig());
                 built.add(delegate);
                 return delegate;
             }, REFRESH_INTERVAL, FAST);
-            CountDownLatch gate = new CountDownLatch(1);
             LoaderStatus whileRetrying;
             KeySetState stateWhileRetrying;
             try {
                 initialise(loader);
-                responseGate.set(gate);
 
                 // Act
                 Awaits.until(() -> built.size() == 2 && built.get(1).getLoaderStatus() == LoaderStatus.LOADING,
