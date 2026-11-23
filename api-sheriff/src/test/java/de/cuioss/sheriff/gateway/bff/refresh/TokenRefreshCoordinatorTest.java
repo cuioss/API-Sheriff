@@ -1700,9 +1700,9 @@ class TokenRefreshCoordinatorTest {
      * A refusal whose exchange stub destroys the session instead — a logout, a login callback or a
      * back-channel logout — finds the record already gone. That refusal ended nothing and lost a race to
      * a destruction exactly as a refresh whose persist finds the session gone, so it is answered
-     * {@code NO_SESSION}, revokes nothing, marks no ended token and records no {@code ApiSheriff-111}; its
-     * matched control runs the same stub with no concurrent destruction and still ends the session,
-     * marks the presented token and revokes at most once.
+     * {@code NO_SESSION}, revokes nothing, marks no ended token and records no {@code ApiSheriff-111}. The
+     * widening's matched control — the same stub with no concurrent write — is its control too: it still
+     * ends the session, marks the presented token ended and revokes at most once.
      */
     @Nested
     @DisplayName("Refresh versus a widening that lands while it is in flight (server mode)")
@@ -2030,23 +2030,26 @@ class TokenRefreshCoordinatorTest {
 
         @ParameterizedTest(name = "{0}")
         @MethodSource("sessionEndingRefusals")
-        @DisplayName("Should still destroy the session and revoke as before when the same refusal finds the record it read (matched control)")
+        @DisplayName("Should still destroy the session, mark it ended and revoke as before when the same refusal finds the record it read (matched control)")
         void shouldDestroySessionWhenRefusalFindsItsRecord(String label, RuntimeException refusal, String reason,
                 List<String> revokedWhenEnded) {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = coordinator(NEAR,
+            EndedRefreshTokens marker = EndedRefreshTokens.bounded();
+            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker,
                     refusingWith(live, NO_CONCURRENT_WRITE, refusal, calls));
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
             assertAll(label,
-                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind()),
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind(), "the refusal itself ends the session"),
                     () -> assertEquals(1, calls.get()),
                     () -> assertEquals(0, store.size(), "the session the refusal read is destroyed"),
                     () -> assertFalse(sessionResolvable(NOW)),
                     () -> assertEquals(revokedWhenEnded, revoked,
-                            "the refusal revokes exactly what it revoked before, at most once"));
+                            "the refusal revokes exactly what it revoked before, at most once"),
+                    () -> assertTrue(marker.isEnded(CURRENT_REFRESH, NOW),
+                            "the session end marks the presented refresh token"));
             LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, reason);
         }
 
@@ -2100,30 +2103,6 @@ class TokenRefreshCoordinatorTest {
                             "the refresh did not end the session, so it marks no ended token"));
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, reason);
-        }
-
-        @ParameterizedTest(name = "{0}")
-        @MethodSource("sessionEndingRefusals")
-        @DisplayName("Should destroy the session, mark it ended and revoke once when the same refusal meets no concurrent destruction (matched control)")
-        void shouldEndSessionWhenRefusalMeetsNoDestruction(String label, RuntimeException refusal, String reason,
-                List<String> revokedWhenEnded) {
-            SessionRecord live = storedSession();
-            AtomicInteger calls = new AtomicInteger();
-            EndedRefreshTokens marker = EndedRefreshTokens.bounded();
-            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker,
-                    refusingWith(live, NO_CONCURRENT_WRITE, refusal, calls));
-
-            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
-
-            assertAll(label,
-                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind(), "the refusal itself ends the session"),
-                    () -> assertEquals(1, calls.get()),
-                    () -> assertEquals(0, store.size(), "the session the refusal read is destroyed"),
-                    () -> assertEquals(revokedWhenEnded, revoked,
-                            "the refusal revokes exactly what it revokes when it ends the session, at most once"),
-                    () -> assertTrue(marker.isEnded(CURRENT_REFRESH, NOW),
-                            "the session end marks the presented refresh token"));
-            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, reason);
         }
     }
 
