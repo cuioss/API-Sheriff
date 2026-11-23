@@ -346,10 +346,16 @@ Otherwise:
 * *At a widening of a live session* the callback answers `400`. Nothing is merged, no cookie is set,
   and the session stays as it was.
 * *At a refresh* -- near expiry, or for a scope a route needs -- the session ends (in cookie mode its
-  cookie is cleared), and the request is answered as `oidc.session.refresh.on_failure` says.
+  cookie is cleared), and the request is answered as `oidc.session.refresh.on_failure` says. In
+  server mode there is one exception: when a widening or a step-up replaced the session's record
+  while the refresh was in flight, or a logout, a back-channel logout, a login callback, an expiry
+  sweep or an eviction already ended the session, the refusal ends nothing. Nothing is destroyed or
+  revoked, the cookie is not cleared, and the request is answered through `on_failure` as "no
+  session".
 * *In the log* a login or widening refusal is a `DEBUG` line of the callback, and a refresh refusal is
-  the session end `ApiSheriff-111` with the reason `redeemed-response-refused`. The refusal is the
-  token engine's own and writes no record of its own.
+  the session end `ApiSheriff-111` with the reason `redeemed-response-refused`, except in the
+  server-mode exception above, which is a `DEBUG` line only. The refusal is the token engine's own and
+  writes no record of its own.
 
 An identity provider that issues *opaque* access tokens fails every login: the engine validates the
 access token as a JWT. The fix is at the identity provider: require DPoP-bound access tokens for the

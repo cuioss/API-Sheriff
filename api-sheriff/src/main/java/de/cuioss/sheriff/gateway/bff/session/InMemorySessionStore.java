@@ -83,8 +83,9 @@ import de.cuioss.tools.logging.CuiLogger;
  * session takes, so a subject at its own bound is never refused by a full store. Only a creation
  * applies the bound; an updating write never ends another session.
  * <p>
- * <strong>Ended sessions are reported.</strong> Every path on which a session <em>ends</em> — the three
- * destroy methods, the lazy eviction in {@link #resolve}, the sweep, and the per-subject eviction —
+ * <strong>Ended sessions are reported.</strong> Every path on which a session <em>ends</em> — the four
+ * destroy methods ({@link #destroyById}, {@link #destroyBySid}, {@link #destroyBySub} and
+ * {@link #destroyIfCurrent}), the lazy eviction in {@link #resolve}, the sweep, and the per-subject eviction —
  * reports the session's identity to the {@link SessionEndListener}, so that whatever was opened with
  * the session can be closed with it. A write that replaces a session's record or re-issues its cookie
  * handle reports nothing: the session lives on. The listener is called only after the monitor has been

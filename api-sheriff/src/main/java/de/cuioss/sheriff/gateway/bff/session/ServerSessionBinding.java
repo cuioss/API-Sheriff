@@ -59,8 +59,8 @@ import org.jspecify.annotations.Nullable;
  * logout ends a session whatever handle currently resolves to it.
  * <p>
  * <strong>A destroyed session stays destroyed.</strong> Neither updating write ever creates: when the
- * store no longer holds the session — {@link #destroy}, {@link #destroyBySid} or
- * {@link #destroyBySub} removed it after the caller resolved it — the update writes nothing and
+ * store no longer holds the session — {@link #destroy}, {@link #destroyBySid}, {@link #destroyBySub},
+ * the expiry sweep or an eviction removed it after the caller resolved it — the update writes nothing and
  * reports the session gone. The store performs the check and the write as one atomic step, so a
  * logout cannot fall between them. {@link #bind} is the only creating write.
  * <p>
@@ -127,8 +127,9 @@ public final class ServerSessionBinding implements SessionBinding {
         Objects.requireNonNull(updated, "updated");
         Objects.requireNonNull(now, "now");
         // The store replaces the record only if it still holds exactly basis, as one atomic step, so a
-        // session a logout or a back-channel logout destroyed since the caller resolved it is not
-        // written back, and a widening that replaced the record meanwhile is not overwritten. No
+        // session a logout, a back-channel logout, a login callback, an expiry sweep or an eviction ended
+        // since the caller resolved it is not written back, and a widening that replaced the record
+        // meanwhile is not overwritten. No
         // pre-destroy is needed either way: destroying first would open a window where a concurrent
         // resolve() misses the session being updated. A replacement consumes no capacity, so it is
         // admitted even at the max-session bound.

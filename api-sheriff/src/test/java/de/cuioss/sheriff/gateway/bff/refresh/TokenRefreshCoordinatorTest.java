@@ -1696,6 +1696,13 @@ class TokenRefreshCoordinatorTest {
      * exchange stub makes the widening's write is answered {@code NO_SESSION}, leaves the widened record
      * stored and revokes nothing; the matched control runs the same stub with no concurrent write and
      * still destroys the session, revoking exactly what the refusal revoked before.
+     * <p>
+     * A refusal whose exchange stub destroys the session instead — a logout, a login callback or a
+     * back-channel logout — finds the record already gone. That refusal ended nothing and lost a race to
+     * a destruction exactly as a refresh whose persist finds the session gone, so it is answered
+     * {@code NO_SESSION}, revokes nothing, marks no ended token and records no {@code ApiSheriff-111}; its
+     * matched control runs the same stub with no concurrent destruction and still ends the session,
+     * marks the presented token and revokes at most once.
      */
     @Nested
     @DisplayName("Refresh versus a widening that lands while it is in flight (server mode)")
@@ -2040,6 +2047,82 @@ class TokenRefreshCoordinatorTest {
                     () -> assertFalse(sessionResolvable(NOW)),
                     () -> assertEquals(revokedWhenEnded, revoked,
                             "the refusal revokes exactly what it revoked before, at most once"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, reason);
+        }
+
+        /**
+         * Each session-ending refusal against each destruction it can lose to while its exchange is in
+         * flight: a logout destroying the session by its identity — the way a login callback in the same
+         * browser also ends the session it replaces — and a back-channel logout destroying it by
+         * {@code sub}. The label, exception and reason are those of {@link #sessionEndingRefusals()}.
+         */
+        static Stream<Arguments> refusalsLosingToADestruction() {
+            BiConsumer<SessionBinding, SessionRecord> byIdentity = SessionBinding::destroy;
+            BiConsumer<SessionBinding, SessionRecord> bySub = (target, session) -> target.destroyBySub(session.sub());
+            return sessionEndingRefusals().flatMap(refusal -> {
+                Object[] values = refusal.get();
+                return Stream.of(
+                        Arguments.of(values[0] + " after a logout or a login callback destroyed the session",
+                                values[1], values[2], byIdentity),
+                        Arguments.of(values[0] + " after a back-channel logout destroyed it by sub",
+                                values[1], values[2], bySub));
+            });
+        }
+
+        /** A coordinator over the real binding that marks ended refresh tokens into {@code marker}. */
+        private TokenRefreshCoordinator coordinatorMarkingInto(EndedRefreshTokens marker, RefreshExchange exchange) {
+            return new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, revoked::add, DIRECT, marker);
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("refusalsLosingToADestruction")
+        @DisplayName("Should answer NO_SESSION, revoke nothing and record no session end when a refused refresh finds its session already destroyed")
+        void shouldAbandonTokenWhenRefusalFindsSessionGone(String label, RuntimeException refusal, String reason,
+                BiConsumer<SessionBinding, SessionRecord> destruction) {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            EndedRefreshTokens marker = EndedRefreshTokens.bounded();
+            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker,
+                    refusingWith(live, read -> destruction.accept(binding, read), refusal, calls));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertAll(label,
+                    () -> assertEquals(RefreshOutcome.Kind.NO_SESSION, outcome.kind(),
+                            "the request is unauthenticated; the session was ended by someone else, not by this refresh"),
+                    () -> assertFalse(outcome.isFailure(), "this refresh destroyed nothing"),
+                    () -> assertEquals(1, calls.get(), "the exchange ran, so the destruction landed in flight"),
+                    () -> assertEquals(0, store.size(), "the destroyed session stays destroyed"),
+                    () -> assertEquals(List.of(), revoked,
+                            "nothing is revoked: the refusal lost a race to a destruction, and a session that "
+                                    + "replaced the destroyed one may share the identity provider's user session"),
+                    () -> assertFalse(marker.isEnded(CURRENT_REFRESH, NOW),
+                            "the refresh did not end the session, so it marks no ended token"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, reason);
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("sessionEndingRefusals")
+        @DisplayName("Should destroy the session, mark it ended and revoke once when the same refusal meets no concurrent destruction (matched control)")
+        void shouldEndSessionWhenRefusalMeetsNoDestruction(String label, RuntimeException refusal, String reason,
+                List<String> revokedWhenEnded) {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            EndedRefreshTokens marker = EndedRefreshTokens.bounded();
+            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker,
+                    refusingWith(live, NO_CONCURRENT_WRITE, refusal, calls));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertAll(label,
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind(), "the refusal itself ends the session"),
+                    () -> assertEquals(1, calls.get()),
+                    () -> assertEquals(0, store.size(), "the session the refusal read is destroyed"),
+                    () -> assertEquals(revokedWhenEnded, revoked,
+                            "the refusal revokes exactly what it revokes when it ends the session, at most once"),
+                    () -> assertTrue(marker.isEnded(CURRENT_REFRESH, NOW),
+                            "the session end marks the presented refresh token"));
             LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, reason);
         }
     }

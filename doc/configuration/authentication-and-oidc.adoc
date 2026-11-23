@@ -1243,9 +1243,18 @@ token is answered.
 | `ApiSheriff-111` (`session-terminated`)
 |===
 
+*A refusal ends only the session it read* (`session.mode: server` only). A *credential rejected* or
+*redeemed* refusal whose session record a widening or a step-up replaced while the exchange was in
+flight, or whose session was already destroyed by a logout, a back-channel logout, a login callback,
+an expiry sweep or an eviction, ends nothing: nothing is destroyed or revoked, the session cookie is
+not cleared, the request is answered through `on_failure` as "no session", and `ApiSheriff-111` is not
+logged for it -- the refusal lost a race, and the write that replaced or ended the session owns it.
+In `cookie` mode the gateway can observe neither, and the two rows always end the session.
+
 Revocation is best-effort; a failed revocation never changes the disposition. Only a refresh that
-itself ends the session -- *redeemed* and *persist failure* -- revokes; a refresh that lost a race to
-a session destruction abandons its rotated token, which lapses under the IdP's refresh-token lifetime.
+itself ends the session -- *redeemed* when it destroyed the record it read, and *persist failure* --
+revokes; a refresh that lost a race to a session replacement or destruction abandons its live token,
+which lapses under the IdP's refresh-token lifetime.
 
 *A logout wins over a refresh in server mode.* The rotated session is written only while the store
 still holds the session, so a session destroyed by `oidc.logout.path`, a back-channel logout or a

@@ -111,9 +111,10 @@ public interface SessionBinding {
      * The caller resolved {@code basis} earlier and computed {@code updated} from it. Two things may
      * have happened to the session since, and the result says which:
      * <ul>
-     *   <li><strong>The session may be gone</strong> — a logout or a back-channel logout destroyed it.
-     *       The result is {@link PersistResult.Gone}: nothing was written, and the caller must treat the
-     *       session as ended rather than hand out the new token material.</li>
+     *   <li><strong>The session may be gone</strong> — a logout, a back-channel logout, a login callback
+     *       that replaced the session, an expiry sweep or an eviction ended it. The result is
+     *       {@link PersistResult.Gone}: nothing was written, and the caller must treat the session as
+     *       ended rather than hand out the new token material.</li>
      *   <li><strong>The session may have moved on</strong> — a widening or a step-up replaced its record
      *       through {@link #persistReissuingCookie}. The result is {@link PersistResult.Superseded}:
      *       nothing was written, so the later grant's scopes, refresh token, {@code acr} and
@@ -218,8 +219,10 @@ public interface SessionBinding {
      * The caller resolved {@code basis} earlier and decided from it that the session ends. Two things
      * may have happened to the session since, and the result says which:
      * <ul>
-     *   <li><strong>The session may be gone</strong> — a logout or a back-channel logout destroyed it.
-     *       The result is {@link DestroyResult#GONE}, and nothing was destroyed.</li>
+     *   <li><strong>The session may be gone</strong> — a logout, a back-channel logout, a login callback
+     *       that replaced the session, an expiry sweep or an eviction ended it. The result is
+     *       {@link DestroyResult#GONE}: nothing was destroyed, and the session's end belongs to whatever
+     *       ended it, not to the caller.</li>
      *   <li><strong>The session may have moved on</strong> — a widening or a step-up replaced its record
      *       through {@link #persistReissuingCookie}. The result is {@link DestroyResult#SUPERSEDED}:
      *       nothing was destroyed, the later write's record stays, and the caller must not treat the
@@ -305,7 +308,10 @@ public interface SessionBinding {
         /** The session was the caller's basis and has been destroyed. */
         DESTROYED,
 
-        /** The session no longer exists — a logout or a back-channel logout ended it; nothing was destroyed. */
+        /**
+         * The session no longer exists — a logout, a back-channel logout, a login callback that replaced
+         * the session, an expiry sweep or an eviction ended it; nothing was destroyed.
+         */
         GONE,
 
         /**
@@ -387,8 +393,9 @@ public interface SessionBinding {
         }
 
         /**
-         * The session no longer exists — a logout or a back-channel logout destroyed it after the caller
-         * resolved it. Nothing was written.
+         * The session no longer exists — a logout, a back-channel logout, a login callback that replaced
+         * the session, an expiry sweep or an eviction ended it after the caller resolved it. Nothing was
+         * written.
          *
          * @author API Sheriff Team
          * @since 1.0

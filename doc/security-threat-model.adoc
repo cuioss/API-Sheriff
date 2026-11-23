@@ -3245,7 +3245,13 @@ link:configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[th
 before the provider processed the grant keeps the session with a fixed back-off; a redeemed
 response the gateway refused, or a rotated session it could not persist, ends the session and
 revokes best-effort the one live refresh token it can name -- which is none when the response was
-refused for not being bound to the proof key (<<bff-14>>). In server mode one more case ends the
+refused for not being bound to the proof key (<<bff-14>>). In server mode a credential-rejected or a
+redeemed refusal ends only the session it read: when a widening or a step-up replaced the session's
+record while the exchange was in flight, or a logout, a back-channel logout, a login callback, an
+expiry sweep or an eviction already ended the session, the refusal ends nothing -- nothing is
+destroyed or revoked, the request is answered as "no session", and `ApiSheriff-111` is not logged
+for it -- because the refusal lost a race, and a grant-level revocation could end a replacement or
+widened session that shares the identity provider's user session. In server mode one more case ends the
 same way without being a failure of the refresh: a logout, a back-channel logout or a login callback
 that replaced the session destroyed it while its refresh was in flight. The rotated session is then
 not written back (<<bff-09>>), the request is answered as session-ended, and `ApiSheriff-111` records
