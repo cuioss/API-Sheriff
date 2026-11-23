@@ -216,8 +216,9 @@ stored record is still the one it read, compared and replaced in one atomic step
 (`replaceIfCurrent`). When a scope widening or a step-up replaced the record in between, the refresh
 is _superseded_: it writes nothing, so the widened scopes, the widening grant's refresh token, its
 `acr` and its `auth_time` stay; the session is kept; the request is answered as *no session*, without
-a clearing cookie; and the refresh token the refresh just obtained is revoked. Nothing is logged
-above `DEBUG`
+a clearing cookie; and the refresh token the refresh just obtained is abandoned, not revoked,
+because revoking it could end the client session the widened grant shares at the identity
+provider. Nothing is logged above `DEBUG`
 (link:../adr/0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
 
 *Refresh-token reuse detection is the IdP's job.* The gateway keeps no token family; in this variant

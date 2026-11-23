@@ -4069,9 +4069,13 @@ authorization request at all.
   In server mode the refresh's write names the record it resolved as its basis, and the store
   compares and replaces in one atomic step: a refresh that persists after a widening landed is
   *superseded* and writes nothing, so the widened scopes, the widening grant's refresh token, its
-  `acr` and its `auth_time` stay, and the refresh token the refresh obtained is revoked best-effort.
-  A widening that persists after the refresh replaces the refreshed record with its own grant; the
-  loss is the refresh's rotated refresh token, abandoned and not revoked. In cookie mode neither
+  `acr` and its `auth_time` stay, and the refresh token the refresh obtained is abandoned, not
+  revoked: the widening's grant shares its client session at the identity provider, and a
+  grant-level revocation (RFC 7009) could end the session the gateway keeps. A widening that
+  persists after the refresh replaces the refreshed record with its own grant; the loss is again the
+  refresh's rotated refresh token, abandoned and not revoked. Either way the abandoned token never
+  reaches the browser, no copy is held, and it lapses under the identity provider's refresh-token
+  lifetime. In cookie mode neither
   write can observe the other, and whichever cookie the browser stores last wins: a refresh that
   lands last hands back the session as it stood before the widening, which the next request widens
   again. Either result is an identity-provider-fresh token set of the same identity.

@@ -120,9 +120,10 @@ answers `Gone` and `persistReissuingCookie` an empty result, and the caller must
 as ended and must not hand out the new tokens. `persist` has a third answer, `Superseded`: the
 session is still held, but its record is no longer the basis the caller passed -- a widening or a
 step-up replaced it after the refresh resolved it. Nothing is written then either, and the caller
-must not end the session; `TokenRefreshCoordinator` answers the request `NO_SESSION` and revokes the
-refresh token its own exchange returned. Only `persist` compares against a basis: when a refresh and
-a widening overlap, the refresh gives way. A new caller that updates a session picks one of the two
+must not end the session; `TokenRefreshCoordinator` answers the request `NO_SESSION` and abandons
+the refresh token its own exchange returned without revoking it, because a grant-level revocation
+could end the client session the widened grant shares (ADR-0046). Only `persist` compares against
+a basis: when a refresh and a widening overlap, the refresh gives way. A new caller that updates a session picks one of the two
 by one question: does the privilege of the session change? If it does, re-issue.
 
 === The handle beside the record

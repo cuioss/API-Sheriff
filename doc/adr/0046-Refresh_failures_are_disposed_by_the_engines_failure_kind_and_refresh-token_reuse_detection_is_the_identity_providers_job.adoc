@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A refused BFF token refresh is disposed by what the identity provider did to the presented refresh token, as the engine classifies the exchange, through a default-free switch over the failure kind — PRE_REDEMPTION keeps the session with a fixed five-second back-off and revokes nothing, CREDENTIAL_REJECTED ends it, REDEEMED ends it and revokes the one live refresh token the gateway can name, a persist failure ends it and revokes the rotated token, and in the server-session BFF a session terminated while its refresh was in flight is not written back and its rotated token is revoked, and a refresh whose session a widening replaced meanwhile is superseded, writes nothing, keeps the session and revokes its rotated token — while oidc.session.refresh.on_failure decides only how the failing request is answered; refresh-token reuse detection is not built in the gateway or the engine, because a confidential client only sees the tokens it presents and a stateless instance cannot share a token family, so the control is strict refresh-token rotation at the identity provider, shipped on in the integration and compose-sample realms and pinned against Keycloak's observed verdict (successor grant revoked, user session survives), with the residual that without it neither side detects reuse and the cost that a cross-instance duplicate refresh ends the session.
+// summary: A refused BFF token refresh is disposed by what the identity provider did to the presented refresh token, as the engine classifies the exchange, through a default-free switch over the failure kind — PRE_REDEMPTION keeps the session with a fixed five-second back-off and revokes nothing, CREDENTIAL_REJECTED ends it, REDEEMED ends it and revokes the one live refresh token the gateway can name, a persist failure ends it and revokes the rotated token, and in the server-session BFF a session terminated while its refresh was in flight is not written back and its rotated token is revoked, and a refresh whose session a widening replaced meanwhile is superseded, writes nothing, keeps the session and abandons its rotated token unrevoked, because a grant-level revocation could end the client session the widened grant shares — while oidc.session.refresh.on_failure decides only how the failing request is answered; refresh-token reuse detection is not built in the gateway or the engine, because a confidential client only sees the tokens it presents and a stateless instance cannot share a token family, so the control is strict refresh-token rotation at the identity provider, shipped on in the integration and compose-sample realms and pinned against Keycloak's observed verdict (successor grant revoked, user session survives), with the residual that without it neither side detects reuse and the cost that a cross-instance duplicate refresh ends the session.
 // tags: bff, oidc, refresh-token, session, reuse-detection, token-rotation, failure-classification, fail-closed, identity-provider, revocation, operator-control
 // affects: api-sheriff, integration-tests, deployment
 // supersedes:
@@ -101,7 +101,8 @@ engine therefore fails compilation rather than inheriting a disposition.
 | Superseded at the persist (server-session BFF)
 | Kept, as the widening or step-up that replaced its record left it. The gateway does not write the rotated session, and the
   request is answered as *no session*.
-| The refresh token the exchange returned.
+| None. The refresh token the exchange returned is abandoned, not revoked: revoking it could end the client session the
+  widened grant shares.
 | `DEBUG` only
 |===
 
@@ -117,7 +118,14 @@ seam answered when the gateway wrote the rotated session:
   of its write, and the binding writes only while the stored record is still that basis, comparing and replacing in one
   atomic step under the store's lock (`SessionStore.replaceIfCurrent`). A widening overtook a refresh: the session lives on under the cookie value the widening re-issued, so
   nothing is destroyed, nothing is marked ended and no `ApiSheriff-111` is recorded. The rotated refresh token is live at the
-  identity provider and held nowhere, so it is revoked like the persist-failure one.
+  identity provider and held nowhere, yet it is abandoned rather than revoked. The widening is an authorization-code flow for
+  the same client on the identity provider's own session, so the refresh token it stored belongs to the same grant and client
+  session as the rotated one. RFC 7009 lets the authorization server revoke the whole grant on a revocation, and Keycloak's
+  revocation endpoint detaches the client session; revoking the rotated token could therefore end, at the identity provider,
+  the very session this row keeps, and its next refresh would fail as credential-rejected. The rotated token never reaches the
+  browser and no copy is held, so it lapses under the identity provider's refresh-token lifetime. That is already the fate of
+  the rotated token when the two writes land in the other order: a refresh persists first, the widening then replaces the
+  record, and the refresh token it stored is dropped without revocation.
 
 Only a binding that holds server-side state can answer *gone* or *superseded*, so those two rows apply to the server-session
 BFF. A stateless binding cannot observe a logout or a concurrent widening and re-seals the rotated session; when a refresh and
@@ -132,13 +140,14 @@ refresh uses. It is best-effort. The gateway records a failed revocation at `DEB
 because destroying the local session is what ends the session. Every session-ending disposition clears the session cookie on
 the response.
 
-The revocation runs after the disposition:
+On every row that revokes, the revocation runs after the disposition:
 
 . The gateway destroys the session and records `ApiSheriff-111` synchronously.
 . It publishes the session-ended outcome to the failing request and to every request coalesced on the single-flight.
 . Only then does it dispatch the revocation, off the request path, on the virtual-thread executor.
 
-On the superseded row the first step destroys nothing and records nothing above `DEBUG`; the other two are the same.
+The superseded row revokes nothing, so this ordering does not apply to it: the gateway destroys nothing, records nothing above
+`DEBUG` and publishes the *no session* outcome to the request and every coalesced one.
 
 A slow or hanging revocation endpoint therefore delays the revocation and nothing else. A fixed limit bounds concurrent
 revocations. When the limit is saturated the gateway skips the revocation and records it at `DEBUG`, and it swallows a refused
@@ -264,7 +273,8 @@ provider holds the refresh-token lineage, so it owns reuse detection.
 === Properties of the design
 
 * An outage no longer logs every user out: sessions survive pre-redemption failures and retry on a bounded schedule.
-* The gateway revokes a spent-but-orphaned refresh token where it can name it.
+* The gateway revokes a spent-but-orphaned refresh token where it can name it and the session it belonged to has ended. It
+  does not revoke the rotated token of a superseded refresh, whose grant the kept session still shares.
 * `on_failure: reject` exists, and a misspelling gets a boot refusal.
 * Reuse detection works for both BFF variants, across stateless instances, with no gateway-side state. A cookie-based replay, the one case reachable
   through the gateway, is rejected end to end.

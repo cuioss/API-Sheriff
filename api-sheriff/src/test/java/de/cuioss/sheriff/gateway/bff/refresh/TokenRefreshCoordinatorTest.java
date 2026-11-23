@@ -1635,11 +1635,15 @@ class TokenRefreshCoordinatorTest {
      * <p>
      * The superseded refresh's own disposition is pinned on both legs by cases whose exchange stub makes
      * the widening's write itself, on the leader's thread between the resolve and the persist: the outcome
-     * is {@code NO_SESSION}, nothing is written, the rotated refresh token is revoked exactly once and no
-     * {@code ApiSheriff-111} is recorded, because no session ended. A matched control runs the same stub
-     * with a concurrent write that does nothing, so the refusal is caused by the widening and not by the
-     * stub. The single-flight cases show that a coalesced waiter shares the superseded outcome over one
-     * exchange, and that the in-flight entry is released so the widened session refreshes next.
+     * is {@code NO_SESSION}, nothing is written, nothing is revoked and no {@code ApiSheriff-111} is
+     * recorded, because no session ended. The rotated refresh token is abandoned rather than revoked: the
+     * widening is a grant for the same client on the identity provider's session, and a grant-level
+     * revocation could end the client session the widened grant shares. A matched control runs the same
+     * stub with a concurrent write that does nothing, so the refusal is caused by the widening and not by
+     * the stub; a second runs it with a concurrent destroy, so the session-ending path still revokes the
+     * rotated token exactly once and the missing revocation is caused by the supersession alone. The
+     * single-flight cases show that a coalesced waiter shares the superseded outcome over one exchange,
+     * and that the in-flight entry is released so the widened session refreshes next.
      */
     @Nested
     @DisplayName("Refresh versus a widening that lands while it is in flight (server mode)")
@@ -1746,7 +1750,7 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should answer NO_SESSION, write nothing and revoke the rotated token once when a widening supersedes the near-expiry refresh")
+        @DisplayName("Should answer NO_SESSION, write nothing and revoke nothing when a widening supersedes the near-expiry refresh")
         void shouldSupersedeNearExpiryRefresh() {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
@@ -1782,10 +1786,30 @@ class TokenRefreshCoordinatorTest {
                     () -> assertEquals(widened(live), storedUnderWidenedCookie(),
                             "nothing was written: the stored record is exactly the one the widening left"),
                     () -> assertEquals(1, store.size(), "the session lives on and nothing else was stored"),
-                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
-                            "the rotated refresh token is live at the identity provider and held nowhere, so it is revoked exactly once"));
+                    () -> assertEquals(List.of(), revoked,
+                            "nothing is revoked: a grant-level revocation could end the client session the widened grant shares"));
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO, REFRESHED_ID);
+        }
+
+        @Test
+        @DisplayName("Should end the session and revoke the rotated token once when the same stub destroys the session instead (matched control)")
+        void shouldRevokeRotatedTokenWhenConcurrentDestroyEndsSession() {
+            SessionRecord live = storedSession();
+            AtomicInteger calls = new AtomicInteger();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR,
+                    exchangeWith(live, binding::destroy, rotation(), calls));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertAll("the same stub ends the session when the record at the persist is gone, not superseded",
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind()),
+                    () -> assertEquals(1, calls.get(), "the exchange ran, so the destroy landed in flight"),
+                    () -> assertEquals(0, store.size(), "the destroyed session is not written back"),
+                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
+                            "the session-ending path revokes the rotated token exactly once"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    TokenRefreshCoordinator.REASON_SESSION_TERMINATED);
         }
 
         @Test
@@ -1812,7 +1836,7 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should hand a coalesced waiter the superseded NO_SESSION outcome over one exchange and revoke once")
+        @DisplayName("Should hand a coalesced waiter the superseded NO_SESSION outcome over one exchange and revoke nothing")
         void shouldShareSupersededOutcomeWithCoalescedWaiter() throws Exception {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
@@ -1849,7 +1873,7 @@ class TokenRefreshCoordinatorTest {
                     () -> assertEquals(RefreshOutcome.Kind.NO_SESSION, waiterOutcome.kind(),
                             "the coalesced waiter is answered as unauthenticated too"),
                     () -> assertEquals(widened(live), storedUnderWidenedCookie(), "nothing was written"),
-                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked, "the rotated token is revoked exactly once"));
+                    () -> assertEquals(List.of(), revoked, "the superseded refresh revokes nothing"));
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
         }
 
@@ -1879,8 +1903,8 @@ class TokenRefreshCoordinatorTest {
                     () -> assertEquals(ROTATED_REFRESH, stored.refreshToken(), "the second rotation is stored"),
                     () -> assertEquals(WIDENED_SCOPES, stored.grantedScopes(),
                             "and it was computed from the widened record, so the widened S survives it"),
-                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
-                            "only the superseded refresh's rotated token is revoked"));
+                    () -> assertEquals(List.of(), revoked,
+                            "neither refresh revokes: the superseded one abandons its rotated token, the second persists"));
         }
     }
 

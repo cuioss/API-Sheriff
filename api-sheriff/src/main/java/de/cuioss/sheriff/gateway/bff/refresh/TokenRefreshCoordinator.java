@@ -133,14 +133,16 @@ import org.jspecify.annotations.Nullable;
  *       {@code auth_time} stay as it left them. The session lives on: nothing is destroyed, nothing is
  *       marked ended, the back-off entry is dropped and the record is a {@code DEBUG} line carrying
  *       neither token nor session id. The outcome is {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION},
- *       and the refresh token the exchange returned is revoked after publication — the presented one
- *       is already redeemed. Like a terminated session this occurs in server mode only: a stateless
+ *       and nothing is revoked: the refresh token the exchange returned is abandoned, because the
+ *       widening's grant shares its client session at the identity provider and a grant-level
+ *       revocation could end the very session this disposition keeps; it lapses under the provider's
+ *       refresh-token lifetime. Like a terminated session this occurs in server mode only: a stateless
  *       binding holds no record to compare against and re-seals the rotated session, so whichever
  *       cookie the browser stores last wins — the stated residual of that mode.</li>
  * </ul>
  * Both legs share these dispositions, and so does every request that coalesced with the refresh.
  * Every session-ending disposition records {@code ApiSheriff-111}; the superseded disposition ends no
- * session and records none. The session-ended outcome is published
+ * session, records none and revokes nothing. The session-ended outcome is published
  * to the failing request and every coalesced waiter <em>first</em>; the revocation is dispatched only
  * afterwards, off the request path, so a slow or hanging revocation endpoint delays the revocation and
  * nothing else. At most {@link #MAX_CONCURRENT_REVOCATIONS} revocations are in flight at once; beyond
@@ -591,7 +593,8 @@ public final class TokenRefreshCoordinator {
             // exactly as on the persist-failure path.
             case SessionBinding.PersistResult.Gone _ ->
                 endSession(sessionId, latest, now, null, REASON_SESSION_TERMINATED, rotation.refreshToken());
-            case SessionBinding.PersistResult.Superseded _ -> superseded(sessionId, rotation.refreshToken());
+            // The rotated refresh token is abandoned, not revoked: see superseded(...).
+            case SessionBinding.PersistResult.Superseded _ -> superseded(sessionId);
         };
     }
 
@@ -605,15 +608,22 @@ public final class TokenRefreshCoordinator {
      * so nothing is destroyed, nothing is marked ended and nothing is logged at {@code WARN}; the
      * session's back-off entry is dropped, because the identity provider has just processed a grant
      * for it. The request is answered {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION} — it is
-     * unauthenticated, and the caller must not clear the browser's cookie — and the rotated refresh
-     * token, live at the identity provider and held nowhere, is handed back for the leader to revoke
-     * after the outcome has been published, exactly as on the session-ending paths.
+     * unauthenticated, and the caller must not clear the browser's cookie.
+     * <p>
+     * The refresh token the exchange returned is <em>abandoned, not revoked</em>. The widening is a grant
+     * for the same client on the identity provider's session, so the refresh token it stored belongs to
+     * the same client session as the rotated one. RFC 7009 lets the provider revoke the whole grant on a
+     * revocation, and a provider that does so (Keycloak detaches the client session) would end at the
+     * provider the very session this disposition keeps. The rotated token is never sent to the browser
+     * and no copy is held, so it lapses under the provider's own refresh-token lifetime — exactly as
+     * the rotated token of a refresh a widening overwrites after it persisted. Revocation stays on the
+     * session-ending dispositions alone.
      */
-    private Disposition superseded(String sessionId, @Nullable String rotatedRefreshToken) {
+    private Disposition superseded(String sessionId) {
         retryNotBefore.remove(sessionId);
         // Neither the token nor the session id: the line says only which disposition was taken.
-        LOGGER.debug("Refresh persist superseded by a concurrent widening — nothing written, rotated token revoked");
-        return new Disposition(RefreshOutcome.noSession(), rotatedRefreshToken);
+        LOGGER.debug("Refresh persist superseded by a concurrent widening — nothing written, rotated token not revoked");
+        return Disposition.of(RefreshOutcome.noSession());
     }
 
     private Disposition disposeRefusal(String sessionId, SessionRecord latest, String presentedRefreshToken,
