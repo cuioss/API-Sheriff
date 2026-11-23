@@ -246,7 +246,28 @@ release that did not carry it.
 
 ## Expected Surface
 
-> ⚠ **Re-grounded 2026-11-22 (cleanup at `226d9f3a`). Still BLOCKED: TokenSheriff has tags up to 0.9.9 and no 0.9.10; `main`
+> ⚠ **Release observed 2026-11-23: TokenSheriff 0.9.10 is tagged (published 2026-11-23T07:17:44Z, not a draft or pre-release) and
+> on Maven Central (`token-sheriff-bom` 0.9.10).** The release targets Quarkus 3.40.1 (unchanged from 0.9.9). Its notes list the
+> seams this plan deletes copies for: native-image metadata for the client engine (#898), signature-only / raw-claims /
+> issuer-visibility seams (#899), authorization-request seams for gateways (#901), opt-in unknown-kid refresh and initial-load retry
+> (#906), refresh-result verifier and caching discovery resolver (#907), published Bearer / challenge / sanitiser helpers (#908),
+> published key, PEM-loader and egress validators (#915), plus residual fixes (#912, #916, #920, #921, #925, #931, #938, #940).
+> This is the release-notes list only; the verify-first gate (read the resolved jar with `javap`) has NOT been run, and every
+> name above is still to be read off the jar at outline. **The pin is DONE: `main` pins 0.9.10** (bump PR #658 merged
+> 2026-11-23T11:40Z by the release bot as `4213eb1f`). The bump PR first went RED: `BffRuntimeProducerTest` counted two
+> pushed-authorization-request clients, expected one (`shouldShareOnePushedRequestAdapterAndOneTokenEndpointClientWithTheWidening`
+> and two `pushedRequestClient...` tests). Cause, per the operator's session report (the diff `d65bcc97` confirms the test change, the
+> cause itself is not re-verified here): 0.9.10's `AuthorizationCodeFlow` (TokenSheriff #901) builds its own private `ParClient` for
+> the new `authorizePushed` seam; the gateway never calls that seam, so no behaviour changed, and the test's reflection walk
+> counted that dormant instance. Fix on the bump branch, test-only: `BffRuntimeProducerTest.gatewayParClients(root)` excludes
+> `ParClient`s owned by an `AuthorizationCodeFlow`, the exactly-one assertions are unchanged, and a control test
+> `engineFlowOwnsADormantPushedRequestClient` fails when upstream drops that client. **D2 consequence:** adopting `authorizePushed`
+> deletes `PushedAuthorizationRequests` and the producer's `ParClient`, and then the `gatewayParClients` exclusion and its control
+> test must be deleted with them, not left behind. The remaining blocker is PLAN-33 (PR #656, open, running); once it lands this
+> plan's gate is the re-ground against the resolved 0.9.10 jar. The same session also moved DSL-JSON 2.0.2 to 2.1.0 (a release-note
+> dependency bump): relevant to D1, whose proof is the native integration suite.
+>
+> ⚠ **Re-grounded 2026-11-22 (cleanup at `226d9f3a`). Then BLOCKED: TokenSheriff had tags up to 0.9.9 and no 0.9.10; `main`
 > pins 0.9.9.** 22 claims: 13 corroborated, 7 unverifiable (TokenSheriff-side, need the 0.9.10 jar), 2 contradicted and
 > rescoped here. **Every line number in the deliverables is stale: locate by symbol.**
 > - **D7 premise is wrong.** `RuleSupport.renderForMessage` (:158) does NOT escape everything outside printable ASCII: it

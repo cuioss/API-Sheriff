@@ -57,8 +57,9 @@ decision.
   Operator decisions at outline: expose `maxStaleness` as a gateway key (and its default), drop
   `token-sheriff-client-quarkus` (it interacts with PLAN-34 D1: TokenSheriff's native-image plan would put
   the registration into that extension), readiness for a stale-degraded issuer.
-- PLAN-34 — staged 2026-11-12, WS-05; BLOCKED until TokenSheriff 0.9.10 is released and `main` pins it
-  (the bump is the release workflow's PR). Depends on PLAN-33 and on TokenSheriff epic
+- PLAN-34 — staged 2026-11-12, WS-05; **TokenSheriff 0.9.10 released 2026-11-23 and PINNED on `main`** (bump PR #658 merged
+  `4213eb1f`, with a test-only fix for the dormant engine `ParClient`). Still BLOCKED, now on PLAN-33 (#656) alone, which has not
+  landed. Not emitted; first step at outline is the verify-first read of the resolved jar. Depends on PLAN-33 and on TokenSheriff epic
   `api-sheriff-seams`; every TokenSheriff API name in it is a proposal to re-verify against the
   released jar. Shares `BffRuntimeProducer` with PLAN-20; the order of PLAN-20 and PLAN-34 is open.
 
@@ -189,6 +190,27 @@ decision.
 
 ## Decisions
 
+- 2026-11-23 — **0.9.10 bump PR #658 MERGED and `main` pins 0.9.10 (operator session report, checked against GitHub).** Merged
+  2026-11-23T11:40:10Z by the release bot as `4213eb1f`; two commits, `bfbd199d` (the bump) and `d65bcc97` (test fix and BOM-comment
+  re-measure, `BffRuntimeProducerTest.java` and `pom.xml` only). The red CI was a test artefact, not a behaviour change: 0.9.10's
+  `AuthorizationCodeFlow` owns a private, unused `ParClient`, which the test's reflection walk counted. The report also names an
+  infrastructure flake (`generate-mtls-certificates`, `Stream closed`, green on re-run), one timing-test failure under concurrent
+  load that passed in isolation and in CI, and a partial local native run (461 passed, 0 failed, hit the 50-minute limit); the CI
+  integration job is the authoritative run and passed. **This supersedes the same day's entry below for the pin: the "bump cannot merge
+  alone" finding is resolved by the test-only fix, and the PLAN-34 block is now PLAN-33 alone.** Open consequences, none recorded as
+  a defect: (1) PLAN-33's PR #656 was built against the 0.9.9 pin and now sits behind a `main` that pins 0.9.10; its merge state read
+  `CLEAN` when checked, but its CI ran against 0.9.9, so the landing message should say which pin it verified against; (2) PLAN-34 D2
+  must delete the `gatewayParClients` exclusion and its control test when it adopts `authorizePushed`; (3) PLAN-20 re-ground after
+  PLAN-33 is unchanged. Not applied: no PLAN-34 verdicts re-stamped, nothing emitted.
+- 2026-11-23 — **TokenSheriff 0.9.10 released (operator report, verified); inbox drain found nothing.** The epic inbox is empty
+  and PLAN-33's landing is still owed (`awaiting_plans: PLAN-33`, PR #656 open and clean, 44 files, no `pom.xml`). The release is
+  real: tag `0.9.10` published 2026-11-23T07:17:44Z, `token-sheriff-bom` 0.9.10 is on Maven Central. `main` (`1f6dbfec`) still
+  pins 0.9.9; the release workflow's bump PR #658 is open and RED on `BffRuntimeProducerTest` (the assembled runtime now reaches two
+  pushed-authorization-request clients, not one), so it cannot merge by itself. **Applied:** dated release banner in PLAN-34's
+  `## Expected Surface`, the PLAN-34 queue annotation, the resume anchor. **Not applied:** PLAN-34's 22 verdicts are not re-stamped
+  (the 7 unverifiable TokenSheriff-side claims need the resolved jar, which the verify-first gate reads at outline), PLAN-34 is not
+  emitted, and PLAN-20 stays held. PLAN-34's order against PLAN-33 is unchanged: PLAN-33 lands first, since both touch
+  `BffRuntimeProducer` and the dependency decision of PLAN-33 D4.
 - 2026-11-22 — **Inbox drain of 3 messages, all from the closing epic `security-hardening-tier-2` (`-001`, `-005`, `-006`), all
   discarded.** Each claim was read against `origin/main` first: the formatter-churn class is closed (#242, #415, #559, #618 are on
   `main`), the sender's last plans shipped (#647 `2335c81d`, #651 `a2ff139e`), and the one open defect it handed over (PLAN-SEC2-07's
