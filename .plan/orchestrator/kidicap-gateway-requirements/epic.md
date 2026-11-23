@@ -190,6 +190,14 @@ decision.
 
 ## Decisions
 
+- 2026-11-23 — **Cleanup then `handle-open` (threshold 90, knob).** Cleanup: corpus reconciles both ways (22 rows, 22 specs), no
+  Done-when finding, no duplication; the A1 re-ground of PLAN-20 and PLAN-34 is DEFERRED until PLAN-33 lands (they share 14 and 23
+  files with it and it rewrites the claimed surface; PLAN-33 is `running` and excluded). Four settled items relocated verbatim to
+  `settled.md` on the operator's request (the tier-2 inbox drain, the four inert upstream keys, the stale ledger worktree note,
+  PLAN-31 `surface_delta`); compaction ok, 26 pointers. Archive drain refused (no epic-wide quiescence signal). Restart `not_ready`:
+  PLAN-33 running and `registry_parity` (registry 0.1.2139 / 0.1.2184 against executor 0.1.2184). `handle-open`: item 8 (the
+  portal ADR, formerly named ADR-0050) decided by the orchestrator at confidence 93 — retired, the file introduced by #343 is
+  `Accepted` as ADR-0053 (`doc/adr/0053-...adoc:15-17`). Every other item stays open and is put to the operator one per turn.
 - 2026-11-23 — **0.9.10 bump PR #658 MERGED and `main` pins 0.9.10 (operator session report, checked against GitHub).** Merged
   2026-11-23T11:40:10Z by the release bot as `4213eb1f`; two commits, `bfbd199d` (the bump) and `d65bcc97` (test fix and BOM-comment
   re-measure, `BffRuntimeProducerTest.java` and `pom.xml` only). The red CI was a test artefact, not a behaviour change: 0.9.10's
@@ -211,12 +219,7 @@ decision.
   (the 7 unverifiable TokenSheriff-side claims need the resolved jar, which the verify-first gate reads at outline), PLAN-34 is not
   emitted, and PLAN-20 stays held. PLAN-34's order against PLAN-33 is unchanged: PLAN-33 lands first, since both touch
   `BffRuntimeProducer` and the dependency decision of PLAN-33 D4.
-- 2026-11-22 — **Inbox drain of 3 messages, all from the closing epic `security-hardening-tier-2` (`-001`, `-005`, `-006`), all
-  discarded.** Each claim was read against `origin/main` first: the formatter-churn class is closed (#242, #415, #559, #618 are on
-  `main`), the sender's last plans shipped (#647 `2335c81d`, #651 `a2ff139e`), and the one open defect it handed over (PLAN-SEC2-07's
-  landing carried `effort=unknown`) is a plan-lifecycle runtime-stamp fact that nothing in this repository can close. No spec, no
-  defect, no watch. The sibling epics `security-hardening-tier-1` and `-tier-2` are archived, and PLAN-SEC-06 is `shipped` (#607), so
-  the 8-file overlap that held PLAN-33 back on 2026-11-15 is gone.
+> ↪ Relocated to `settled.md` § "Inbox drain of 2026-11-22 from security-hardening-tier-2 (all discarded)" — the sender epic is closing, every claim was read against origin/main and discarded; no spec, defect or watch resulted
 - 2026-11-22 — **Cleanup at `226d9f3a` (worktree rebased onto `origin/main`, 48 commits after the last pass), then `next`.**
   Re-ground of the three staged specs by three read-only leaves, one per spec: 58 claims (PLAN-20 7, PLAN-33 29, PLAN-34 22),
   42 corroborated, 11 unverifiable (TokenSheriff-side or live-IdP), 5 contradicted and rescoped in the spec (PLAN-20 the replay
@@ -368,21 +371,13 @@ decision.
   near line 380); the `IssuerConfig.Jwks` Javadoc repeats the three refresh ranges unguarded; the
   contract test does not cover the documented restriction to the `http` source. No plan owns these. —
   source: `landings/PLAN-28.md`
-- **Four upstream keys parse and act on nothing**: `connect_timeout_ms`, `read_timeout_ms`,
-  `retry.max_attempts`, `retry.idempotent_only` (read at 128fd07e: bound in `UpstreamConfig`, no reader;
-  the guard uses a fixed 30 s timeout and two retries). The user guide marks them inert;
-  `doc/architecture.adoc` and `doc/variants/01-base-gateway.adoc` do not. Staged as PLAN-29. — source:
-  inbox `integration-test-evidence-follow-ups-001.md`, `landings/PLAN-27.md`
-- **The shared ledger worktree was 23 commits behind `origin/main`** when this drain ran, so the sibling
-  epics' queue rows it holds were stale: it showed PLAN-V02-01 as `launched` while `main` has it
-  `shipped`. `corpus cross-check` and the `next` gate read the worktree, so they judged the in-flight set
-  from stale rows; the orchestrator read the rows from `origin/main` by hand instead. The next `land`
-  resyncs the tree. Mechanism (another session lands the sibling ledger from elsewhere and this tree is
-  never pulled) is plugin-side. — observed 2026-10-12
+> ↪ Relocated to `settled.md` § "Four inert upstream keys, resolved by PLAN-29" — PLAN-29 shipped #586 (ab568dab) and removed the four keys; no reader or binding of any of them remains in api-sheriff/src/main (re-checked 2026-11-23)
+> ↪ Relocated to `settled.md` § "Stale shared ledger worktree, resolved by a land resync" — re-measured 2026-11-23: the worktree is 0 behind and 0 ahead of origin/main with 0 pending paths; the plugin-side mechanism stays upstream
 
-- **ADR-0050** (portal / HTML error pages, from PLAN-16) was committed with status **Proposed**.
-  Accepting it is an operator decision on repository source — outside the orchestrator's write boundary.
-  — source: `landings/PLAN-16.md`
+> ↪ Decided 2026-11-23 by `handle-open` (item 8, confidence 93 over threshold 90): retired on positive account. The portal / HTML
+> error-pages ADR that PLAN-16 added in #343 (`69b322b5`) now lives as `doc/adr/0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc`
+> and its `== Status` section reads `Accepted` (:15-17). The number 0050 now names a different ADR. Original text: ADR-0050 was
+> committed `Proposed` and acceptance was an operator decision. — source: `landings/PLAN-16.md`; see `## Decisions` 2026-11-23 handle-open
 - Two product gaps PLAN-16 shipped knowingly, both carried in PR #343: an error response that can be
   negotiated to HTML or JSON sends no `Vary: Accept` (the HTML variant is `no-store`, so the risk is a
   shared-cache mismatch on the JSON variant), and no unit test covers the 504 upstream-timeout error page
@@ -473,9 +468,7 @@ decision.
   including SonarCloud, and the post-merge benchmark (`43711768997`). `main` has moved on since (#618 to #622), so a
   later green run on a descendant does not stand in for it. — trigger: confirm Actions → Maven Build → `5aa17338`
   before the next release; source: `landings/PLAN-31.md`
-- **PLAN-31's `surface_delta` is `unmeasured`** (the landing supplied no declared or realized paths), so the realized
-  footprint was not reconciled by the machine; this analysis read the diff's six files by hand (all declared). — trigger:
-  none; source: `landings/PLAN-31.md`
+> ↪ Relocated to `settled.md` § "PLAN-31 surface_delta unmeasured, read by hand" — PLAN-31 shipped #605; the six-file diff was read by hand and all six were declared; the watch had no trigger
 
 > ↪ Relocated to `settled.md` § "Cross-epic hold on api-sheriff-0-2-0, resolved by its closure" — every sibling plan it names has shipped and the sibling epic is closed and archived
 
