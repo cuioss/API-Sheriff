@@ -76,7 +76,7 @@ class TokenValidationRulesJwksRefreshTest {
     enum RefreshKey {
 
         REFRESH_INTERVAL("refresh_interval_seconds", 60, 86_400,
-                IssuerConfig.Jwks.JwksBuilder::refreshIntervalSeconds),
+            IssuerConfig.Jwks.JwksBuilder::refreshIntervalSeconds),
         GRACE_PERIOD("key_rotation_grace_period_seconds", 0, 3_600,
                 IssuerConfig.Jwks.JwksBuilder::keyRotationGracePeriodSeconds),
         UNKNOWN_KID_WINDOW("unknown_kid_refresh_window_seconds", 5, 3_600,
