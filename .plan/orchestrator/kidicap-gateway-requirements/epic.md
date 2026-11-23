@@ -190,6 +190,73 @@ decision.
 
 ## Decisions
 
+- 2026-11-23 — **Batch C: a fix plan is DUE (operator, proposal 1; threshold rule of the standing fix-routing entry).** The pending-fix
+  backlog is now about 17 (the 8 earlier entries plus 9 new ones), over 10, so under the standing rule a fix plan is created and later
+  fixes join it first. **Proposed scope, nine deliverables after grouping (cap 12):** (1) `Vary: Accept` on negotiated error
+  responses; (2) WebSocket relay cleanups (redundant `pongHandler`, merge the two dialer helpers); (3) per-reason `ApiSheriff-147`
+  WARN in the logout revocation (L3-1) and the L3-2 accept-or-plan decision; (4) the PLAN-26 layer-2 pass; (5) canonical-form boot
+  check for the callback, logout, logout-return and back-channel-logout paths plus a duplicate-reserved-path rule; (6) the
+  pending-store fairness ADR; (7) a WARN or metric on a source evicting its own oldest login record; (8) raw-value echo in boot
+  refusals plus the old comment inaccuracies; (9) the PLAN-28 doc leftovers (Javadoc range guard, `source: file` coverage) and the
+  retry-wording fix. **The five held `RetryingJwksLoader` fixes (item 2)** join this plan later if PLAN-34's re-ground leaves the
+  code alive: that would make ten deliverables, still under the cap. **Follow-up the operator words:** staging the plan (this verb
+  never stages one); the orchestrator can draft the spec on request. **Not fixes, stay open as decisions:** the access log, the
+  PLAN-23 scope-fallback and refresh-token items, the login rate limiter, `authorize` before the store, the TokenSheriff
+  separation audit, the cookie-size re-measure, the 0.2.4 residual, the Sonar note. These were presented in the batch and the
+  answer did not decide them.
+- 2026-11-23 — **Batch B (operator: B1:1, B2:1, B3:1).** **B1:** eight release and downstream watches retired on the operator's
+  confirmation that the 0.2.2 release-note and downstream actions are done (an operator-confirmed account, not re-read by the
+  orchestrator; the 0.2.4 downstream report backs the notification half). One residual of the 0.2.4 report was kept as its own
+  open watch (reserved-path defaults outside a build-time context path; Keycloak's extra `302`). **B2:** four entries on unobserved
+  main-branch runs stay open, marked awaiting the operator's Actions check; the orchestrator cannot read push runs, and the
+  operator has not yet reported any result. **B3:** seven entries accepted as outside this epic, each marked with where it is
+  tracked; none retired or relocated. Open-item count after this batch: the product-gap defects and watches (batch C) remain.
+- 2026-11-23 — **Practice-note batch A (operator, proposal 1).** Fourteen standing practice notes accepted as standing practice
+  and marked in place (surface-vs-footprint measurements x3, same-day re-grounding, native-IT wall-clock collision, downstream-cited
+  ITs, validator/runtime parity, sibling-doc staleness, review-bot doc catches, sweep-the-wording, doc-precision, semantics-change
+  sweep, bind-mount file mode, PLAN-16 test practice, spec verify-first clause). Accepted means they stay in `epic.md` with their
+  triggers and are not presented again; none was retired or relocated. **Kept open:** the Sonar new-code-findings note, because it
+  owes the operator an `architecture enrich insight --module api-sheriff` call. Not re-read this run, so these were operator
+  decisions, not orchestrator decisions.
+- 2026-11-23 — **Threshold lowered to 60; second `handle-open` re-read pass (operator: "revisit all finding, decide if you are 60%
+  confident").** The `orchestrator.decision_confidence_threshold` knob was found at 90 (the earlier change to 75 was not on disk)
+  and is now 60, uncommitted in `.plan/marshal.json`. Decided this pass: item 5 narrowed (2 fixes to the backlog, applied at the
+  threshold on the operator's wording), the WARN-id/ADR-ordinal watch retired on PLAN-20's spec, and the retry-jitter question
+  answered (SmallRye's default jitter is 200 ms; 1 wording fix to the backlog). **Backlog now: 8** (5 from item 2, 2 from item 5,
+  1 retry wording), under 10, so no fix plan yet; target plan still held for PLAN-34's re-ground. Items 3 and 4 were answered by
+  the operator earlier in the run (measure the gate churn after PLAN-33; route the breaker-identity ADR to the next plan on
+  `edge/`). **Re-read this run and still open (nothing decided on them, evidence recorded so the next run does not repeat it):**
+  `Vary: Accept` absent; no `quarkus.http.access-log.*` setting; `WebSocketRelayStage.java:531` still sets the redundant
+  `pongHandler` and the two near-duplicate dialer helpers still sit in `WebSocketRelayStageTest`; `token-sheriff-client-quarkus`
+  still declared at `api-sheriff/pom.xml` :123-125 with no import in main; PLAN-26 L3-1 (single `revocationFailureReported`
+  latch, `RpInitiatedLogout.java:121`) and the layer-2 residue (`LogoutEndpointTest.java:682` keeps its misleading name,
+  `BffLogMessages.java:32` keeps a hand-written inventory, ADR-0080 does not link ADR-0071, `RpInitiatedLogout.java:58` still says
+  no other path revokes); the canonical-form boot check covers `user_info`, `login`, `step_up` and the client JWKS path
+  (`ReservedPathRules.java` :211, :239, :267) but not callback, logout, logout-return or back-channel-logout; no ADR records the
+  pending-store fairness mechanism (`doc/adr` has none); `StepUpResultVerifier` has no caller (PLAN-20). The `getLoaderStatus`
+  masking is carried by PLAN-33's spec (`plans/PLAN-33-*.md` :42-46), which is running. Not re-read, so capped at the threshold and
+  not decidable: every CI-run, release-note and downstream watch, the plugin-side lessons, and the practice notes.
+- 2026-11-23 — **Standing fix-routing rule (operator, `handle-open`).** "For the fixes: add to an existing plan if they count less
+  than 10, create a fix plan otherwise; later fixes may be added to the newly created plans first." Recorded reading, open to
+  correction: the count is the pending fix backlog across every `handle-open` item, not per item. Under 10 pending fixes, each goes
+  as a deliverable onto an existing staged plan that owns the surface; at 10 or more, a new fix plan is created, and later fixes join
+  that fix plan before any other. Staging a plan and editing a spec stay acts the operator words, so `handle-open` records the
+  routing and names the follow-up. **Backlog now: 5** (all from item 2: PLAN-31 L3-3, L3-4 and three layer-2 test items).
+  **Target plan (operator chose proposal 1, 2026-11-23): HOLD.** PLAN-34 is the only staged plan on `RetryingJwksLoader` but its D6
+  reduces the class, so the fixes would be moot if D6 ships; PLAN-33 is running and may not be edited. The five stay in the backlog
+  until PLAN-34's re-ground shows what D6 keeps: they then go onto PLAN-34 if the code survives, or onto a plan the operator names if
+  D6 removes it. The backlog is under 10, so no fix plan is created yet.
+- 2026-11-23 — **Cleanup then `handle-open` (threshold 90, knob).** Cleanup: corpus reconciles both ways (22 rows, 22 specs), no
+  Done-when finding, no duplication; the A1 re-ground of PLAN-20 and PLAN-34 is DEFERRED until PLAN-33 lands (they share 14 and 23
+  files with it and it rewrites the claimed surface; PLAN-33 is `running` and excluded). Four settled items relocated verbatim to
+  `settled.md` on the operator's request (the tier-2 inbox drain, the four inert upstream keys, the stale ledger worktree note,
+  PLAN-31 `surface_delta`); compaction ok, 26 pointers. Archive drain refused (no epic-wide quiescence signal). Restart `not_ready`:
+  PLAN-33 running and `registry_parity` (registry 0.1.2139 / 0.1.2184 against executor 0.1.2184). `handle-open`: item 8 (the
+  portal ADR, formerly named ADR-0050) decided by the orchestrator at confidence 93 — retired, the file introduced by #343 is
+  `Accepted` as ADR-0053 (`doc/adr/0053-...adoc:15-17`). The threshold was then lowered to 75 at the operator's request (knob
+  `orchestrator.decision_confidence_threshold`, was 90). Item 1 (PLAN-31's narrower publish rule) was put to the operator, who chose
+  proposal 1: **accept the narrowing in writing**, no re-opening plan; ADR-0063 stays the place the cost is stated. Every other item
+  stays open and is put to the operator one per turn.
 - 2026-11-23 — **0.9.10 bump PR #658 MERGED and `main` pins 0.9.10 (operator session report, checked against GitHub).** Merged
   2026-11-23T11:40:10Z by the release bot as `4213eb1f`; two commits, `bfbd199d` (the bump) and `d65bcc97` (test fix and BOM-comment
   re-measure, `BffRuntimeProducerTest.java` and `pom.xml` only). The red CI was a test artefact, not a behaviour change: 0.9.10's
@@ -211,12 +278,7 @@ decision.
   (the 7 unverifiable TokenSheriff-side claims need the resolved jar, which the verify-first gate reads at outline), PLAN-34 is not
   emitted, and PLAN-20 stays held. PLAN-34's order against PLAN-33 is unchanged: PLAN-33 lands first, since both touch
   `BffRuntimeProducer` and the dependency decision of PLAN-33 D4.
-- 2026-11-22 — **Inbox drain of 3 messages, all from the closing epic `security-hardening-tier-2` (`-001`, `-005`, `-006`), all
-  discarded.** Each claim was read against `origin/main` first: the formatter-churn class is closed (#242, #415, #559, #618 are on
-  `main`), the sender's last plans shipped (#647 `2335c81d`, #651 `a2ff139e`), and the one open defect it handed over (PLAN-SEC2-07's
-  landing carried `effort=unknown`) is a plan-lifecycle runtime-stamp fact that nothing in this repository can close. No spec, no
-  defect, no watch. The sibling epics `security-hardening-tier-1` and `-tier-2` are archived, and PLAN-SEC-06 is `shipped` (#607), so
-  the 8-file overlap that held PLAN-33 back on 2026-11-15 is gone.
+> ↪ Relocated to `settled.md` § "Inbox drain of 2026-11-22 from security-hardening-tier-2 (all discarded)" — the sender epic is closing, every claim was read against origin/main and discarded; no spec, defect or watch resulted
 - 2026-11-22 — **Cleanup at `226d9f3a` (worktree rebased onto `origin/main`, 48 commits after the last pass), then `next`.**
   Re-ground of the three staged specs by three read-only leaves, one per spec: 58 claims (PLAN-20 7, PLAN-33 29, PLAN-34 22),
   42 corroborated, 11 unverifiable (TokenSheriff-side or live-IdP), 5 contradicted and rescoped in the spec (PLAN-20 the replay
@@ -320,11 +382,17 @@ decision.
 
 ## Open Defects
 
-- **PLAN-31's shipped publish rule is narrower than its frozen D1 criterion, and no `criteria-authorize` record covers it
-  (2026-11-15).** The code discards a refresh whose basis moved during the fetch and counts a retired delegate's key ids
-  as held; the spec's D1 says "publish when the key ids differ at settle time". The functional review carried it as the
-  non-blocking residual D1.R1, and ADR-0063 states the cost. Closes when the operator accepts the narrowing in writing or a
-  plan re-opens the criterion. — source: `landings/PLAN-31.md` L1-1, L2-1
+> ↪ Decided 2026-11-23 by the operator in `handle-open` (item 1; the recommendation sat at confidence 70, below the 75 threshold, so it was
+> put to the operator): **the narrowing is ACCEPTED in writing.** PLAN-31's shipped publish rule discards a refresh whose basis moved
+> during the fetch and counts a retired delegate's key ids as held, which is narrower than the frozen D1 "publish when the key ids differ
+> at settle time"; the cost is stated in ADR-0063 and the functional review carried it as the non-blocking residual D1.R1. No plan
+> re-opens the criterion. Original close condition: the operator accepts the narrowing in writing, or a plan re-opens it.
+> — source: `landings/PLAN-31.md` L1-1, L2-1; see `## Decisions` 2026-11-23 handle-open item 1
+> ↪ DECIDED 2026-11-23 by the operator in `handle-open` (item 2): the findings are FIXES, routed by the standing fix-routing rule in
+> `## Decisions` 2026-11-23. Re-read at HEAD that day: L3-1 (:553-557) still true and the code comment calls it deliberate, so it is
+> ACCEPTED, no fix; L3-3 (:668-681), L3-4 (:556) and the three layer-2 test items are FIXES, **5 fixes** into the backlog. Follow-up
+> named, not yet staged: a deliverable on the plan that owns `RetryingJwksLoader`; the target is OPEN because PLAN-34 D6 reduces
+> that very class. The entry below stays open until the fixes land.
 - **PLAN-31 layer-3 and layer-2 findings, all minor (2026-11-15), reported to the operator, nothing fixed inline.**
   (L3-1) the claim's basis snapshot is read before the in-flight flag is taken, so a refresh that publishes in between
   leaves the new claim a stale basis and it wastes its window (`RetryingJwksLoader.java` :553-557); (L3-3) an exception in
@@ -333,13 +401,16 @@ decision.
   outside the try that shields scheduling (:226-229); (L2) `refreshOutrunByADropIsDiscarded` (test :1133) may not fail if
   `isCurrent` were deleted, two near-duplicate unit tests (:1010, :1035) and a redundant IT leg 5. One small pass
   would close all of it. The operator decides. — source: `landings/PLAN-31.md`
+> **Decided 2026-11-23 (operator, `handle-open`, proposal 1): MEASURE AFTER PLAN-33 LANDS.** Run `verify -Ppre-commit` once on a clean `main` checkout, then `git status --porcelain`. Clean tree: retire this entry to `settled.md`. Dirty tree: it becomes a fix in the pending backlog (then 6). The entry stays open until measured; I did not confirm the 457-file claim.
 - **`verify -Ppre-commit` is not stable on `main` after #618 (2026-11-15).** The landing reports that the gate removes one
   blank line from 457 existing files on every run (and earlier one from `MainListenerConnectionCapTest.java`, from
   #607), cleared by hand after each run. Not re-measured by this analysis: treat as a lead. A formatter PR with the
   `skip-bot-review` label, like #608, would close it; no plan owns it. — source: `landings/PLAN-31.md` residue
+> ✔ Accepted 2026-11-23 as outside this epic (`handle-open` batch B3, operator answer): tracked in `landings/PLAN-31.md`, where the false claim is already recorded. Stays here as a pointer; not retired, not relocated.
 - **`review_body_findings_total` of PLAN-31 disagrees with the provider (2026-11-15).** The landing claimed 5; `review-gate`
   on the merged head reads 4 (and 0 dispositions, which only the run's progress file can settle). Recorded as a false
   claim in the landing record; the thread count (0) matches. — source: `landings/PLAN-31.md`
+> **Decided 2026-11-23 (operator, `handle-open`, proposal 1): ROUTED TO THE NEXT PLAN THAT TOUCHES `edge/`.** Re-read this run: no ADR covers the breaker identity (ADR-0064 does not mention keying or `guardFor`), the draft still exists, `SO_LINGER 0` is still at `EgressClients.java:221`; `PLAN-V02-46`'s row was not found in `api-sheriff-0-3-0`'s queue, so its status is unknown. The ADR is one deliverable for that plan, written from the draft after it reads V02-46's result. It is not in the pending-fix backlog (still 5). The entry stays open until the ADR exists.
 - **The circuit breaker's identity changed in #448 without an ADR.** `GatewayEdgeRoute.guardFor` no
   longer registers it under a SmallRye name (the JVM-global registry rejected a reused upstream port
   once the abortive close freed TIME_WAIT); the guard, keyed `scheme://host:port:h2=…:retry=…`, is the
@@ -356,6 +427,7 @@ decision.
 
 > ↪ Relocated to `settled.md` § "PLAN-15 follow-ups filed as issues" — all seven are filed as #323-#329
 
+> ✔ Accepted 2026-11-23 as outside this epic (`handle-open` batch B3, operator answer): tracked in the `api-sheriff-0-3-0` epic watch "EDGE / HTTP/2 / IT FLAKE FAMILY" (already consolidated there). Stays here as a pointer; not retired, not relocated.
 - **`GatewayEdgeFramingCorpusTest` flake — tracked in ONE place: `api-sheriff-0-3-0` epic.md, Watch
   "EDGE / HTTP/2 / IT FLAKE FAMILY — A RECURRENCE IS A SUSPECTED PRODUCTION DEFECT"**, which holds both
   sightings (#431's main push run and PLAN-28's CI-only 502), the owner (the next plan touching `edge/`; a
@@ -363,26 +435,20 @@ decision.
   runs). Report new sightings there, not here. — consolidated 2026-10-13; repointed 2026-11-07 when
   `api-sheriff-0-2-0` closed (its Watch "HTTP/1.1 DRAIN 502 FLAKE IN THE FRAMING CORPUS" is archived under
   `.plan/archived-orchestrators/api-sheriff-0-2-0/`)
+> **Decided 2026-11-23 (operator, `handle-open`: "decide if you are 60% confident"; orchestrator confidence 60, applied as at-threshold on that instruction): NARROWED, TWO FIXES TO THE BACKLOG.** Re-read this run: the `token_validation` line numbers cited below no longer exist (`doc/configuration.adoc` is 804 lines, split by #575) and the three remaining mentions (:141, :448, :640) name a live key, so the first claim is NOT reproduced; it is not retired, because no commit is a positive account of its closing. Still standing: the `IssuerConfig.Jwks` Javadoc repeats the three admitted ranges in prose (`IssuerConfig.java` :77, :84, :91) with no guard test found, and the `source: file` restriction coverage in `ConfigModelContractTest` was not traced. Both go to the pending-fix backlog (now 8 with the retry-wording fix); target plan open under the hold decision. See `## Decisions` 2026-11-23.
 - **Documentation left open by PLAN-28** (the sender's statement, not re-read): two stale
   `token_validation` mentions in `doc/configuration.adoc` (around line 2213 and the YAML example comment
   near line 380); the `IssuerConfig.Jwks` Javadoc repeats the three refresh ranges unguarded; the
   contract test does not cover the documented restriction to the `http` source. No plan owns these. —
   source: `landings/PLAN-28.md`
-- **Four upstream keys parse and act on nothing**: `connect_timeout_ms`, `read_timeout_ms`,
-  `retry.max_attempts`, `retry.idempotent_only` (read at 128fd07e: bound in `UpstreamConfig`, no reader;
-  the guard uses a fixed 30 s timeout and two retries). The user guide marks them inert;
-  `doc/architecture.adoc` and `doc/variants/01-base-gateway.adoc` do not. Staged as PLAN-29. — source:
-  inbox `integration-test-evidence-follow-ups-001.md`, `landings/PLAN-27.md`
-- **The shared ledger worktree was 23 commits behind `origin/main`** when this drain ran, so the sibling
-  epics' queue rows it holds were stale: it showed PLAN-V02-01 as `launched` while `main` has it
-  `shipped`. `corpus cross-check` and the `next` gate read the worktree, so they judged the in-flight set
-  from stale rows; the orchestrator read the rows from `origin/main` by hand instead. The next `land`
-  resyncs the tree. Mechanism (another session lands the sibling ledger from elsewhere and this tree is
-  never pulled) is plugin-side. — observed 2026-10-12
+> ↪ Relocated to `settled.md` § "Four inert upstream keys, resolved by PLAN-29" — PLAN-29 shipped #586 (ab568dab) and removed the four keys; no reader or binding of any of them remains in api-sheriff/src/main (re-checked 2026-11-23)
+> ↪ Relocated to `settled.md` § "Stale shared ledger worktree, resolved by a land resync" — re-measured 2026-11-23: the worktree is 0 behind and 0 ahead of origin/main with 0 pending paths; the plugin-side mechanism stays upstream
 
-- **ADR-0050** (portal / HTML error pages, from PLAN-16) was committed with status **Proposed**.
-  Accepting it is an operator decision on repository source — outside the orchestrator's write boundary.
-  — source: `landings/PLAN-16.md`
+> ↪ Decided 2026-11-23 by `handle-open` (item 8, confidence 93 over threshold 90): retired on positive account. The portal / HTML
+> error-pages ADR that PLAN-16 added in #343 (`69b322b5`) now lives as `doc/adr/0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc`
+> and its `== Status` section reads `Accepted` (:15-17). The number 0050 now names a different ADR. Original text: ADR-0050 was
+> committed `Proposed` and acceptance was an operator decision. — source: `landings/PLAN-16.md`; see `## Decisions` 2026-11-23 handle-open
+> ➜ Decided 2026-11-23 (`handle-open` batch C, operator proposal 1): in the scope of the DUE FIX PLAN (backlog over 10); entry stays open until the fix lands; staging is the operator's act. See `## Decisions` 2026-11-23 — fix 1, `Vary: Accept`.
 - Two product gaps PLAN-16 shipped knowingly, both carried in PR #343: an error response that can be
   negotiated to HTML or JSON sends no `Vary: Accept` (the HTML variant is `no-store`, so the risk is a
   shared-cache mismatch on the JSON variant), and no unit test covers the 504 upstream-timeout error page
@@ -391,6 +457,7 @@ decision.
   Small; fold into a later plan touching that surface rather than staging one. — source:
   `landings/PLAN-16.md`
 > ↪ Relocated to `settled.md` § "Project config housekeeping (marshal.json provisioning, build queue cap)" — the provisioning half was fixed 2026-11-09; ⚠ the `build.queue.max_slots` half stays an operator action (`manage-build-server config migrate`)
+> ✔ Accepted 2026-11-23 as outside this epic (`handle-open` batch B3, operator answer): tracked in project configuration of plan-marshall (`marshall-steward` architecture match rule) and plan-marshall lesson `2026-09-22-18-004`; not API Sheriff product work. Stays here as a pointer; not retired, not relocated.
 - `ci-verify` files this repository's Maven build jobs as `ci_policy_failure` rather than
   `ci_build_failure`: the job names (`build / build (25|26)`, `build / sonar-build`, `build / conclusion`,
   `integration-tests / test`) contain none of the build-profile tokens it matches (`verify`,
@@ -415,6 +482,7 @@ decision.
   `plan-19-session-fallback-on-bearer-001.md`
 
 > ↪ Relocated to `settled.md` § "cuioss-review-bot cannot be re-triggered, resolved by its removal" — resolved 2026-10-20: the bot was removed (#493, #494) and CodeRabbit is the only required reviewer
+> ➜ Decided 2026-11-23 (`handle-open` batch C, operator proposal 1): in the scope of the DUE FIX PLAN (backlog over 10); entry stays open until the fix lands; staging is the operator's act. See `## Decisions` 2026-11-23 — fix 2, relay cleanups.
 - Two small cleanups on the WebSocket relay, left deliberately by PLAN-22: the pre-existing
   `source.pongHandler(pong -> resetIdle())` in `WebSocketRelayStage.wire()` is now redundant (since
   `relayFrame` receives pongs and resets the idle timer), and the `queueFullDialer` /
@@ -423,6 +491,7 @@ decision.
   `landings/PLAN-22.md`
 
 > ↪ Relocated to `settled.md` § "Duplicate ADR-0053, resolved by #367" — resolved 2026-10-02 by #367; the manage-adr scan blind-gate note moved with it
+> ✔ Accepted 2026-11-23 as outside this epic (`handle-open` batch B3, operator answer): tracked in plan-marshall (filed upstream as a lesson). The standing mitigation still applies to this epic: do not relocate the ledger while a plan is in flight. Stays here as a pointer; not retired, not relocated.
 - **`source_id` is a stored PATH, resolved at finalize time, so a ledger relocation orphans every
   in-flight plan's outbox.** PLAN-23 shipped #369 with `emit-landing` reporting *not orchestrated, no
   landing emitted*: its `source_id` was persisted on 2026-09-25 as
@@ -434,12 +503,14 @@ decision.
   broken mid-flight, which is the consequence the four earlier detector-disagreement recurrences had not
   yet produced. **Mitigation until the pointer is resolved dynamically: do not relocate the ledger while a
   plan is in flight.** Filed upstream as a plan-marshall lesson. — source: `landings/PLAN-23.md`
+> ✔ Accepted 2026-11-23 as outside this epic (`handle-open` batch B3, operator answer): tracked in plan-marshall lesson `2026-09-24-05-001`; delete the comment by hand on GitHub if wanted. Stays here as a pointer; not retired, not relocated.
 - A stray PR-level comment on #346 (`IC_kwDOPatrT88AAAABWb_adQ`) carries internal triage prose that
   `post_responses` transmitted verbatim as a public reply. Harmless; delete by hand on GitHub if wanted.
   Mechanism filed as plan-marshall lesson `2026-09-24-05-001`. — source: inbox
   `route-header-matcher-defects-003.md`
 > ↪ Relocated to `settled.md` § "Egress-allowance duplication, resolved by PLAN-17" — resolved 2026-09-23 by PLAN-17 (#345)
 
+> ✔ Accepted 2026-11-23 as outside this epic (`handle-open` batch B3, operator answer): tracked in plan-marshall lesson `2026-09-23-05-003`. Stays here as a pointer; not retired, not relocated.
 - The merge-lock release reported the lock **"already free"** during PLAN-17's finalize although that plan
   had acquired it. The merge was unaffected, but the release path did not observe its own claim, so mutual
   exclusion is unestablished for that window and the report reads as success. Plugin-side; filed as
@@ -447,6 +518,7 @@ decision.
 
 > ↪ Relocated to `settled.md` § "NO_PLAN sentinel fails the next gate, resolved in plan-marshall 0.1.1855" — resolved 2026-10-06 by plan-marshall 0.1.1855
 
+> ✔ Accepted 2026-11-23 as outside this epic (`handle-open` batch B3, operator answer): tracked in the kidicap-gateway maintainers (downstream repository). Stays here as a pointer; not retired, not relocated.
 - kidicap-gateway still links to the removed `doc/api-sheriff-aenderungen.adoc` (~30 references in
   `README.md`, `CLAUDE.md`, `doc/**`, incl. `#as-N` anchors). Not API Sheriff work, and not owned by any
   plan here; the gateway maintainers repoint them (e.g. to API Sheriff issues/ADRs as plans land). —
@@ -456,9 +528,11 @@ decision.
 > the cookie-mode residual (already an accepted residual; deliverable 3 dropped) and the two missing ADRs (ADR-0081 for the problem+json
 > rule, an ADR-0018 amendment for the reserved-path boot rule; ADR-0080 records the logout decision). Record: `landings/PLAN-26.md`
 
+> ➜ Decided 2026-11-23 (`handle-open` batch C, operator proposal 1): in the scope of the DUE FIX PLAN (backlog over 10); entry stays open until the fix lands; staging is the operator's act. See `## Decisions` 2026-11-23 — fix 5 for the duplicate-reserved-path rule; the other two stay open as decisions.
 - Three info-level audit items from PLAN-23, unstaged: a widening does not revoke the superseded refresh
   token; the active scope set falls back to the requested set when the provider states none; no boot rule
   refuses duplicate reserved paths. — source: `landings/PLAN-23.md`
+> ➜ Decided 2026-11-23 (`handle-open` batch C, operator proposal 1): in the scope of the DUE FIX PLAN (backlog over 10); entry stays open until the fix lands; staging is the operator's act. See `## Decisions` 2026-11-23 — fix 8, the hygiene pass.
 - Pre-existing and unstaged: boot refusal messages echo configured values raw (`default_view`, trusted
   proxies, base-URL alias, websocket origins, anchor prefixes), and roughly forty older comment
   inaccuracies sit in the BFF files. Hygiene, not correctness — fold into whichever plan next enters those
@@ -468,17 +542,17 @@ decision.
 
 ## Watches
 
+> ⏳ Awaiting the operator's Actions check (`handle-open` batch B2, proposal 1, 2026-11-23): the operator reports what is green and the orchestrator retires only that; anything unreported stays open.
 - The push runs of **Maven Build and Integration Tests on PLAN-31's merge commit `5aa17338`** are NOT verified: the CI
   abstraction reads PR-attached runs only. Verified green and PR-attached: merge-group run `43710119529`, every PR check
   including SonarCloud, and the post-merge benchmark (`43711768997`). `main` has moved on since (#618 to #622), so a
   later green run on a descendant does not stand in for it. — trigger: confirm Actions → Maven Build → `5aa17338`
   before the next release; source: `landings/PLAN-31.md`
-- **PLAN-31's `surface_delta` is `unmeasured`** (the landing supplied no declared or realized paths), so the realized
-  footprint was not reconciled by the machine; this analysis read the diff's six files by hand (all declared). — trigger:
-  none; source: `landings/PLAN-31.md`
+> ↪ Relocated to `settled.md` § "PLAN-31 surface_delta unmeasured, read by hand" — PLAN-31 shipped #605; the six-file diff was read by hand and all six were declared; the watch had no trigger
 
 > ↪ Relocated to `settled.md` § "Cross-epic hold on api-sheriff-0-2-0, resolved by its closure" — every sibling plan it names has shipped and the sibling epic is closed and archived
 
+> ➜ Decided 2026-11-23 (`handle-open` batch C, operator proposal 1): in the scope of the DUE FIX PLAN (backlog over 10); entry stays open until the fix lands; staging is the operator's act. See `## Decisions` 2026-11-23 — fix 3 (L3-1) and fix 9 (L3-2 accept or plan); L3-3 and L3-4 unchanged.
 - **Four minor defects in the merged logout revocation (2026-11-10).** (L3-1) one process-wide latch covers a discovery failure,
   a transport failure and a non-success answer, so a transient first failure consumes the only `ApiSheriff-147` WARN and a later
   persistent failure stays at DEBUG (`RpInitiatedLogout.java` :251; the spec offered one-per-reason, as `ApiSheriff-132` does);
@@ -488,6 +562,7 @@ decision.
   `metadata.get()` is called twice per logout and the memoizing supplier may serialise concurrent logouts during a discovery
   outage. L3-1 plus L3-2 are the ones worth a plan. The operator decides. Closes when each is planned or accepted in writing.
   — source: `landings/PLAN-26.md` L3-1..L3-4
+> ➜ Decided 2026-11-23 (`handle-open` batch C, operator proposal 1): in the scope of the DUE FIX PLAN (backlog over 10); entry stays open until the fix lands; staging is the operator's act. See `## Decisions` 2026-11-23 — fix 4, the layer-2 pass.
 - **Layer-2 residue of PLAN-26 (2026-11-10).** A test named `shouldRevokeNothingWhenTheSessionWasGoneAtDestruction` asserts the
   opposite and the threat model cites it by that name (:3079); `RpInitiatedLogoutTest` :145 pins the WARN only through its
   self-resolved identifier, so a renumber of 147 stays green; the `BffLogMessages.WARN` Javadoc keeps a hand-written
@@ -496,20 +571,25 @@ decision.
   refresh token, `variants/03-bff-cookie.adoc` :298 drops two conditions the prose carries; ADR-0080 and the ADR-0018
   amendment do not link ADR-0071; no cookie-mode runtime or IT case observes the revocation request at the IdP. One small
   documentation-and-test pass would close all of it. — source: `landings/PLAN-26.md` L2-1..L2-5
+> ➜ Decided 2026-11-23 (`handle-open` batch C, operator proposal 1): in the scope of the DUE FIX PLAN (backlog over 10); entry stays open until the fix lands; staging is the operator's act. See `## Decisions` 2026-11-23 — fix 5 for the canonical-form boot check; the `step_up_url` echo stays with PLAN-20's re-ground.
 - **Two gaps the PLAN-26 reviews found outside its scope (2026-11-10).** The boot does not check the callback, logout,
   logout-return and back-channel-logout reserved paths for canonical form (ADR-0018 now says so), and `step_up_url` echoes the
   request's own query back to the client (ADR-0081 says so). The second bears on PLAN-20 and is carried into its
   re-grounding. — source: `landings/PLAN-26.md`; ADR-0018, ADR-0081
-- **WARN ids and ADR ordinals are allocated from a free list two epics read at once (2026-11-10).** PLAN-26 and the in-flight
-  #589 both took `ApiSheriff-146`; the plan found it only in its second rebase and renumbered. PLAN-26's declared surface did
-  not name `doc/LogMessages.adoc`, so the disjointness gate had nothing to compare. Every spec that adds a WARN, an ERROR or an
-  ADR should declare `doc/LogMessages.adoc` or `doc/adr/` and derive the id at write time. Closes when the staged specs that
-  allocate (PLAN-20) declare it. — source: `landings/PLAN-26.md`
+> ↪ Decided 2026-11-23 by `handle-open` (confidence 85 over threshold 60): retired on positive account. The watch closed when the
+> staged specs that allocate declared the surfaces; PLAN-20's spec now lists `doc/LogMessages.adoc` and an ADR for the step-up model
+> in its deliverable-8 documentation surface (`plans/PLAN-20-*.md` :184-186) and instructs "derive the next free id at write
+> time, never from a number in this spec" for WARN ids and "re-list `doc/adr` at write time" for the ordinal (:267-270).
+> Original text: PLAN-26 and the in-flight #589 both took `ApiSheriff-146`; the plan renumbered in its second rebase; the watch
+> closed when the staged specs that allocate (PLAN-20) declared `doc/LogMessages.adoc` / `doc/adr/`. — source: `landings/PLAN-26.md`;
+> see `## Decisions` 2026-11-23 handle-open
+> ⏳ Awaiting the operator's Actions check (`handle-open` batch B2, proposal 1, 2026-11-23): the operator reports what is green and the orchestrator retires only that; anything unreported stays open.
 - **Two PLAN-26 post-merge reads are unverified (2026-11-10).** The main-branch Maven Build run for `ad00807d` (where a
   snapshot-deploy failure appears) is not readable through the CI abstraction; the lane's `total_wall_seconds` of about 28
   hours does not reconcile with this session's clock. Closes when the run is read or the figure is explained. —
   source: `landings/PLAN-26.md`
 
+> ➜ Decided 2026-11-23 (`handle-open` batch C, operator proposal 1): in the scope of the DUE FIX PLAN (backlog over 10); entry stays open until the fix lands; staging is the operator's act. See `## Decisions` 2026-11-23 — fixes 6 (ADR) and 7 (eviction WARN or metric); gaps 2 and 3 stay open as decisions.
 - **What #581 left of PLAN-21's scope (2026-11-09).** Four gaps, none a defect of the shipped fix: (1) no ADR records
   the pending-store fairness mechanism (`doc/adr` has none; PLAN-21 deliverable 1 asked for one, and the sibling
   epic's plan did not write it); (2) no login-initiation rate limiter (`rate_limit` stays reserved, ADR-0077);
@@ -519,24 +599,28 @@ decision.
   whether any of them earns a plan; (1) is the cheapest and the one a reviewer would ask for. Closes when each is
   planned or accepted in writing. — source: PLAN-21's spec banner; #581 body
 
+> **Decided 2026-11-23 by `handle-open` (confidence 80 over threshold 60): factual question answered, one wording fix to the backlog.** Read this run from the SmallRye Fault Tolerance 6.11.1 bytecode (`GuardImpl$BuilderImpl$RetryBuilderImpl`): the retry builder's default jitter is 200 ms (`jitter = 200`, `jitterUnit = MILLIS`), so a retry is NOT a fixed 100 ms apart; the guard (`UpstreamGuards.java` :172-174) sets `.delay(100, MILLIS)` and no `.jitter(...)`, so the default applies. The "about 90 s" bound moves by at most a fraction of a second. Fix (backlog +1): soften "100 ms apart" at ADR-0064 :86, `doc/configuration/routing-and-forwarding.adoc` :566 and `UpstreamGuards.java` :141 and :85, or set `.jitter(0, MILLIS)` explicitly if a fixed gap is intended (an operator choice). Not read: the exact version Quarkus resolves at runtime (6.11.1, 6.11.2 and 6.11.4 are all in the local repository). The entry stays open until the fix lands.
 - **Retry gap "100 ms apart" is unverified against SmallRye's default jitter (2026-11-09).** ADR-0064:86,
   `doc/configuration/routing-and-forwarding.adoc` and `UpstreamGuards.java:85` state retries are 100 ms apart;
   the guard sets `.delay(100, MILLIS)` and no `.jitter(...)`. Whether the library jitters by default is not
   readable in this repository. Settle it with one measuring test or soften the wording; it moves the "about 90 s"
   bound by a fraction of a second at most. Closes on whichever. The operator decides whether it earns a plan. —
   source: `landings/PLAN-29.md` L3-1
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 3, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - **A same-day re-grounding seems to tighten the declared surface.** PLAN-24 realized 1.4x its
   declaration; the earlier measurements ran roughly 3x to 5x. PLAN-27, also re-grounded on its emit day,
   realized 28 files against 12 entries (several of them directories); 8 of its 10 undeclared files follow
   from one wire-or-remove decision the spec left to the plan. Two data points: re-grounding helps, an
   open decision in the spec does not get declared. PLAN-29 therefore declares both outcomes. — trigger:
   PLAN-28's and PLAN-29's landings; source: `landings/PLAN-24.md`, `landings/PLAN-27.md`
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 4, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - **Two plans that each add integration suites collide on the native integration job's wall-clock, even
   with disjoint files.** PLAN-25 and PLAN-V02-01 were each green alone; combined they hit the job's
   35-minute limit (raised to 60 in #408, cycle shortened by #424). The disjointness gate cannot see this.
   Before pairing any two of PLAN-24, PLAN-27, PLAN-21 and PLAN-20, check the job's current duration
   against its limit. — trigger: every `next` selection that fills a second slot; source:
   `landings/PLAN-25.md`, lesson `2026-10-12-07-005`
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 5, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - **Tests the downstream cites as its evidence — do not remove or rename unnoticed.** PLAN-25's nine
   suites (`BffReservedPathPrecedenceIT`, `BffRefreshSingleFlightIT`, `BffRefreshScopeWireIT`,
   `BffRefreshTransientFailureIT`, `BffTlsRelaxationIT`, `HtmlErrorPageIT`, `BffSessionAbsoluteTtlIT`,
@@ -545,27 +629,19 @@ decision.
   pinned, and for M-61 `BffSessionScopeParityIT.navigationNeedingARefusedScopeIsRefusedAtThePush` and
   `.xhrNeedingARefusedScopeIsRefusedAndTheSessionSurvives`. — trigger: any plan refactoring the IT
   directory; source: inbox `kidicap-gateway-downstream-012.md`, `-013.md`
-- **The downstream is on 0.2.4** and reports PLAN-19 (`session_fallback`), PLAN-23 (session-route scopes,
-  `step_up_url`) and #377 (PAR/DPoP, in client-secret mode) working against Keycloak 26.7.4, with two
-  workarounds removed. This settles the "tell the downstream" half of the fired release watch below for
-  those items. Two things it noticed and did not request: the default
-  `oidc.client_authentication.jwks_path` (`/auth/jwks`) lies outside a build-time context path, like
-  `login.default_return_url`'s default; and with a pushed request Keycloak adds a `302` to its own
-  `login-actions` address before the form. — trigger: any plan touching reserved-path defaults; source:
-  inbox `kidicap-gateway-downstream-013.md`
+> ↪ Retired 2026-11-23 on the operator's confirmation (`handle-open` batch B1, proposal 1; operator-confirmed, NOT an orchestrator decision, not re-read by the orchestrator): the "tell the downstream" half is settled by the downstream's own 0.2.4 report (PLAN-19 `session_fallback`, PLAN-23 session-route scopes and `step_up_url`, #377 PAR/DPoP in client-secret mode, working against Keycloak 26.7.4). Original text, residual kept below: the downstream noticed, and did not request, two things.
+
+- **Residual of the downstream 0.2.4 report (kept open).** Two things the downstream noticed and did not request: the default `oidc.client_authentication.jwks_path` (`/auth/jwks`) lies outside a build-time context path, like `login.default_return_url`'s default; and with a pushed request Keycloak adds a `302` to its own `login-actions` address before the form. — trigger: any plan touching reserved-path defaults; source: inbox `kidicap-gateway-downstream-013.md`
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 1, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - Declared surface versus footprint, fifth measurement: PLAN-25 declared 8 entries and touched 40 files
   (14 undeclared, 2 untouched), but 26 of the 40 sat inside its two declared directories. Directory
   declarations absorb growth that file lists do not. — source: `landings/PLAN-25.md`
 
-- **The "0.2.2 release" trigger named by five watches below has FIRED — three times over.** Tags 0.2.2,
-  0.2.3 and 0.2.4 exist (observed 2026-10-06). The actions those watches owe are: the breaking-change
-  release note for AS-14, telling the downstream that `oidc_verify_hostname` and the six routing AS items
-  are consumable, offering the release to the downstream's Helm test, and confirming the unobserved
-  main-branch Maven Builds. ⚠ Whether any of them was done is NOT observed — the orchestrator did not read
-  the release notes or the downstream. Confirm each, then retire the watch. — trigger: now
+> ↪ Retired 2026-11-23 on the operator's confirmation (`handle-open` batch B1, proposal 1; operator-confirmed, NOT an orchestrator decision, not re-read by the orchestrator): the 0.2.2 release trigger fired (tags 0.2.2, 0.2.3, 0.2.4 exist, observed 2026-10-06) and the operator confirmed its owed actions (AS-14 breaking-change note, telling the downstream about `oidc_verify_hostname` and the six routing AS items, offering the release to the downstream's Helm test, the main-branch Maven Builds) are done. Original text: the five watches below named that trigger.
 
 > ↪ Relocated to `settled.md` § "PLAN-15 PR chain, retired" — PR #320 merged; the chain is closed
 
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 2, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - Declared surfaces under-state footprints in this epic, now measured three times: PLAN-15 declared 23
   entries and touched 82 (37 undeclared, 2 declared-unused); PLAN-13 declared 19 and touched 68 (39
   undeclared, 0 unused); PLAN-14 declared 24 and touched 82 (33 undeclared, 2 unused — undeclared
@@ -574,10 +650,12 @@ decision.
   time, four times out of four — a property of this epic's spec granularity, not a per-plan lapse. Treat a `disjoint` verdict from the gate as weak evidence
   here and prefer sequencing within a subsystem. — trigger: every `next` selection; source:
   `landings/PLAN-15.md`, `landings/PLAN-13.md`, `landings/PLAN-14.md`
+> ⏳ Awaiting the operator's Actions check (`handle-open` batch B2, proposal 1, 2026-11-23): the operator reports what is green and the orchestrator retires only that; anything unreported stays open.
 - The main-branch **Maven Build** for PLAN-14's merge commit 3e3addc (incl. `deploy-snapshot`) is NOT
   verified: the CI abstraction reads PR-attached runs only, and the push run is not attached to #337. The
   PR-attached post-merge benchmark IS verified green. — trigger: confirm that run (Actions → Maven Build →
   3e3addc) before the next release; source: `landings/PLAN-14.md`
+> ⏳ Awaiting the operator's Actions check (`handle-open` batch B2, proposal 1, 2026-11-23): the operator reports what is green and the orchestrator retires only that; anything unreported stays open.
 - The main-branch runs for **three** merge commits are NOT verified, for one structural reason: the CI
   abstraction reads PR-attached runs only (`checks status --head main` returns "no pull requests found"),
   and a push to `main` has no PR. The PR-attached post-merge benchmarks ARE verified green for all three
@@ -599,6 +677,7 @@ decision.
     unobserved.
   — trigger: confirm all four before the next release, and re-run 35917940826 now; source:
   `landings/PLAN-14.md`, `landings/PLAN-16.md`, `landings/PLAN-17.md`, `landings/PLAN-18.md`
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 6, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - **A validator that guards a runtime behaviour must reuse the runtime's own normalisation, never a
   re-implemented equivalent** — PLAN-18's review-fix commit added a boot check comparing header names with
   `equalsIgnoreCase` while the runtime used `toLowerCase(Locale.ROOT)`, so the two disagreed on which
@@ -606,6 +685,7 @@ decision.
   review loop or by the tests written for that very fix. **Applies directly to PLAN-19**, which adds boot
   rules over the same auth cascade: any new rule needs a parity test driving one input set through both
   the validator and the runtime. — source: inbox `route-header-matcher-defects-001.md`
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 7, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - **A behaviour widening makes sibling docs stale, and the outline will not list them for you** —
   PLAN-19 widened `auth.token_relay` to the SESSION branch of a `session_fallback` route but its doc
   deliverable never listed `doc/user/endpoint-routes.adoc`, which states in FOUR places that `token_relay`
@@ -613,12 +693,15 @@ decision.
   became false. Before declaring the doc set, content-search the key being widened across `doc/**` and
   list what the search returns, rather than listing the documents the plan expects to touch. — source:
   inbox `plan-19-session-fallback-on-bearer-003.md`
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 8, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - Review bots keep catching doc and Javadoc claims the code does not implement — third plan running
   (PLAN-16, PLAN-18, PLAN-19). Treat prose describing behaviour as an assertion to verify against the
   code before pushing, not as narration. — source: inbox `plan-19-session-fallback-on-bearer-005.md`
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 9, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - A wording fix from a review comment must be swept across every sibling document in the same act: fixing
   the one line the bot quoted leaves the same claim standing in its neighbours. — source: inbox
   `route-header-matcher-defects-002.md`
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 10, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - **Doc-precision signals from PLAN-17, for every remaining plan** (both slipped self-review and were
   caught by the review bot, which reinforces the review-bot watch above):
   - When "absent" and "empty" take the same derived code path, the docs must say **both** — `IssuerConfig`
@@ -628,6 +711,7 @@ decision.
   - A threat-model residual claim ("every other host is still subject to X") must be qualified by every
     control that can exempt a host, not only the one just described — an explicit allowlist is
     authoritative and exempts each host it names. — source: inbox `jwks-egress-allowlist-007.md`
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 11, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - **Semantics-change sweep signals from PLAN-17** — when a plan changes the MEANING of a config key, the
   sweep must cover four places a name-only search misses, all four measured in that run:
   - every verbatim-copied compose overlay (8 of them under `integration-tests/src/main/docker/`), several
@@ -639,11 +723,13 @@ decision.
     listed `doc/technical_aspects.adoc` as expected-to-mutate on a false positive, while the file that did
     need changing needed it for a different reason.
   — source: inbox `jwks-egress-allowlist-002.md`, `-003.md`, `-004.md`, `-005.md`
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 12, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - A test that writes a file for a bind-mounted container must make it **world-readable explicitly**: under
   the build daemon's umask 077 a generated `gateway.yaml` became mode 600 / uid 1000 and the distroless
   gateway (uid 1001) refused to boot (`ApiSheriff-200`). Committed descriptors are 644, so only generated
   ones break — and the failure depends on the host umask, so it can pass on CI and fail locally. — source:
   inbox `jwks-egress-allowlist-001.md`
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 13, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - **Test-practice signals from PLAN-16, for every remaining plan in this epic** (recorded here rather than
   in the global corpus: they are API Sheriff practices, not plan-marshall component defects):
   - A metric, counter or log written in a Vert.x end handler must be AWAITED, never read right after the
@@ -663,41 +749,22 @@ decision.
   the nine-field sealed payload; PLAN-14 made it ten fields. Re-measure — natural fit for PLAN-20, which
   touches `SessionRecord` again. — trigger: PLAN-20 outline; source: inbox
   `plan-14-session-and-scopes-006.md`
-- AS-5, AS-6 and AS-14 are shipped but unreleased too, and AS-14 is **breaking** for consumers:
-  `auth.required_scopes` is removed (use `endpoint.scopes`), bearer routes now enforce `oidc.scopes`, and
-  sealed cookies from before the upgrade are rejected (one re-login). The 0.2.2 release note must say so.
-  — trigger: API Sheriff 0.2.2 release
+> ↪ Retired 2026-11-23 on the operator's confirmation (`handle-open` batch B1, proposal 1; operator-confirmed, NOT an orchestrator decision, not re-read by the orchestrator): the 0.2.2 release note for AS-14 (`auth.required_scopes` removed, bearer routes enforce `oidc.scopes`, old sealed cookies rejected) is confirmed done. Original text: AS-5, AS-6, AS-14 shipped unreleased; the 0.2.2 note must say AS-14 is breaking.
 - Sonar new-code findings recur on test-heavy api-sheriff changes (cognitive complexity in parsing code,
   test-hygiene rules in the accompanying tests). Budget for fixing them in-code inside the same PR rather
   than discovering them after the Sonar build. An `architecture enrich insight --module api-sheriff` call
   is owed for this hint — an operator action, not an orchestrator write. — trigger: each remaining plan's
   finalize; source: inbox `plan-13-defect-fixes-001.md`
-- AS-3, AS-4, AS-8, AS-9, AS-11 and AS-12 are shipped but UNRELEASED (0.2.1 is current). The downstream
-  migrates on the next parent bump, so the 0.2.2 release note is the point at which six AS items become
-  consumable. — trigger: API Sheriff 0.2.2 release.
-- The downstream asked for `egress_tls.oidc_verify_hostname` (proposed AS-15); it is ALREADY on HEAD
-  (commit 7ba9734 / #306), together with `oidc_tls_profile`, `ApiSheriff-125` and `ApiSheriff-126`, and
-  is unreleased (current 0.2.1, next 0.2.2-SNAPSHOT). Tell the downstream at the 0.2.2 release so it can
-  drop its `-Djdk.internal.httpclient.disableHostnameVerification=true` workaround and bind
-  `IDP_VERIFY_HOSTNAME` to the real key. — trigger: API Sheriff 0.2.2 release; source: inbox
-  `kidicap-gateway-downstream-001.md`
-- The downstream now runs a Helm-based in-cluster integration test covering the gateway contract against
-  Keycloak, and runs it before adopting a parent-version bump — an external regression signal for API
-  Sheriff releases. Its release tags are `<api-sheriff-version>-<n>`. — trigger: offer a release to that
-  test before publishing; source: inbox `kidicap-gateway-downstream-002.md`
-- Downstream confirmed against 0.2.1: the `egress_tls` knobs behave exactly as documented (including the
-  untrusted-chain control), `${VAR}` placeholders coerce to booleans, the JDK-triple trust route is the
-  only one that works on the distroless native image, and `ApiSheriff-17/118/120` are usable operator
-  signals. — trigger: re-check if any of those surfaces changes.
+> ↪ Retired 2026-11-23 on the operator's confirmation (`handle-open` batch B1, proposal 1; operator-confirmed, NOT an orchestrator decision, not re-read by the orchestrator): released with 0.2.2 (tags exist); the release-note trigger is confirmed done. Original text: six AS items become consumable at the 0.2.2 release note.
+> ↪ Retired 2026-11-23 on the operator's confirmation (`handle-open` batch B1, proposal 1; operator-confirmed, NOT an orchestrator decision, not re-read by the orchestrator): confirmed told at release; the downstream's report on 0.2.4 says two workarounds were removed (inbox `kidicap-gateway-downstream-013.md`). Original text: `oidc_verify_hostname` was already on HEAD (#306, `7ba9734`); tell the downstream at 0.2.2 so it can drop its hostname-verification workaround.
+> ↪ Retired 2026-11-23 on the operator's confirmation (`handle-open` batch B1, proposal 1; operator-confirmed, NOT an orchestrator decision, not re-read by the orchestrator): the offer of the release to the downstream's Helm test is confirmed done. Original text: the downstream runs a Helm in-cluster test against Keycloak before adopting a parent bump; release tags are `<api-sheriff-version>-<n>`.
+> ↪ Retired 2026-11-23 on the operator's confirmation (`handle-open` batch B1, proposal 1; operator-confirmed, NOT an orchestrator decision, not re-read by the orchestrator): historical confirmation that the `egress_tls` knobs behave as documented; the owed release actions are confirmed done. Original text: `${VAR}` placeholders coerce to booleans, the JDK-triple trust route is the only one that works on distroless native, `ApiSheriff-17/118/120` are usable operator signals; re-check if any of those surfaces changes.
 
 > ↪ Relocated to `settled.md` § "cui-http #236 and the 3.1 release, resolved" — 3.1 is released and resolved through the parent
 
-- cui-http 3.1 also brought #237 forwarded host/port/context-path hardening, #231 cookie validation,
-  #227 content-type pipeline enforcement, #229 config-surface reconciliation, #222 exception-detail
-  sanitisation and #240 client hardening — adopted silently with the parent bump, not by any plan here.
-  — trigger: watch PLAN-15's and PLAN-13's verification runs for fallout in forwarded-header and cookie
-  behaviour; re-check when the next parent bump lands.
+> ↪ Retired 2026-11-23 on the operator's confirmation (`handle-open` batch B1, proposal 1; operator-confirmed, NOT an orchestrator decision, not re-read by the orchestrator): PLAN-13 and PLAN-15 have shipped without a reported forwarded-header or cookie regression, so the fallout watch has run its course. Original text: cui-http 3.1 adopted #237, #231, #227, #229, #222 and #240 silently with the parent bump; watch PLAN-15's and PLAN-13's verification runs; re-check on the next parent bump.
 
+> ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 15, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - Source-document claims ("measured", code line references) were measured against API Sheriff
   0.2.1 — re-verify each against HEAD at decompose / outline; HEAD may already have moved
   (e.g. AS-10 references API-Sheriff#194). — trigger: every spec's verify-first clause.

@@ -594,3 +594,35 @@ stays in `epic.md`. These three bullets record the first cut and why it was made
   declined because PLAN-SEC-03 is in another epic and #581 is unmerged, so the claim cannot be verified at HEAD.
   The same pass relocated three settled sections to `settled.md` on operator confirmation (the cross-epic hold
   watch, PLAN-32's landing with the 2026-10-15 holds, the config-housekeeping defect).
+
+## Inbox drain of 2026-11-22 from security-hardening-tier-2 (all discarded)
+
+- 2026-11-22 — **Inbox drain of 3 messages, all from the closing epic `security-hardening-tier-2` (`-001`, `-005`, `-006`), all
+  discarded.** Each claim was read against `origin/main` first: the formatter-churn class is closed (#242, #415, #559, #618 are on
+  `main`), the sender's last plans shipped (#647 `2335c81d`, #651 `a2ff139e`), and the one open defect it handed over (PLAN-SEC2-07's
+  landing carried `effort=unknown`) is a plan-lifecycle runtime-stamp fact that nothing in this repository can close. No spec, no
+  defect, no watch. The sibling epics `security-hardening-tier-1` and `-tier-2` are archived, and PLAN-SEC-06 is `shipped` (#607), so
+  the 8-file overlap that held PLAN-33 back on 2026-11-15 is gone.
+
+## Four inert upstream keys, resolved by PLAN-29
+
+- **Four upstream keys parse and act on nothing**: `connect_timeout_ms`, `read_timeout_ms`,
+  `retry.max_attempts`, `retry.idempotent_only` (read at 128fd07e: bound in `UpstreamConfig`, no reader;
+  the guard uses a fixed 30 s timeout and two retries). The user guide marks them inert;
+  `doc/architecture.adoc` and `doc/variants/01-base-gateway.adoc` do not. Staged as PLAN-29. — source:
+  inbox `integration-test-evidence-follow-ups-001.md`, `landings/PLAN-27.md`
+
+## Stale shared ledger worktree, resolved by a land resync
+
+- **The shared ledger worktree was 23 commits behind `origin/main`** when this drain ran, so the sibling
+  epics' queue rows it holds were stale: it showed PLAN-V02-01 as `launched` while `main` has it
+  `shipped`. `corpus cross-check` and the `next` gate read the worktree, so they judged the in-flight set
+  from stale rows; the orchestrator read the rows from `origin/main` by hand instead. The next `land`
+  resyncs the tree. Mechanism (another session lands the sibling ledger from elsewhere and this tree is
+  never pulled) is plugin-side. — observed 2026-10-12
+
+## PLAN-31 surface_delta unmeasured, read by hand
+
+- **PLAN-31's `surface_delta` is `unmeasured`** (the landing supplied no declared or realized paths), so the realized
+  footprint was not reconciled by the machine; this analysis read the diff's six files by hand (all declared). — trigger:
+  none; source: `landings/PLAN-31.md`
