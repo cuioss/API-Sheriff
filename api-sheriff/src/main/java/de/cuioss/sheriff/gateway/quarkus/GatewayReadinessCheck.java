@@ -82,8 +82,8 @@ import org.jspecify.annotations.Nullable;
  *       reported {@code not-applicable} and does not gate readiness.</li>
  *   <li><strong>OIDC provider metadata (BFF, both session modes)</strong> — when the gateway runs an
  *       active BFF runtime, {@code oidc.session.mode: server} or {@code cookie}, the probe adds an
- *       {@code oidc=<mode>} datum and an {@code oidc_discovery} datum read from the non-fetching
- *       {@code status()} of the runtime's one engine {@link CachingDiscoveryResolver}:
+ *       {@code oidc=<mode>} datum and an {@code oidc_discovery} datum read through the non-fetching
+ *       {@link DiscoveryState} view of the runtime's one engine {@link CachingDiscoveryResolver}:
  *       {@code not-attempted} (no engine use has asked for the provider metadata yet), {@code resolved}
  *       (the most recent resolution produced it) or {@code failed} (the most recent resolution threw).
  *       The probe sends no network request; discovery stays lazy, so a fresh instance reports
@@ -149,7 +149,37 @@ public class GatewayReadinessCheck implements HealthCheck {
     private final GatewayConfig gatewayConfig;
     private final Instance<TokenValidator> gatewayValidator;
     private final Instance<IssuerKeySetStatus> issuerKeySetStatus;
-    private final Instance<CachingDiscoveryResolver> discoveryResolver;
+    private final Instance<DiscoveryState> discoveryState;
+
+    /**
+     * The non-fetching view of the state of the BFF runtime's one engine
+     * {@link CachingDiscoveryResolver}, published by {@link BffRuntimeProducer#discoveryState()}.
+     * <p>
+     * A gateway-owned type rather than the resolver itself: the token-sheriff-client Quarkus extension
+     * refuses to start an application that declares an injection point of {@link CachingDiscoveryResolver}
+     * unless its own {@code sheriff.client.discovery-cache.*} keys are set, and the gateway's cache values
+     * are fixed, not configuration (ADR-0084). The view carries the state alone, so the probe cannot read
+     * the status's last-failure cause or last-success instant (ADR-0079). Implementations are thread-safe
+     * and never fetch.
+     *
+     * @since 1.0
+     */
+    @FunctionalInterface
+    public interface DiscoveryState {
+
+        /**
+         * @return the resolver's current state, read without resolving anything
+         */
+        DiscoveryCacheStatus.State state();
+
+        /**
+         * @param resolver the caching discovery resolver whose state is viewed
+         * @return a live view reading {@code resolver.status().state()} on every call, never resolving
+         */
+        static DiscoveryState of(CachingDiscoveryResolver resolver) {
+            return () -> resolver.status().state();
+        }
+    }
 
     /**
      * @param gatewayConfig      the bound, boot-validated gateway document
@@ -157,18 +187,18 @@ public class GatewayReadinessCheck implements HealthCheck {
      * @param issuerKeySetStatus the lazily-resolved, non-fetching per-issuer key-set view published by
      *                           the validator's assembly; resolved only when {@code token_validation}
      *                           is configured
-     * @param discoveryResolver  the lazily-resolved caching discovery resolver of the BFF runtime, whose
-     *                           non-fetching status is read; resolved only when the gateway runs an
-     *                           active BFF runtime, which a bearer-only gateway never does
+     * @param discoveryState     the lazily-resolved, non-fetching state view of the BFF runtime's caching
+     *                           discovery resolver; resolved only when the gateway runs an active BFF
+     *                           runtime, which a bearer-only gateway never does
      */
     @Inject
     public GatewayReadinessCheck(GatewayConfig gatewayConfig,
             @GatewayValidator Instance<TokenValidator> gatewayValidator,
-            Instance<IssuerKeySetStatus> issuerKeySetStatus, Instance<CachingDiscoveryResolver> discoveryResolver) {
+            Instance<IssuerKeySetStatus> issuerKeySetStatus, Instance<DiscoveryState> discoveryState) {
         this.gatewayConfig = gatewayConfig;
         this.gatewayValidator = gatewayValidator;
         this.issuerKeySetStatus = issuerKeySetStatus;
-        this.discoveryResolver = discoveryResolver;
+        this.discoveryState = discoveryState;
     }
 
     /**
@@ -195,7 +225,7 @@ public class GatewayReadinessCheck implements HealthCheck {
             // reported beside the verdict and never feeds it: a provider-metadata outage stops the
             // identity-provider legs only, not the bearer-only and public routes.
             builder.withData(DATA_OIDC, bffMode)
-                    .withData(DATA_OIDC_DISCOVERY, discoveryToken(discoveryResolver.get().status().state()));
+                    .withData(DATA_OIDC_DISCOVERY, discoveryToken(discoveryState.get().state()));
         }
 
         TokenValidationConfig tokenValidation = gatewayConfig.tokenValidation();

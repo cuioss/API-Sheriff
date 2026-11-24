@@ -77,10 +77,13 @@ values (operator decision `discovery-ttl`):
 * *Minimum refresh interval: 30 seconds.* After a failed refresh the next attempt waits 30 seconds, so
   an identity-provider outage is not hit by every request. Before the first success this means a failed
   discovery is retried at most every 30 seconds, where the memo retried on every engine use.
-* *No jitter and no configuration key.* The values are constants of `BffRuntimeProducer`.
+* *No jitter and no configuration key.* The values are constants of `BffRuntimeProducer`. The
+  resolver is the producer's own and is not a CDI bean: the token-sheriff-client Quarkus extension
+  publishes its own `CachingDiscoveryResolver`, configured from its `sheriff.client.discovery-cache.*`
+  keys, and refuses to start an application that injects that type without those keys.
 
-The readiness probe reads the same resolver's status for its `oidc_discovery` datum, whose text is
-unchanged (ADR-0079).
+The readiness probe reads the same resolver's state, through the gateway-owned view the producer
+publishes, for its `oidc_discovery` datum, whose text is unchanged (ADR-0079).
 
 == Alternatives rejected
 
@@ -118,6 +121,16 @@ The time to live, the grace period and the minimum refresh interval would be con
 Rejected at outline by the operator. The values bound how long a stale document may be served and how
 hard an outage is retried, and no deployment has asked to tune them. A key that nobody sets is a key
 nobody tests.
+
+=== Use the extension's discovery cache
+
+The gateway would set the extension's `sheriff.client.discovery-cache.*` keys to the fixed values in
+`application.properties` and inject the `CachingDiscoveryResolver` the extension produces.
+
+Rejected for the same reason as the previous alternative: the values would become configuration keys
+that any environment variable can override. The extension's resolver is also built over the
+extension's own `ClientConfiguration`, not over the back-channel configuration with the pinned TLS
+posture every engine leg of the runtime dials with (ADR-0045).
 
 == Consequences
 

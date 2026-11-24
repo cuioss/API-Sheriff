@@ -866,7 +866,8 @@ class SheriffMetricsTest {
                 return StubDiscovery.metadata();
             }, Duration.ofHours(1), Duration.ZERO, InstantSource.fixed(Instant.EPOCH));
             GatewayConfig config = configWith(null, null, bffMode(OidcConfig.Session.MODE_SERVER));
-            GatewayReadinessCheck check = notApplicableCheck(config, FakeInstance.resolving(resolver));
+            GatewayReadinessCheck check = notApplicableCheck(config,
+                    FakeInstance.resolving(GatewayReadinessCheck.DiscoveryState.of(resolver)));
 
             for (int poll = 0; poll < 5; poll++) {
                 check.call();
@@ -1129,9 +1130,9 @@ class SheriffMetricsTest {
             return checkWith(config, keySets, FakeInstance.mustNotResolve());
         }
 
-        /** A probe whose validator resolves, whose key-set view is {@code keySets} and whose discovery resolver is {@code discovery}. */
+        /** A probe whose validator resolves, whose key-set view is {@code keySets} and whose discovery state view is {@code discovery}. */
         private GatewayReadinessCheck checkWith(GatewayConfig config, IssuerKeySetStatus keySets,
-                Instance<CachingDiscoveryResolver> discovery) {
+                Instance<GatewayReadinessCheck.DiscoveryState> discovery) {
             return new GatewayReadinessCheck(config, FakeInstance.resolving(null), FakeInstance.resolving(keySets),
                     discovery);
         }
@@ -1146,35 +1147,35 @@ class SheriffMetricsTest {
 
         /** A probe whose validator resolution throws {@code failure}; the key-set view must stay unresolved. */
         private GatewayReadinessCheck failingCheck(GatewayConfig config, RuntimeException failure,
-                Instance<CachingDiscoveryResolver> discovery) {
+                Instance<GatewayReadinessCheck.DiscoveryState> discovery) {
             return new GatewayReadinessCheck(config, FakeInstance.failing(failure), FakeInstance.mustNotResolve(),
                     discovery);
         }
 
         /**
          * A probe for a gateway without {@code token_validation} and without an active BFF runtime:
-         * neither the validator, nor the key-set view, nor the discovery resolver may be resolved.
+         * neither the validator, nor the key-set view, nor the discovery state view may be resolved.
          */
         private GatewayReadinessCheck notApplicableCheck(GatewayConfig config) {
             return notApplicableCheck(config, FakeInstance.mustNotResolve());
         }
 
         /**
-         * A probe for a gateway without {@code token_validation} whose discovery resolver is
+         * A probe for a gateway without {@code token_validation} whose discovery state view is
          * {@code discovery}: neither the validator nor the key-set view may be resolved on that leg.
          */
         private GatewayReadinessCheck notApplicableCheck(GatewayConfig config,
-                Instance<CachingDiscoveryResolver> discovery) {
+                Instance<GatewayReadinessCheck.DiscoveryState> discovery) {
             return new GatewayReadinessCheck(config, FakeInstance.mustNotResolve(), FakeInstance.mustNotResolve(),
                     discovery);
         }
 
         /**
-         * @return the engine caching resolver of an active BFF runtime, driven through real refreshes into
-         *         {@code state}
+         * @return the state view of an active BFF runtime's engine caching resolver, driven through real
+         *         refreshes into {@code state}
          */
-        private Instance<CachingDiscoveryResolver> discovery(State state) {
-            return FakeInstance.resolving(StubDiscovery.inState(state));
+        private Instance<GatewayReadinessCheck.DiscoveryState> discovery(State state) {
+            return FakeInstance.resolving(GatewayReadinessCheck.DiscoveryState.of(StubDiscovery.inState(state)));
         }
 
         private OidcConfig bffMode(String mode) {

@@ -288,9 +288,11 @@ import org.jspecify.annotations.Nullable;
  * and no jitter is applied. The discovery-dependent {@code end_session_endpoint} is read by the logout
  * leg per request, after the local session has been ended: a provider that publishes none, or metadata
  * that cannot be obtained, leaves the logout a local one that lands on {@code final_redirect}. The
- * same resolver is published as a bean, so the readiness probe reads its non-fetching
- * {@code status()} under {@code oidc_discovery}; boot never resolves, so a fresh runtime reports
- * {@code not-attempted}. A bearer-only gateway has no resolver.
+ * resolver itself is not a bean — the token-sheriff-client extension refuses to boot an application
+ * that injects one without its own {@code sheriff.client.discovery-cache.*} keys — so the producer
+ * publishes a gateway-owned {@link GatewayReadinessCheck.DiscoveryState} view over it, and the readiness
+ * probe reads the resolver's non-fetching state under {@code oidc_discovery}; boot never resolves, so a
+ * fresh runtime reports {@code not-attempted}. A bearer-only gateway has no resolver.
  * <p>
  * <strong>The identity-provider back-channel carries a pinned TLS posture (ADR-0045).</strong> The
  * {@link ClientConfiguration} every engine seam dials the identity provider with — discovery, the
@@ -416,7 +418,7 @@ public class BffRuntimeProducer {
     /**
      * The one back-channel configuration of the active runtime and the one caching discovery resolver
      * over it, assembled on first need by whichever of {@link #bffRuntime()} and
-     * {@link #discoveryResolver()} runs first, so the runtime's engine legs and the readiness probe share
+     * {@link #discoveryState()} runs first, so the runtime's engine legs and the readiness probe share
      * the same resolver and every leg dials with the same configuration. {@code null} until then.
      */
     private @Nullable BackChannel backChannel;
@@ -484,20 +486,40 @@ public class BffRuntimeProducer {
     }
 
     /**
-     * Produces the active runtime's one engine caching discovery resolver, whose non-fetching
-     * {@code status()} the readiness probe reports under {@code oidc_discovery}.
+     * Produces the non-fetching view of the active runtime's provider-metadata state, which the
+     * readiness probe reports under {@code oidc_discovery}.
      * <p>
-     * {@link Singleton} because it is the very instance every engine leg of the runtime resolves the
-     * provider metadata through. Producing it never resolves the metadata and never builds the runtime.
-     * A bearer-only gateway has no OIDC back-channel and therefore no resolver: callers resolve this bean
-     * only after {@link #isBffMode(OidcConfig)} has confirmed an active runtime.
+     * The view is a gateway-owned type on purpose, and the engine {@link CachingDiscoveryResolver} is
+     * deliberately <em>not</em> published as a bean. The token-sheriff-client Quarkus extension ships its
+     * own producer of that type, configured from its {@code sheriff.client.discovery-cache.*} keys, and
+     * refuses to start any application that declares an injection point of it — whatever the qualifier,
+     * {@link jakarta.enterprise.inject.Instance} included — unless those keys are set. Publishing the
+     * resolver would therefore either stop the boot or turn the fixed cache values (ADR-0084) into
+     * extension configuration keys. The view exposes the resolver's state alone, never its last-failure
+     * cause or last-success instant (ADR-0079).
+     * <p>
+     * {@link Singleton} because the view is fixed once the resolver is chosen. Producing it never
+     * resolves the metadata and never builds the runtime. A bearer-only gateway has no resolver: callers
+     * resolve this bean only after {@link #isBffMode(OidcConfig)} has confirmed an active runtime.
      *
-     * @return the runtime's caching discovery resolver
+     * @return the state view over the runtime's caching discovery resolver
      * @throws IllegalStateException when the gateway runs no BFF runtime
      */
     @Produces
     @Singleton
-    public CachingDiscoveryResolver discoveryResolver() {
+    public GatewayReadinessCheck.DiscoveryState discoveryState() {
+        return GatewayReadinessCheck.DiscoveryState.of(discoveryResolver());
+    }
+
+    /**
+     * The active runtime's one engine caching discovery resolver, the very instance every engine leg
+     * resolves the provider metadata through and {@link #discoveryState()} reads. Not a bean, see
+     * {@link #discoveryState()}. Calling it never resolves the metadata and never builds the runtime.
+     *
+     * @return the runtime's caching discovery resolver
+     * @throws IllegalStateException when the gateway runs no BFF runtime
+     */
+    CachingDiscoveryResolver discoveryResolver() {
         OidcConfig oidc = gatewayConfig.oidc();
         if (oidc == null || !isBffMode(oidc)) {
             throw new IllegalStateException("No BFF-mode oidc block — the gateway resolves no OIDC provider metadata");

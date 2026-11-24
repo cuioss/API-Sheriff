@@ -207,7 +207,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * stage are wired) only when a global {@code oidc} block with {@code session.mode=server} and a
  * {@code redirect_uri} is configured, and inert (bearer-only) otherwise. Assembly resolves no OIDC
  * discovery (that is deferred to first engine use), so the producer builds a working runtime without
- * a live IdP, and the {@link CachingDiscoveryResolver} it publishes for readiness reports
+ * a live IdP, and the readiness view it publishes over its {@link CachingDiscoveryResolver} reports
  * {@code not-attempted} until an engine use asks for the provider metadata. The requests a produced
  * runtime sends on its back-channel — discovery, the pushed authorization request, the code exchange, the refresh grant and revocation — are asserted against
  * {@link StubIdentityProvider}; the round-trips that need a real grant are covered by the Keycloak
@@ -903,8 +903,9 @@ class BffRuntimeProducerTest {
     }
 
     /**
-     * The engine {@link CachingDiscoveryResolver} the producer publishes for readiness: an active
-     * runtime in either session mode gets the one resolver its engine legs resolve through, which
+     * The engine {@link CachingDiscoveryResolver} whose state the producer publishes for readiness, as a
+     * gateway-owned {@link GatewayReadinessCheck.DiscoveryState} view rather than as a bean of the engine
+     * type: an active runtime in either session mode gets the one resolver its engine legs resolve through, which
      * runtime assembly leaves {@code NOT_ATTEMPTED} because boot never resolves the provider metadata;
      * a gateway without an active runtime has none. The cache's fixed time to live and grace period are
      * pinned against the real engine cache. The transitions driven by an engine use against a live
@@ -929,6 +930,9 @@ class BffRuntimeProducerTest {
                                 () -> assertSame(resolver, producer.discoveryResolver(),
                                         "the runtime and readiness share one resolver"),
                                 () -> assertEquals(DiscoveryCacheStatus.State.NOT_ATTEMPTED,
+                                        producer.discoveryState().state(),
+                                        "the published readiness view reads that resolver and resolves nothing"),
+                                () -> assertEquals(DiscoveryCacheStatus.State.NOT_ATTEMPTED,
                                         resolver.status().state(), "assembly resolves no provider metadata"));
                     }));
         }
@@ -941,7 +945,9 @@ class BffRuntimeProducerTest {
 
             assertAll("no oidc block, no BFF runtime, no discovery datum",
                     () -> assertFalse(producer.bffRuntime().isActive(), "precondition: the runtime is inert"),
-                    () -> assertThrows(IllegalStateException.class, producer::discoveryResolver));
+                    () -> assertThrows(IllegalStateException.class, producer::discoveryResolver),
+                    () -> assertThrows(IllegalStateException.class, producer::discoveryState,
+                            "no resolver, so no readiness view to publish"));
         }
 
         @Test
@@ -2814,8 +2820,8 @@ class BffRuntimeProducerTest {
         @DisplayName("producing the view first builds no runtime and resolves nothing; the runtime then records into it")
         void theViewIsTheOneTheRuntimeRecordsInto() {
             BffRuntimeProducer producer = stubProducer(stubOidc().build());
-            CachingDiscoveryResolver view = producer.discoveryResolver();
-            DiscoveryCacheStatus.State beforeTheRuntime = view.status().state();
+            GatewayReadinessCheck.DiscoveryState view = producer.discoveryState();
+            DiscoveryCacheStatus.State beforeTheRuntime = view.state();
             int discoveriesBeforeTheRuntime = stub.received(StubIdentityProvider.Endpoint.DISCOVERY).size();
             BffRuntime runtime = producer.bffRuntime();
 
@@ -2826,7 +2832,7 @@ class BffRuntimeProducerTest {
                             "producing the view resolves nothing"),
                     () -> assertEquals(0, discoveriesBeforeTheRuntime, "producing the view asks the stub for nothing"),
                     () -> assertEquals(302, answer.status(), "precondition: the login went through"),
-                    () -> assertEquals(DiscoveryCacheStatus.State.RESOLVED, view.status().state(),
+                    () -> assertEquals(DiscoveryCacheStatus.State.RESOLVED, view.state(),
                             "the view read before the runtime existed shows what the runtime's login recorded"));
         }
 
