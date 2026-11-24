@@ -2,10 +2,10 @@
   "id": "PLAN-33",
   "slug": "adapt-to-token-sheriff-0-9-9",
   "workstream": "WS-05",
-  "status": "running",
+  "status": "shipped",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "plan_marshall_plan_id": "plan-33-adapt-to-token-sheriff-0-9-9",
+  "pr": "#656",
+  "landing": "landings/PLAN-33.md",
   "seq": 21
 }

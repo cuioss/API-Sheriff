@@ -45,12 +45,13 @@ decision.
 
 <!-- ANNOTATION ZONE — hand-written, and deliberately OUTSIDE the generated table markers. -->
 
-- PLAN-20 — staged, HELD 2026-11-22 on the operator's call behind PLAN-33: the two share 14 files (`TokenRefreshCoordinator`
+- PLAN-20 — staged, was HELD 2026-11-22 behind PLAN-33, which landed 2026-11-24 (#656); re-ground it before emitting. The hold's reason: the two share 14 files (`TokenRefreshCoordinator`
   and its test, `CallbackEndpoint`, ADR-0057/0063/0074, the threat model, `LogMessages`, two JWKS ITs). Re-ground it again against
   PLAN-33's result before emitting; it still needs the operator decision at outline (replay against the streaming stance) and must
   call the step-up result verifier.
-- PLAN-33 — staged 2026-11-12, **emitted and `launched` 2026-11-22** (operator chose it alone over PLAN-20; the cleanup
-  re-ground of the same day is in its `## Expected Surface` banner). WS-05; the operator's next plan to run. Its overlap with PLAN-31 on
+- PLAN-33 — **SHIPPED 2026-11-24 as #656 (`6ea8bf31`)**; D4 dropped (dependency kept for PLAN-34), D1-D3 and D5 met with findings:
+  see `landings/PLAN-33.md`. The note below is the pre-landing record. Staged 2026-11-12, emitted and `launched` 2026-11-22 (operator chose it alone over PLAN-20; the cleanup
+  re-ground of the same day is in its `## Expected Surface` banner). WS-05. Its overlap with PLAN-31 on
   `RetryingJwksLoader` and its test is gone: PLAN-31 merged as #605 (2026-11-15), so the spec's surface now
   sits on the merged `RefreshBasis` rule. Staged PLAN-SEC-06 (sibling epic) deliverable 3 also edits
   `RetryingJwksLoader.settleRefresh`: re-run the cross-check at the gate.
@@ -58,8 +59,8 @@ decision.
   `token-sheriff-client-quarkus` (it interacts with PLAN-34 D1: TokenSheriff's native-image plan would put
   the registration into that extension), readiness for a stale-degraded issuer.
 - PLAN-34 — staged 2026-11-12, WS-05; **TokenSheriff 0.9.10 released 2026-11-23 and PINNED on `main`** (bump PR #658 merged
-  `4213eb1f`, with a test-only fix for the dormant engine `ParClient`). Still BLOCKED, now on PLAN-33 (#656) alone, which has not
-  landed. Not emitted; first step at outline is the verify-first read of the resolved jar. Depends on PLAN-33 and on TokenSheriff epic
+  `4213eb1f`, with a test-only fix for the dormant engine `ParClient`). **Unblocked 2026-11-24: PLAN-33 landed (#656).** Not emitted: every
+  claim is stale against the new `main` and the verify-first re-ground of the resolved 0.9.10 jar is owed first. first step at outline is the verify-first read of the resolved jar. Depends on PLAN-33 and on TokenSheriff epic
   `api-sheriff-seams`; every TokenSheriff API name in it is a proposal to re-verify against the
   released jar. Shares `BffRuntimeProducer` with PLAN-20; the order of PLAN-20 and PLAN-34 is open.
 
@@ -190,6 +191,28 @@ decision.
 
 ## Decisions
 
+- 2026-11-24 — **Emit: PLAN-34 alone (operator answer to the overlap prompt).** `parallelization_scope` 2, nothing in flight, so two
+  slots. PLAN-20 and PLAN-34 both pass the prep-ready test (no blocking verdict; every claim of both is stale after #656, and
+  staleness never blocks), the declared test (both spec-skills declarations flagged only, `emit_allowed`) and the disjointness test
+  against in-flight work (none). Emitting both would have shared 36 files; the operator chose PLAN-34 only. `auto_emit` is true, so
+  PLAN-34 is recorded `launched`; launched to running stays operator-owned. PLAN-20 stays held: re-ground against the new `main`, take
+  its outline decision, call the step-up result verifier. The re-ground of PLAN-34 is its own first step (verify-first read of the
+  resolved 0.9.10 jar), as the Queue annotations say.
+- 2026-11-24 — **`analyze`: PLAN-33 landed (#656, `6ea8bf31`) and was reconciled.** One inbox landing drained (incomplete at three
+  optional-class keys, recorded as an Open Defect), a three-layer read by one read-only leaf, eight points re-read by the orchestrator,
+  the rest recorded as leads. D4 was dropped by design, D1-D3 and D5 met; no blocker. The row is `shipped`, stamped `#656`,
+  `landings/PLAN-33.md`, `plan-33-adapt-to-token-sheriff-0-9-9`. **Fix routing:** the new findings (L3-1 test gap, L3-2 Javadoc, L2-1
+  logout-verifier WARN reason, L2-2 `destroyIfCurrent` test, `@since`, doc wording lag) join the DUE fix plan, which is still
+  unstaged, so the proposed scope grows from nine to **twelve** deliverables (the spec cap), with the five held `RetryingJwksLoader`
+  fixes that were to join later: re-group at staging, or split. The layer-3 defects were reported to the operator in the same turn.
+  **Open consequence for the held fixes:** PLAN-33 changed `RetryingJwksLoader` (`getLoaderStatus`, `settleRefresh` neighbourhood), so
+  the five fixes of item 2 must be re-read against the merged file at PLAN-34's re-ground before they are routed. **PLAN-34 and PLAN-20:**
+  every claim of both is now stale against the new `main`; both need the verify-first re-ground, PLAN-34 against the resolved 0.9.10 jar.
+- 2026-11-24 — **Batch B2 closed by the operator's Actions check.** The operator ran `.plan/temp/check-main-runs.sh`. Maven Build is
+  GREEN with `deploy-snapshot` success on `5aa17338`, `3e3addc`, `69b322b`, `c1b09c7`, `f6067588` and `ad00807d`; Integration Tests
+  is GREEN on `5aa17338`. Those four entries are retired in place. **Kept open (two residuals):** PLAN-18's Integration Tests run
+  `35917940826` is RED (the known infrastructure failure, no test executed; re-run or accept as unverifiable), and the PLAN-26 lane
+  wall-clock figure. The orchestrator did not read the runs itself; the account is the operator's output.
 - 2026-11-23 — **Batch C: a fix plan is DUE (operator, proposal 1; threshold rule of the standing fix-routing entry).** The pending-fix
   backlog is now about 17 (the 8 earlier entries plus 9 new ones), over 10, so under the standing rule a fix plan is created and later
   fixes join it first. **Proposed scope, nine deliverables after grouping (cap 12):** (1) `Vary: Accept` on negotiated error
@@ -220,7 +243,7 @@ decision.
   decisions, not orchestrator decisions.
 - 2026-11-23 — **Threshold lowered to 60; second `handle-open` re-read pass (operator: "revisit all finding, decide if you are 60%
   confident").** The `orchestrator.decision_confidence_threshold` knob was found at 90 (the earlier change to 75 was not on disk)
-  and is now 60, uncommitted in `.plan/marshal.json`. Decided this pass: item 5 narrowed (2 fixes to the backlog, applied at the
+  and was set to 60 for this run only; the operator reverted it to 90 on 2026-11-24, so the knob stays 90 and nothing is owed. Decided this pass: item 5 narrowed (2 fixes to the backlog, applied at the
   threshold on the operator's wording), the WARN-id/ADR-ordinal watch retired on PLAN-20's spec, and the retry-jitter question
   answered (SmallRye's default jitter is 200 ms; 1 wording fix to the backlog). **Backlog now: 8** (5 from item 2, 2 from item 5,
   1 retry wording), under 10, so no fix plan yet; target plan still held for PLAN-34's re-ground. Items 3 and 4 were answered by
@@ -382,6 +405,25 @@ decision.
 
 ## Open Defects
 
+- **PLAN-33's inbox landing is incomplete (2026-11-24).** `plan-33-adapt-to-token-sheriff-0-9-9-001.md` misses the required keys
+  `effort`, `review_body_findings_total` and `review_body_findings_handled` (`inbox landing-check`: `complete: false`); it was drained
+  and reconciled as far as it goes. A manual paste from that plan may still surface the missing facts. — source: `landings/PLAN-33.md`
+- **PLAN-33 layer-3 and layer-2 findings, reported to the operator, nothing fixed inline (2026-11-24).** No blocker. (L3-1, major but
+  conditional) `degradedLoaderRejectsAValidTokenFailClosed` degrades the loader BEFORE the validator is built, so whether the library
+  issuer cache re-reads the status on every validation (an issuer admitted and degraded afterwards) is tested nowhere here, and the
+  `max_staleness_seconds` fail-closed claim rests on it; the 0.9.10 `IssuerConfigCache` was not decompiled
+  (`TokenValidatorProducerTest.java:1272`). (L3-2) the `RetryingJwksLoader` Javadoc :756 and :822-824 still says an unknown key id "can
+  still claim a refresh that re-admits the issuer", which ADR-0063 contradicts. (L3-3, lead) after a first load the library recovered
+  itself, `runRetry` replaces the recovered `OK` delegate with a fresh `LOADING` one (:501-503). (L3-4, lead) the loser of a
+  refresh-versus-widening race abandons its rotated refresh token unrevoked (`TokenRefreshCoordinator.java:666`; operator-accepted
+  residual, a reasoning not a test). (L3-5, lead) a refresh that loses to a widening gets `NO_SESSION` (:630-632). (L2-1) the logout
+  verifier now refuses a non-`OK` issuer (`SignatureOnlyTokenVerifier.java:149-150`), explained by no deliverable and logged as
+  "signature-rejected", which misleads during a JWKS outage. (L2-2) `CookieSessionBinding.destroyIfCurrent` has no direct test.
+  (L1-1) the Done-when trace YAML key to rejected token is split in two links. (L3-6) `SessionBinding.PersistResult` factories
+  :360, :367, :375 lack `@since`. (L3-7) wording lag in `doc/user/bff-session.adoc` :1003 and :870, `doc/variants/02-bff-session.adoc`
+  :208 and four ADR or doc tables the PR left open on purpose. **Routed (standing fix-routing rule): these join the due fix plan's
+  scope**, see `## Decisions` 2026-11-24. — source: `landings/PLAN-33.md`
+
 > ↪ Decided 2026-11-23 by the operator in `handle-open` (item 1; the recommendation sat at confidence 70, below the 75 threshold, so it was
 > put to the operator): **the narrowing is ACCEPTED in writing.** PLAN-31's shipped publish rule discards a refresh whose basis moved
 > during the fetch and counts a retired delegate's key ids as held, which is narrower than the frozen D1 "publish when the key ids differ
@@ -542,12 +584,7 @@ decision.
 
 ## Watches
 
-> ⏳ Awaiting the operator's Actions check (`handle-open` batch B2, proposal 1, 2026-11-23): the operator reports what is green and the orchestrator retires only that; anything unreported stays open.
-- The push runs of **Maven Build and Integration Tests on PLAN-31's merge commit `5aa17338`** are NOT verified: the CI
-  abstraction reads PR-attached runs only. Verified green and PR-attached: merge-group run `43710119529`, every PR check
-  including SonarCloud, and the post-merge benchmark (`43711768997`). `main` has moved on since (#618 to #622), so a
-  later green run on a descendant does not stand in for it. — trigger: confirm Actions → Maven Build → `5aa17338`
-  before the next release; source: `landings/PLAN-31.md`
+> ↪ Retired 2026-11-24 on the operator's Actions check (`handle-open` batch B2; operator-run `.plan/temp/check-main-runs.sh`, not read by the orchestrator): both push runs on PLAN-31's merge commit `5aa17338` are GREEN: Maven Build run 43711766593 (`deploy-snapshot`: success) and Integration Tests run 43711766606. Original text: the CI abstraction reads PR-attached runs only, so the push runs were unverified.
 > ↪ Relocated to `settled.md` § "PLAN-31 surface_delta unmeasured, read by hand" — PLAN-31 shipped #605; the six-file diff was read by hand and all six were declared; the watch had no trigger
 
 > ↪ Relocated to `settled.md` § "Cross-epic hold on api-sheriff-0-2-0, resolved by its closure" — every sibling plan it names has shipped and the sibling epic is closed and archived
@@ -583,11 +620,9 @@ decision.
 > Original text: PLAN-26 and the in-flight #589 both took `ApiSheriff-146`; the plan renumbered in its second rebase; the watch
 > closed when the staged specs that allocate (PLAN-20) declared `doc/LogMessages.adoc` / `doc/adr/`. — source: `landings/PLAN-26.md`;
 > see `## Decisions` 2026-11-23 handle-open
-> ⏳ Awaiting the operator's Actions check (`handle-open` batch B2, proposal 1, 2026-11-23): the operator reports what is green and the orchestrator retires only that; anything unreported stays open.
-- **Two PLAN-26 post-merge reads are unverified (2026-11-10).** The main-branch Maven Build run for `ad00807d` (where a
-  snapshot-deploy failure appears) is not readable through the CI abstraction; the lane's `total_wall_seconds` of about 28
-  hours does not reconcile with this session's clock. Closes when the run is read or the figure is explained. —
-  source: `landings/PLAN-26.md`
+> ↪ Retired 2026-11-24 on the operator's Actions check (`handle-open` batch B2; operator-run `.plan/temp/check-main-runs.sh`, not read by the orchestrator): the Maven Build push run 42850369804 on `ad00807d` is GREEN, `deploy-snapshot`: success, so the snapshot-deploy half is closed. Original text: that run was not readable through the CI abstraction.
+
+- **PLAN-26 lane `total_wall_seconds` of about 28 hours does not reconcile with the session clock (kept open).** Closes when the figure is explained. No Actions lookup settles it. — source: `landings/PLAN-26.md`
 
 > ➜ Decided 2026-11-23 (`handle-open` batch C, operator proposal 1): in the scope of the DUE FIX PLAN (backlog over 10); entry stays open until the fix lands; staging is the operator's act. See `## Decisions` 2026-11-23 — fixes 6 (ADR) and 7 (eviction WARN or metric); gaps 2 and 3 stay open as decisions.
 - **What #581 left of PLAN-21's scope (2026-11-09).** Four gaps, none a defect of the shipped fix: (1) no ADR records
@@ -650,33 +685,10 @@ decision.
   time, four times out of four — a property of this epic's spec granularity, not a per-plan lapse. Treat a `disjoint` verdict from the gate as weak evidence
   here and prefer sequencing within a subsystem. — trigger: every `next` selection; source:
   `landings/PLAN-15.md`, `landings/PLAN-13.md`, `landings/PLAN-14.md`
-> ⏳ Awaiting the operator's Actions check (`handle-open` batch B2, proposal 1, 2026-11-23): the operator reports what is green and the orchestrator retires only that; anything unreported stays open.
-- The main-branch **Maven Build** for PLAN-14's merge commit 3e3addc (incl. `deploy-snapshot`) is NOT
-  verified: the CI abstraction reads PR-attached runs only, and the push run is not attached to #337. The
-  PR-attached post-merge benchmark IS verified green. — trigger: confirm that run (Actions → Maven Build →
-  3e3addc) before the next release; source: `landings/PLAN-14.md`
-> ⏳ Awaiting the operator's Actions check (`handle-open` batch B2, proposal 1, 2026-11-23): the operator reports what is green and the orchestrator retires only that; anything unreported stays open.
-- The main-branch runs for **three** merge commits are NOT verified, for one structural reason: the CI
-  abstraction reads PR-attached runs only (`checks status --head main` returns "no pull requests found"),
-  and a push to `main` has no PR. The PR-attached post-merge benchmarks ARE verified green for all three
-  (#337 run 35661424860, #343 run 35758705252, #345 run 35802988238).
-  - 3e3addc (PLAN-14) — Maven Build incl. `deploy-snapshot`: unobserved.
-  - 69b322b (PLAN-16) — same: unobserved.
-  - c1b09c7 (PLAN-17) — **Integration Tests run 35802987168 SETTLED 2026-09-23**: attempt 1 failed in
-    `WebSocketRelayStageTest.relaysBidirectionalTextFrames` (30 s echo timeout), attempts 2 and 3 were
-    green (3612/0 unit, 222/0 IT). Reported by the filing plan, which watched the re-run; the
-    orchestrator cannot read a push run itself. So it is INTERMITTENT, not reproducible — and **not
-    dismissed as a runner flake**: the attempt-1 diagnostics (all Vert.x threads idle in `EPoll.wait`,
-    both relay legs ESTABLISHED, `Recv-Q`/`Send-Q` zero everywhere) say the frame reached user space and
-    was discarded. Escalated to **PLAN-22**. Maven Build for this commit remains unobserved.
-  - f6067588 (PLAN-18) — **Integration Tests run 35917940826 FAILED on INFRASTRUCTURE ONLY**: the runner
-    could not check out the repository ("server certificate verification failed", three attempts), so **no
-    test executed**. Not a code signal — the same tree passed the ITs in PR CI and in the merge-queue
-    re-test. ⚠ A re-run is OWED and is an operator action: the orchestrator's CI access is read-side only,
-    so it can neither re-run the workflow nor read the result of one. Maven Build for this commit also
-    unobserved.
-  — trigger: confirm all four before the next release, and re-run 35917940826 now; source:
-  `landings/PLAN-14.md`, `landings/PLAN-16.md`, `landings/PLAN-17.md`, `landings/PLAN-18.md`
+> ↪ Retired 2026-11-24 on the operator's Actions check (`handle-open` batch B2; operator-run `.plan/temp/check-main-runs.sh`, not read by the orchestrator): Maven Build run 35661423461 on `3e3addc` is GREEN, `deploy-snapshot`: success. Original text: the push run was unverified.
+> ↪ Retired 2026-11-24 on the operator's Actions check (`handle-open` batch B2; operator-run `.plan/temp/check-main-runs.sh`, not read by the orchestrator): Maven Build is GREEN with `deploy-snapshot`: success on `3e3addc` (35661423461), `69b322b` (35758703230), `c1b09c7` (35802987259) and `f6067588` (35917940729); the PLAN-17 Integration Tests run was already settled 2026-09-23. Original text: the main-branch runs for three (later four) merge commits were unverified, for the structural reason that a push to `main` has no PR.
+
+- **Residual: PLAN-18's Integration Tests run `35917940826` on `f6067588` is RED, an infrastructure failure only (kept open).** Re-read 2026-11-24 by the operator: `status=completed conclusion=failure`, created 2026-09-23T20:44:13Z. The runner could not check out the repository ("server certificate verification failed", three attempts), so no test executed; the same tree passed the ITs in PR CI and the merge-queue re-test. A re-run is an operator action and may no longer be permitted by GitHub (the run is about two months old). Closes when the run is re-run green, or the operator accepts it as unverifiable in writing. — source: `landings/PLAN-18.md`
 > ✔ Accepted 2026-11-23 as standing practice (`handle-open` batch A, note 6, operator answer): stays here with its trigger; not retired, not relocated. See `## Decisions` 2026-11-23.
 - **A validator that guards a runtime behaviour must reuse the runtime's own normalisation, never a
   re-implemented equivalent** — PLAN-18's review-fix commit added a boot check comparing header names with
