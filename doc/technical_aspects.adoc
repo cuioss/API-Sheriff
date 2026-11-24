@@ -193,6 +193,19 @@ API and requirement surface is `TokenSheriff/doc/client` (`CLIENT-1..22`); the s
 engine and BFF responsibilities is stated in
 link:architecture/authentication-and-bff.adoc#_authentication_layer[Architecture -- Authentication Layer].
 
+*Native image.* The engine parses every identity-provider response with DSL-JSON, whose generated
+`_<Type>_DslJsonConverter` classes are loaded reflectively at runtime, and several of its flow
+classes hold a `static final SecureRandom` that must not be initialized at image build time. Both
+needs are met by the engine jar itself: from token-sheriff 0.9.10 (TokenSheriff #898) it ships
+native-image metadata under `META-INF/native-image/`, a `reflect-config.json` registering the
+response DTOs and every generated converter, and a `native-image.properties` forcing those
+`SecureRandom` holders to runtime initialization. GraalVM picks both up from the classpath, so the
+gateway carries no reflection holder and no runtime-init entry for engine classes; its own
+`quarkus.native.additional-build-args` in `application.properties` names gateway classes only.
+`TokenClientNativeMetadataTest` checks on the JVM lane that the jar's metadata still covers what
+the gateway relies on, the DPoP-binding converter among it, whose absence would fail open in native
+(ADR-0082), and the native integration tests prove it in the image.
+
 [[_upstream_security_default_changes]]
 == Adopting Upstream Security-Default Changes
 
@@ -387,7 +400,7 @@ NOTE: The three token-sheriff modules this Quarkus application depends on --
 `token-sheriff-client`, `token-sheriff-client-quarkus`, and `token-sheriff-validation-quarkus`
 -- are *direct* Maven dependencies today (not a future, approval-pending addition), with versions
 supplied by the `token-sheriff-bom`. That BOM's version is the `version.token-sheriff` property in
-the root `pom.xml`, which is the authoritative source and reads `0.9.9` at the time of writing --
+the root `pom.xml`, which is the authoritative source and reads `0.9.10` at the time of writing --
 check the property rather than this sentence, which only mirrors it. The `token-sheriff-client`
 *core* jar is a direct dependency, so the core artifacts do not arrive only transitively; only
 `token-sheriff-validation` core arrives transitively, through `token-sheriff-validation-quarkus`.
