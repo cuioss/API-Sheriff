@@ -41,7 +41,7 @@ scope for this document.
 
 The rows below were verified against the source of API Sheriff. The source of the
 `token-sheriff-client` engine it consumes is not in this repository: what the rows say about the
-engine rests on the behaviour of the published artifact at the pinned version 0.9.9, as the unit
+engine rests on the behaviour of the published artifact at the pinned version 0.9.10, as the unit
 tests and the integration stack exercise it. Where a capability exists in
 the engine but is not wired by the gateway, that distinction is stated explicitly -- *a capability
 present in a dependency is not a capability of the product.* What the running integration stack
@@ -66,8 +66,8 @@ Two terms are used throughout:
 | Sender-constrained access tokens -- mTLS (RFC 8705) and/or DPoP (RFC 9449) (§5.3.3.1)
 | *MET* (DPoP), in both modes
 | `BffRuntimeProducer` resolves one sender-constraint key and builds one `SenderConstraint` from it.
-  That one instance is handed to the base `AuthorizationCodeFlow`, whose code exchange -- of a login
-  callback and of a session-widening callback alike -- presents it, and to `ScopedEngineFlows`,
+  That one instance is handed to the one `AuthorizationCodeFlow`, whose code exchange -- of a login
+  callback and of a session-widening callback alike -- presents it, and to the one `RefreshFlow`,
   whose refresh grants, near-expiry and scope-driven, present it. The
   runtime's one token-endpoint client is the engine's own `TokenEndpointClient`. Under the DPoP
   sender constraint it refuses a token response that is not of type `DPoP`, or whose JWT access token
@@ -77,12 +77,14 @@ Two terms are used throughout:
 
 | Pushed Authorization Requests (RFC 9126) (§5.3.3.2)
 | *MET*, in both modes
-| `PushedAuthorizationRequests` sits on every authorization-request seam: the login (`LoginFlow`),
+| `ScopedEngineFlows` sits on every authorization-request seam: the login (`LoginFlow`),
   the session widening (`SessionWidening` -- its silent attempt and its one interactive re-drive,
   started by a session route or by the step-up path) and the RFC 9470 step-up re-drive
-  (`StepUpCoordinator`). It pushes the parameters of the request the engine rendered and redirects
-  the browser to the authorization endpoint, adding `client_id` and `request_uri` and no other
-  parameter; a query the endpoint URL itself carries is kept. There is no front-channel fallback: a provider
+  (`StepUpCoordinator`). The login and the widening are pushed by the engine
+  (`AuthorizationCodeFlow.authorizePushed`, token-sheriff 0.9.10); the step-up re-drive, for which the
+  engine has no pushed entry point, is pushed by the seam through the engine's `ParClient`. The browser
+  is redirected to the authorization endpoint with `client_id` and `request_uri` and no other
+  parameter. There is no front-channel fallback: a provider
   without a PAR endpoint, and a push that fails, refuse the login or the widening with `502`. What
   the pushed request of a widening carries -- the scope set and, on the silent attempt,
   `prompt=none` -- is proven at unit level against a stub identity provider. On the integration
@@ -178,7 +180,8 @@ The engine's default `AuthorizationRequestBuilder` requests `response_mode=form_
 so that `code`, `state`, and `iss` are delivered in a POST body rather than on a URL, where they
 would reach browser history, proxy/CDN and server access logs, and the `Referer` header.
 
-*API Sheriff overrides this* with `QueryResponseModeAuthorizationRequestBuilder`. The reason is the
+*API Sheriff overrides this* by requesting `ResponseMode.QUERY` from the engine per call
+(`AuthorizationRequestOptions`, token-sheriff 0.9.10), through `ScopedEngineFlows`. The reason is the
 binding cookie: it is `SameSite=Lax`, and a Lax cookie is sent on a top-level GET navigation but
 *not* on the cross-site POST that a `form_post` callback performs. With `form_post` the binding
 cookie is dropped and every real-browser login dead-ends on the "no binding cookie" rejection. The
@@ -194,7 +197,7 @@ The exposure is accepted by operator decision and *bounded, not removed*:
 `SameSite=None` was considered and rejected -- it would require permitting the cross-site sends the
 binding cookie exists to prevent. `SameSite=Strict` is not an option at all: the callback is a
 cross-site top-level navigation, on which a Strict cookie is never sent. The full statement lives on
-`QueryResponseModeAuthorizationRequestBuilder`.
+`ScopedEngineFlows` and in ADR-0018.
 
 [NOTE]
 ====

@@ -39,8 +39,6 @@ import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
-import de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests;
-import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
@@ -95,11 +93,8 @@ import de.cuioss.sheriff.token.client.discovery.DiscoveryResolver;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.dpop.SenderConstraint;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
-import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
-import de.cuioss.sheriff.token.client.flow.CallbackHandler;
 import de.cuioss.sheriff.token.client.flow.IssValidator;
-import de.cuioss.sheriff.token.client.flow.ParClient;
-import de.cuioss.sheriff.token.client.flow.StepUpHandler;
+import de.cuioss.sheriff.token.client.flow.RefreshFlow;
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
 import de.cuioss.sheriff.token.client.lifecycle.RevocationClient;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
@@ -164,8 +159,8 @@ import org.jspecify.annotations.Nullable;
  * is resolved by {@link ClientSigningKey} from {@code oidc.sender_constraint.key_file}, with the same
  * refusal translation as the client-authentication key; an absent block or an absent key selects a
  * key generated at startup. The one {@link SenderConstraint} that key hands out is shared by every
- * flow — the base flow's code exchange, which serves a login callback and a widening callback alike,
- * every per-scope flow and every refresh grant, near-expiry and scope-driven — in both
+ * flow — the one flow's code exchange, which serves a login callback and a widening callback alike,
+ * and every refresh grant, near-expiry and scope-driven — in both
  * client-authentication modes. A generated key lives for one process: it is replaced on every
  * restart and cannot be shared, so every instance behind one identity-provider client must be given
  * the same key files. A separate DPoP proof key is never published at the client JWKS endpoint.
@@ -182,21 +177,22 @@ import org.jspecify.annotations.Nullable;
  * back-channel configuration. Under the DPoP sender constraint every flow passes it, the engine refuses
  * a response whose {@code token_type} is not {@code DPoP} and a JWT access token whose {@code cnf.jkt}
  * is absent, malformed or another key's, as a {@code RedeemedResponseException}. It is the single
- * instance handed to the base flow and to {@link ScopedEngineFlows}, so the code exchange of a login
- * and of a widening and every refresh grant, near-expiry and scope-driven, read their token response
- * through it; the producer does not read the client-authentication mode for it. The refusal surfaces
+ * instance handed to the one authorization-code flow and the one refresh flow, so the code exchange of
+ * a login and of a widening and every refresh grant, near-expiry and scope-driven, read their token
+ * response through it; the producer does not read the client-authentication mode for it. The refusal surfaces
  * where the response was requested: the callback answers {@code 400}, creates no session and merges
  * nothing into a live one, and a refresh ends the session and follows
  * {@code oidc.session.refresh.on_failure}. The check judges token responses only — a session whose
  * token is bound to an earlier key is never re-checked, so replacing the key does not by itself end a
  * session.
  * <p>
- * <strong>Per-request scope (ADR-0048).</strong> A leg requesting a per-request scope set goes through
- * {@link ScopedEngineFlows}, which drives a flow over a
- * {@link ClientConfiguration} built for exactly that set by
- * {@link #backChannelConfiguration(OidcConfig, List)}. The callback exchange, the RFC 9470 step-up and
- * revocation stay on the base configuration carrying {@code oidc.scopes}; the step-up coordinator is
- * handed that static set as the scope set its re-drive requests.
+ * <strong>Per-request scope (ADR-0083).</strong> The runtime builds one {@link ClientConfiguration},
+ * carrying no scope, by {@link #backChannelConfiguration(OidcConfig)}, and one
+ * {@link AuthorizationCodeFlow} and one {@code RefreshFlow} over it. Every leg that sends a scope goes
+ * through {@link ScopedEngineFlows}, which names the scope set per call: the login and the widening
+ * their requested set, the refresh grant the session's set, and the RFC 9470 step-up re-drive the
+ * static {@code oidc.scopes}, which the step-up coordinator is handed as the scope set its re-drive
+ * requests. The callback exchange and revocation send no scope.
  * <p>
  * <strong>Scope enforcement on session routes.</strong> The session stage compares the session's
  * active scope set against the route's {@code neededScopes} on every request, and the producer binds
@@ -214,24 +210,24 @@ import org.jspecify.annotations.Nullable;
  * {@code forwarded.trusted_proxies} exactly as the edge's forward stage reads them, and handed to the
  * session stage and to the runtime, which puts it on every reserved-path request.
  * <p>
- * <strong>Response mode.</strong> The authorization-URL seams are wired with the gateway-owned
- * {@link QueryResponseModeAuthorizationRequestBuilder}, so the flow is driven with
- * {@code response_mode=query} and the callback is a top-level GET the browser sends the
+ * <strong>Response mode.</strong> Every authorization request — login, widening and the step-up
+ * re-drive — is requested from the engine with {@code response_mode=query} through
+ * {@link ScopedEngineFlows}, so the callback is a top-level GET the browser sends the
  * {@code SameSite=Lax} binding cookie on. See that class for the reasoning and for the accepted
  * code-in-the-URL tradeoff.
  * <p>
- * <strong>Every authorization request is pushed (ADR-0058).</strong> The URL the engine builds on
- * any of the three seams — the login leg, the session widening (silent and interactive attempt
- * alike) and the RFC 9470 step-up re-drive — is not sent to the browser. It is
- * the parameter source of a pushed authorization request (RFC 9126): the one
- * {@link PushedAuthorizationRequests} this producer builds pushes those parameters to the identity
- * provider and yields the redirect, which carries {@code client_id} and {@code request_uri} and
- * nothing else. A silent widening's {@code prompt=none} is therefore a parameter of the pushed
- * request, not of the redirect. The engine's {@code FlowContext} is kept unchanged on every seam. The
- * producer is the only class that constructs the engine's {@link ParClient}, over the base back-channel
- * configuration, and it never calls it. An identity provider that offers no pushed-authorization
- * endpoint, and a push that fails, refuse the login or the widening with {@code 502} before the
- * pending authorization is stored and before the binding cookie is set. In both
+ * <strong>Every authorization request is pushed (ADR-0058).</strong> None of the three seams — the
+ * login leg, the session widening (silent and interactive attempt alike) and the RFC 9470 step-up
+ * re-drive — sends an authorization request through the browser. The login and the widening are
+ * pushed by the engine itself ({@code AuthorizationCodeFlow.authorizePushed}, RFC 9126) through the
+ * pushed-request client the one {@link AuthorizationCodeFlow} owns; the step-up re-drive, for which
+ * the engine offers no pushed entry point, is pushed by {@link ScopedEngineFlows} through an engine
+ * pushed-request client over the same configuration. The redirect carries {@code client_id} and
+ * {@code request_uri} and nothing else, so a silent widening's {@code prompt=none} is a parameter of
+ * the pushed request, not of the redirect. The engine's {@code FlowContext} is kept unchanged on every
+ * seam. This producer constructs no pushed-request client. An identity provider that offers no
+ * pushed-authorization endpoint, and a push that fails, refuse the login or the widening with
+ * {@code 502} before the pending authorization is stored and before the binding cookie is set. In both
  * client-authentication modes.
  * <p>
  * <strong>Transparent refresh is switchable.</strong> {@code oidc.session.refresh.enabled} governs
@@ -527,13 +523,13 @@ public class BffRuntimeProducer {
                 ? Set.of(gatewayOrigin)
                 : Set.copyOf(declaredTrustedOrigins);
 
-        // The base configuration carries the static oidc.scopes and serves every leg that does not
-        // request a per-request scope set: discovery, the transport of the pushed authorization
-        // request, the callback code exchange, the RFC 9470 step-up and revocation. The legs that
-        // request one go through ScopedEngineFlows below, whose factory is this same method — so every
-        // scoped variant carries the identical pinned posture.
+        // The one back-channel configuration of the runtime serves every leg: discovery, the pushed
+        // authorization requests, the callback code exchange, refresh, the RFC 9470 step-up and
+        // revocation. It carries no scope of its own: every leg that sends a scope names it per call
+        // through ScopedEngineFlows (ADR-0083), the step-up re-drive included, so there is exactly one
+        // configuration and one pinned posture.
         reportBackChannelPosture(oidc);
-        ClientConfiguration clientConfiguration = backChannelConfiguration(oidc, oidc.scopes());
+        ClientConfiguration clientConfiguration = backChannelConfiguration(oidc);
         ClientCredential clientCredential = selectClientCredential(oidc, clientId, issuer);
         ClientAuthentication clientAuthentication = clientCredential.authentication();
         // ADR-0058: one sender-constraint key, and the one SenderConstraint it hands out, for the whole
@@ -551,28 +547,25 @@ public class BffRuntimeProducer {
         TokenValidationBridge tokenBridge = new TokenValidationBridge(validator);
         IdTokenValidationBridge idBridge = new IdTokenValidationBridge(validator);
         // The one token-endpoint client of the runtime. The engine's own client refuses a token response
-        // that is not bound to the proof key of the DPoP sender constraint, and because the base flow,
-        // every per-scope flow and every refresh grant hold this single instance, none of them can obtain
-        // a token that bypasses the check.
+        // that is not bound to the proof key of the DPoP sender constraint, and because the one flow and
+        // the one refresh flow hold this single instance, no login, widening or refresh can obtain a token
+        // that bypasses the check.
         TokenEndpointClient tokenEndpointClient = new TokenEndpointClient(clientConfiguration);
-        // The gateway drives response_mode=query, NOT the engine's built-in form_post: the callback has
-        // to be a top-level GET navigation so the SameSite=Lax browser-binding cookie is actually sent
-        // on it (a Lax cookie is dropped on the cross-site POST a form_post callback performs, which
-        // dead-ended every real-browser login on the "no binding cookie" 403 branch). One instance is
-        // shared, so every engine seam that builds an authorization URL — login, widening and the
-        // RFC 9470 step-up — carries the corrected mode. The IssValidator and the CallbackHandler are
-        // the defaults the 4-arg AuthorizationCodeFlow constructor supplies on its own; the trailing
-        // argument is the shared DPoP sender constraint, so the code exchange — of a login callback and
-        // of a widening callback alike — presents a proof and its access token is bound to the proof key.
-        AuthorizationRequestBuilder authorizationRequestBuilder = new QueryResponseModeAuthorizationRequestBuilder();
+        // The one authorization-code flow of the runtime. It pushes every login and widening request
+        // (ADR-0058) through the engine's own pushed-request client, built over the same configuration,
+        // and redeems every callback code; the response mode, the prompt and the scope set are named per
+        // call by ScopedEngineFlows. The trailing argument is the shared DPoP sender constraint, so the
+        // code exchange — of a login callback and of a widening callback alike — presents a proof and its
+        // access token is bound to the proof key.
         AuthorizationCodeFlow authorizationCodeFlow = new AuthorizationCodeFlow(clientConfiguration,
-                tokenEndpointClient, tokenBridge, idBridge, new IssValidator(), authorizationRequestBuilder,
-                new CallbackHandler(), senderConstraint);
-        // ADR-0048: the engine reads scope only from ClientConfiguration.getScopes(), so each
-        // per-request scope set rides a configuration built for exactly that set.
-        ScopedEngineFlows scopedFlows = new ScopedEngineFlows(scopes -> backChannelConfiguration(oidc, scopes),
-                tokenEndpointClient, tokenBridge, idBridge, authorizationRequestBuilder, clientAuthentication,
-                senderConstraint);
+                tokenEndpointClient, tokenBridge, idBridge, new IssValidator(), senderConstraint);
+        // ADR-0083: the engine takes the scope set per call, so one flow and one refresh flow serve every
+        // scope set; ScopedEngineFlows names the canonical set on each call and translates every push
+        // refusal into the 502 the callers handle.
+        ScopedEngineFlows scopedFlows = new ScopedEngineFlows(clientConfiguration, authorizationCodeFlow,
+                new RefreshFlow(clientConfiguration, tokenEndpointClient, tokenBridge, clientAuthentication,
+                        senderConstraint),
+                clientAuthentication);
 
         BindingCookieCodec bindingCookieCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         // D7 seam: the whole BFF foundation binds SessionBinding, never the store directly. The mode
@@ -606,34 +599,26 @@ public class BffRuntimeProducer {
         // configured target.
         String defaultReturnUrl = defaultReturnUrl(oidc);
 
-        // ADR-0058: every authorization request is pushed. The one ParClient rides the base back-channel
-        // configuration, so the push carries the ADR-0045 hostname and trust posture and the engine's
-        // timeouts; this producer builds it and never calls it — PushedAuthorizationRequests does.
-        PushedAuthorizationRequests pushedRequests =
-                new PushedAuthorizationRequests(new ParClient(clientConfiguration), clientAuthentication);
-
         // D5 login flow — the AuthorizationInitiation seam reaches the engine at runtime, requesting
         // exactly the scope set the caller names (a route's neededScopes, or oidc.scopes). The engine
-        // renders the request, the request is pushed, and the redirect keeps the engine's FlowContext
-        // while its URL carries client_id and request_uri only. A failed push propagates from here,
-        // before LoginFlow stores the pending record or sets the binding cookie.
+        // pushes the request (ADR-0058), and the redirect keeps the engine's FlowContext while its URL
+        // carries client_id and request_uri only. A refused push propagates from here as the 502
+        // ScopedEngineFlows raises, before LoginFlow stores the pending record or sets the binding cookie.
         LoginFlow loginFlow = new LoginFlow(
-                scopes -> pushed(pushedRequests, metadata.get(), clientId,
-                        scopedFlows.authorize(metadata.get(), scopes)),
+                scopes -> scopedFlows.authorize(metadata.get(), scopes),
                 pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, clock);
 
         // Session widening — the live-session sibling of the login flow, on the same pending store,
-        // binding cookie and callback landing. Its authorization leg is built per call on
-        // ScopedEngineFlows because the requested set S ∪ needed is IdP-derived. Exactly one instance
-        // exists per runtime: the callback's interactive re-drive goes through it.
+        // binding cookie and callback landing. Its requested set S ∪ needed is IdP-derived and is named
+        // per call. Exactly one instance exists per runtime: the callback's interactive re-drive goes
+        // through it.
         // ADR-0058: a widening request is pushed exactly as a login request is — the silent attempt and
         // the interactive re-drive both pass this one seam, so neither can reach the browser as a
         // front-channel request. The silent attempt's prompt=none travels inside the pushed request.
-        // A failed push propagates from here, before SessionWidening stores the pending record or sets
+        // A refused push propagates from here, before SessionWidening stores the pending record or sets
         // the binding cookie.
         SessionWidening sessionWidening = new SessionWidening(
-                (scopes, silent) -> pushed(pushedRequests, metadata.get(), clientId,
-                        scopedFlows.widen(metadata.get(), scopes, silent)),
+                (scopes, silent) -> scopedFlows.widen(metadata.get(), scopes, silent),
                 pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, clock);
 
         // D2 callback — the CodeExchange seam reaches the engine's code exchange + token validation,
@@ -707,21 +692,17 @@ public class BffRuntimeProducer {
                 stepUp == null ? null : stepUp.path(),
                 clock);
 
-        // D7 RFC 9470 step-up — instantiated with the engine StepUpHandler seam. No edge code drives the
-        // step-up coordinator: the re-drive is assembled here and proven at unit level, but a running
-        // gateway never reaches it.
-        // Built with the SAME response-mode-corrected builder as the login leg: StepUpHandler#initiate
-        // constructs its own authorization URL through an AuthorizationRequestBuilder, so leaving it on
-        // the default builder would keep the step-up re-drive emitting response_mode=form_post and
-        // reintroduce the dropped-binding-cookie failure on that leg alone.
-        // The step-up request is built from the base configuration, so the re-drive records the static
-        // oidc.scopes as its requested set (the PLAN-20 residual, ADR-0048). Like the login request it
-        // is pushed: the re-drive location carries client_id and request_uri only.
-        StepUpHandler stepUpHandler = new StepUpHandler(authorizationRequestBuilder);
+        // D7 RFC 9470 step-up — the engine StepUpHandler mints the step-up transaction inside
+        // ScopedEngineFlows#stepUp. No edge code drives the step-up coordinator: the re-drive is assembled
+        // here and proven at unit level, but a running gateway never reaches it.
+        // The step-up request names the static oidc.scopes as its scope set and response_mode=query,
+        // exactly like the login leg, so the callback stays a top-level GET and the re-drive records
+        // oidc.scopes as its requested set (the PLAN-20 residual, ADR-0083). Like the login request it
+        // is pushed — by ScopedEngineFlows, because the engine offers no pushed step-up entry point — so
+        // the re-drive location carries client_id and request_uri only.
         StepUpCoordinator stepUpCoordinator = new StepUpCoordinator(
                 (sessionRecord, challenge, now) -> Optional.empty(),
-                challenge -> pushed(pushedRequests, metadata.get(), clientId,
-                        stepUpHandler.initiate(clientConfiguration, metadata.get(), challenge)),
+                challenge -> scopedFlows.stepUp(metadata.get(), challenge, oidc.scopes()),
                 pendingStore, bindingCookieCodec, gatewayOrigin, defaultReturnUrl, oidc.scopes(), clock);
 
         // D11 user-info fold — validated ID-token claims through the engine, projected to their native
@@ -834,14 +815,11 @@ public class BffRuntimeProducer {
      * ({@code doc/technical_aspects.adoc}, "Adopting Upstream Security-Default Changes"). The trust
      * context is set only when a profile is named; otherwise the leg keeps the JVM default trust store.
      * <p>
-     * <strong>One posture for every scope set (ADR-0048).</strong> The {@code scopes} argument is the
-     * only thing that varies between the configurations this method builds: the base configuration
-     * passes {@code oidc.scopes}, and {@link ScopedEngineFlows} passes each per-request scope set. The
-     * collision refusal, the hostname posture and the trust context are applied identically on every
-     * call, so a scoped variant can never dial the identity provider with a weaker posture than the
-     * base configuration. The build is silent; the relaxed or replaced posture is reported once per
-     * runtime by {@link #reportBackChannelPosture(OidcConfig)}, never once per scoped variant or per
-     * refresh.
+     * <strong>One configuration for every scope set (ADR-0083).</strong> The configuration carries no
+     * scope: {@link ScopedEngineFlows} names the scope set of every authorization request and refresh
+     * grant per call, so the runtime builds this configuration once and every leg dials the identity
+     * provider with the one posture it carries. The build is silent; the relaxed or replaced posture is
+     * reported once per runtime by {@link #reportBackChannelPosture(OidcConfig)}.
      * <p>
      * <strong>The back-channel origin is transport, never identity.</strong> A declared
      * {@code oidc.back_channel_origin} is handed to the engine as its back-channel origin, so the
@@ -854,8 +832,8 @@ public class BffRuntimeProducer {
      * the URL it received (Keycloak) expects. An identity provider that instead compares {@code htu}
      * with a configured public URL rejects those proofs, and because the mapping is issuer-wide and
      * all-or-nothing, {@code back_channel_origin} must not be set for such a provider. Like the TLS
-     * posture it is set on the base configuration and on every scoped variant alike, so no leg can fall
-     * back to dialling the issuer. An absent key sets nothing: one authority for everything. The
+     * posture it is set on the one configuration every leg dials with, so no leg can fall back to
+     * dialling the issuer. An absent key sets nothing: one authority for everything. The
      * cleartext posture follows the explicit opt-in alone: {@code allowInsecureHttp} is set only when
      * {@code oidc.back_channel_allow_insecure_http} is {@code true}, which boot validation admits only
      * together with an {@code http} origin. The engine applies that flag to the whole client, not just
@@ -864,19 +842,16 @@ public class BffRuntimeProducer {
      * other: an absent list leaves the secure default in force, and no host is derived from the issuer or
      * the origin.
      *
-     * @param oidc   the global {@code oidc} block, already cleared by the BFF-mode activation predicate
-     * @param scopes the scope list the configuration carries — the {@code scope} value the engine
-     *               sends on the authorization request and the refresh grant it drives with it
-     * @return the back-channel client configuration carrying {@code scopes}, the resolved hostname
-     *         posture, the declared back-channel origin, cleartext opt-in and egress allowance and,
-     *         when a profile is named, its trust anchors
+     * @param oidc the global {@code oidc} block, already cleared by the BFF-mode activation predicate
+     * @return the back-channel client configuration carrying no scope, the resolved hostname posture,
+     *         the declared back-channel origin, cleartext opt-in and egress allowance and, when a
+     *         profile is named, its trust anchors
      * @throws GatewayException with {@link EventType#CONFIG_INVALID} when
      *                          {@code egress_tls.oidc_verify_hostname} is {@code false} while
      *                          {@code egress_tls.oidc_tls_profile} is named, or when the named profile
      *                          cannot be resolved to trust anchors
      */
-    ClientConfiguration backChannelConfiguration(OidcConfig oidc, List<String> scopes) {
-        Objects.requireNonNull(scopes, "scopes");
+    ClientConfiguration backChannelConfiguration(OidcConfig oidc) {
         String redirectUri = Objects.requireNonNull(oidc.redirectUri(), "oidc.redirect_uri");
         boolean verifyHostname = egressTls.oidcVerifyHostname();
         String tlsProfile = egressTls.oidcTlsProfile();
@@ -891,7 +866,8 @@ public class BffRuntimeProducer {
         String clientId = declaredClientId == null ? "" : declaredClientId;
         ClientConfiguration.ClientConfigurationBuilder builder = ClientConfiguration.builder()
                 .issuer(issuer).clientId(clientId)
-                .scopes(scopes).redirectUri(redirectUri)
+                // No scope of its own: every leg names its scope set per call (ADR-0083).
+                .scopes(List.of()).redirectUri(redirectUri)
                 // Called unconditionally, on the true path as well, so the posture never rests on the
                 // library default (doc/technical_aspects.adoc, "Adopting Upstream Security-Default Changes").
                 .verifyHostname(verifyHostname);
@@ -1003,42 +979,6 @@ public class BffRuntimeProducer {
                 && clientAuthenticationKey.keyId().equals(senderConstraintKey.keyId())) {
             throw new GatewayException(EventType.CONFIG_INVALID, SHARED_SIGNING_KEY_DETAIL);
         }
-    }
-
-    /**
-     * Replaces the URL of an engine-built login or widening redirect with its pushed form. The engine's
-     * {@code FlowContext} — {@code state}, {@code nonce} and the PKCE verifier — is kept as it is:
-     * it is what the callback is later checked against, and the pushed request carries exactly the
-     * parameters derived from it.
-     *
-     * @param pushedRequests the runtime's pushed-authorization-request adapter
-     * @param metadata       the resolved provider metadata
-     * @param clientId       the resolved client id
-     * @param redirect       the engine's authorization redirect
-     * @return the same transaction context with the pushed-request redirect URL
-     * @throws GatewayException with {@link EventType#UPSTREAM_ERROR} when the request cannot be pushed
-     */
-    private static AuthorizationCodeFlow.AuthorizationRedirect pushed(PushedAuthorizationRequests pushedRequests,
-            ProviderMetadata metadata, String clientId, AuthorizationCodeFlow.AuthorizationRedirect redirect) {
-        return new AuthorizationCodeFlow.AuthorizationRedirect(
-                pushedRequests.push(metadata, clientId, redirect.authorizationUrl()), redirect.context());
-    }
-
-    /**
-     * Replaces the URL of an engine-built step-up request with its pushed form, keeping its
-     * {@code FlowContext} — the step-up counterpart of the login overload.
-     *
-     * @param pushedRequests the runtime's pushed-authorization-request adapter
-     * @param metadata       the resolved provider metadata
-     * @param clientId       the resolved client id
-     * @param request        the engine's step-up authorization request
-     * @return the same transaction context with the pushed-request redirect URL
-     * @throws GatewayException with {@link EventType#UPSTREAM_ERROR} when the request cannot be pushed
-     */
-    private static StepUpHandler.StepUpRequest pushed(PushedAuthorizationRequests pushedRequests,
-            ProviderMetadata metadata, String clientId, StepUpHandler.StepUpRequest request) {
-        return new StepUpHandler.StepUpRequest(
-                pushedRequests.push(metadata, clientId, request.authorizationUrl()), request.context());
     }
 
     /**

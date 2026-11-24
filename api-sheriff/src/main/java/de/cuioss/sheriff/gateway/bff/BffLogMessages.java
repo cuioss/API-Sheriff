@@ -268,22 +268,23 @@ public final class BffLogMessages {
          * An authorization request could not be pushed to the identity provider, so the login, the
          * session widening or the RFC 9470 step-up re-drive was refused with {@code 502} before
          * anything was stored and before a cookie was set. The only substitution is the reason, a closed set: {@code no-par-endpoint}
-         * (the provider metadata advertises no {@code pushed_authorization_request_endpoint}),
-         * {@code invalid-request} (the engine-built authorization request could not be split into
-         * its parameters, or names one parameter twice) or {@code push-failed} (the push itself
-         * failed: a transport failure, a timeout, a non-success answer, an unparsable answer or an
-         * answer without a {@code request_uri}). Never records the authorization URL, a parameter
+         * (the provider metadata advertises no, or a blank, {@code pushed_authorization_request_endpoint}),
+         * {@code invalid-request} (the engine could not form the authorization request: the
+         * authorization endpoint is missing or not a TLS URL, PKCE {@code S256} is not advertised, or
+         * a requested scope fails the engine's scope-token rule) or {@code push-failed} (the push
+         * itself failed: a transport failure, a timeout, a non-success answer, an unparsable answer or
+         * an answer without a {@code request_uri}). Never records the authorization URL, a parameter
          * value or the {@code request_uri}.
          * <p>
          * The template names the one consequence the callers share — no redirect to the identity
          * provider was issued — and names none of them: the login, the session widening and the
-         * step-up re-drive push through the same adapter instance, so the record cannot tell which
+         * step-up re-drive push through the same seam instance, so the record cannot tell which
          * one was refused.
          * <p>
          * <strong>Latched per reason.</strong> The login-initiation path is reachable without a
          * credential, so the record is emitted only on the FIRST occurrence of each reason and every
          * repeat drops to {@code DEBUG} (ADR-0051) — see
-         * {@code de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests}. Absence of a
+         * {@code de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows}. Absence of a
          * repeated {@code WARN} therefore says nothing about the refusal <em>rate</em>; read the
          * DEBUG channel for that.
          */

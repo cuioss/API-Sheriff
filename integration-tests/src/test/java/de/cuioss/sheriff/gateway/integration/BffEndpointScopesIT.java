@@ -36,7 +36,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Proves, through the live server-mode edge and the compose Keycloak, that a BFF login is granted the
  * scope set of the route it is for — {@code oidc.scopes} united with the endpoint's additive
- * {@code scopes} (ADR-0048) — by reading the token the IdP issues for it.
+ * {@code scopes} (ADR-0083) — by reading the token the IdP issues for it.
  * <p>
  * <strong>The fixture.</strong> {@code endpoints/bff-scoped.yaml} declares the session route
  * {@code /app/scoped} with {@code scopes: ["sheriff_it_endpoint"]}, so its needed set is
@@ -70,7 +70,8 @@ import org.junit.jupiter.api.Test;
  * client scopes, whatever the request named, so "nothing extra" cannot be read from it. That property
  * is proven at unit level against the pushed request body a stub identity provider records
  * ({@code BffRuntimeProducerTest}, the scope-set cases of the produced runtime, and
- * {@code PushedAuthorizationRequestsTest}). Nor does this suite exercise step-up or the scope set a
+ * {@code ScopedEngineFlowsTest}, which pins the canonical scope set of every pushed request). Nor does
+ * this suite exercise step-up or the scope set a
  * refresh requests; the latter is {@code BffTokenRefreshIT}'s, which needs the short-token-lifespan
  * instance. Like every {@code Bff*IT}, it replays a cookie map and asserts nothing about browser
  * cookie policy (see {@link BffKeycloakLoginFlow}).

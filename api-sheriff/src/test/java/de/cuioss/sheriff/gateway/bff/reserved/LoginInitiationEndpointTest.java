@@ -260,6 +260,60 @@ class LoginInitiationEndpointTest {
         }
     }
 
+    /**
+     * The runtime binds the seam to {@code ScopedEngineFlows.authorize}, which pushes the request and
+     * raises every refusal — no pushed-authorization-request endpoint, a request the engine cannot
+     * form, a push that failed — as the {@code 502} event before anything is stored. The endpoint lets it
+     * propagate, so the edge answers {@code 502} and the browser gets no redirect and no binding cookie.
+     */
+    @Nested
+    @DisplayName("Refused push (502)")
+    class RefusedPush {
+
+        private LoginInitiationEndpoint refusing(String reason, AtomicInteger seamCalls) {
+            LoginFlow refusingFlow = new LoginFlow(scopes -> {
+                seamCalls.incrementAndGet();
+                throw new GatewayException(EventType.UPSTREAM_ERROR,
+                        "Pushed authorization request refused (" + reason + ")");
+            }, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT, Clock.fixed(T0, ZoneOffset.UTC));
+            return new LoginInitiationEndpoint(refusingFlow, new ServerSessionBinding(sessionStore, sessionCodec),
+                    GATEWAY_ORIGIN, returnTargetScopes());
+        }
+
+        @ParameterizedTest(name = "refusal reason {0}")
+        @ValueSource(strings = {"no-par-endpoint", "invalid-request", "push-failed"})
+        @DisplayName("Should propagate the 502 refusal, store no pending record and mint no binding cookie")
+        void shouldPropagateTheRefusal(String reason) {
+            AtomicInteger seamCalls = new AtomicInteger();
+            LoginInitiationEndpoint refusingEndpoint = refusing(reason, seamCalls);
+
+            GatewayException thrown = assertThrows(GatewayException.class,
+                    () -> refusingEndpoint.initiate("/dashboard", null, QUOTA_KEY, T0),
+                    "the refusal replaces the redirect, so no Set-Cookie is returned");
+
+            assertAll("a refused push at login initiation",
+                    () -> assertEquals(EventType.UPSTREAM_ERROR, thrown.getEventType()),
+                    () -> assertEquals(502, thrown.getEventType().httpStatus()),
+                    () -> assertEquals("Pushed authorization request refused (" + reason + ")", thrown.getMessage(),
+                            "the refusal the callers handled before reaches the edge unchanged"),
+                    () -> assertEquals(1, seamCalls.get(), "the push was attempted once"),
+                    () -> assertEquals(0, pendingStore.size(), "no login is left half-started"));
+        }
+
+        @Test
+        @DisplayName("Should still short-circuit a live session without reaching the refusing seam (matched control)")
+        void shouldShortCircuitALiveSession() {
+            AtomicInteger seamCalls = new AtomicInteger();
+            LoginInitiationEndpoint refusingEndpoint = refusing("push-failed", seamCalls);
+            String cookie = liveSessionCookie();
+
+            LoginInitiationOutcome outcome = refusingEndpoint.initiate("/dashboard", cookie, QUOTA_KEY, T0);
+
+            assertEquals(302, outcome.status(), "the refusal above is the push's, not the endpoint's");
+            assertEquals(0, seamCalls.get(), "an authenticated caller never reaches the push");
+        }
+    }
+
     @Nested
     @DisplayName("Saturated pending store (refused with 503)")
     class SaturatedStore {

@@ -22,7 +22,8 @@
 
 == Status
 
-Accepted
+Superseded by link:0083-Per-request_OIDC_scope_is_named_per_call_on_one_engine_flow.adoc[ADR-0083].
+The body below is kept as the record of the original decision.
 
 == Decision
 

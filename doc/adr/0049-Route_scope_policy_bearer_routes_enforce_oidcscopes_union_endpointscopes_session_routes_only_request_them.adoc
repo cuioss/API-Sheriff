@@ -68,7 +68,7 @@ address: `404`, no `WWW-Authenticate` challenge, and the true event (`TOKEN_MISS
 === The superseded session half
 
 This record once let a session route use the set only to decide what its login requests, and it left a live session unchecked. ADR-0057 supersedes that half, because a live session can now be widened. A session route still requests its
-`neededScopes` at login (ADR-0048). ADR-0057 states everything it does with a live session.
+`neededScopes` at login (ADR-0083). ADR-0057 states everything it does with a live session.
 
 == Alternatives rejected
 
@@ -116,8 +116,8 @@ All three move the check away from the single boot-derived set, or add a second 
 
 * link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]: the record that supersedes the session half
 * link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]: the uniform `404` that answers a missing or invalid bearer token before the trust boundary
-* link:0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]: how a login and a refresh carry the per-route scope set through the unchanged engine
-* link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]: the back-channel posture every scoped login configuration carries
+* link:0083-Per-request_OIDC_scope_is_named_per_call_on_one_engine_flow.adoc[ADR-0083]: how a login and a refresh name the per-route scope set per call on the one engine flow
+* link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]: the back-channel posture the one configuration every login and refresh dials with carries
 * link:../security-threat-model.adoc#bff-10[Threat model BFF-10] (token leakage) and link:../security-threat-model.adoc#bff-15[BFF-15] (scope over-request, under-check and session-wide scope growth)
 * link:../user/endpoint-routes.adoc#_endpoint_scopes[Endpoint routes: Endpoint scopes]: the operator-facing contract for `endpoint.scopes`
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/AuthenticationStage.java`: the bearer `insufficient_scope` check

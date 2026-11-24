@@ -52,7 +52,8 @@ of its own can make the reason occur again. `LogoutRejection` and `LogoutRejecti
 
 The back-channel logout path is the only path that uses `LogoutRejectionLog`. Two other records apply the same level rule through a latch and a closed reason set of their own:
 
-* `PushedAuthorizationRequests` records `ApiSheriff-132` for a refused push, reachable through login initiation.
+* `ScopedEngineFlows` records `ApiSheriff-132` for a refused push, reachable through login initiation. Since token-sheriff 0.9.10 the engine pushes
+  the login and widening requests itself; `ScopedEngineFlows` translates its refusals into the closed reason set and holds the latch.
 * `SealedSessionCookieCodec` records `ApiSheriff-113` for a cookie that fails to unseal.
 
 `CallbackEndpoint` does not apply the rule. It records a rejection ahead of the code exchange at `DEBUG` only, so the failure mode "silence is indistinguishable from absence" still

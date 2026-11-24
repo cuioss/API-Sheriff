@@ -101,7 +101,7 @@ The session's identity, authentication time and absolute expiry stay, and the me
 * *ADR-0049.* This decision supersedes its session half. A widening merge meets the precondition that record deferred its pre-check on. The `neededScopes` derivation, the bearer check and the boot refusal of `endpoint.scopes` on an endpoint with only `none` routes stand. Requesting and checking still read one set, and a session route now does both.
 * *ADR-0055.* The SESSION branch of a `session_fallback` route is exactly a session route, so it inherits all of the above. Both branches now enforce one set, each with its posture's answer.
 * *ADR-0046.* The scope-driven leg keeps every per-kind disposition and adds one outcome that is not a refusal: the session is kept but lacks the requested set, because the identity provider granted a narrower scope, the session holds no refresh token, or the request coalesced with a refresh that did not ask for it. That outcome records no back-off and no warning, and the stage widens. An outright `invalid_scope` answer is not part of it (<<_accepted_costs>>).
-* *ADR-0048.* The widening authorization flow is built on `ScopedEngineFlows` per call and never cached. The login-flow cache is bounded because a login set is fixed at boot, while `S ∪ neededScopes` contains scopes from the identity provider. A parameter-aware rewrite on the gateway side adds `prompt=none` to the rendered URL, which leaves the engine unchanged.
+* *ADR-0083.* The widening is requested through `ScopedEngineFlows` on the runtime's one authorization-code flow, with `S ∪ neededScopes` named per call and nothing cached, so a set containing scopes from the identity provider sizes no gateway state. The silent attempt's `prompt=none` is the engine's per-call `Prompt.NONE` option and travels inside the pushed request; the gateway rewrites no URL.
 
 == Alternatives rejected
 
@@ -186,7 +186,7 @@ The rejected alternatives leave the decision to someone else, learn what the use
 * link:0049-Route_scope_policy_bearer_routes_enforce_oidcscopes_union_endpointscopes_session_routes_only_request_them.adoc[ADR-0049]: the `neededScopes` derivation and the bearer check, whose session half this decision supersedes
 * link:0055-A_session_fallback_route_carries_two_authentication_branches_selected_by_Authorization_header_presence.adoc[ADR-0055]: the SESSION branch that inherits the enforcement
 * link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]: the refusal dispositions the scope-driven refresh leg keeps
-* link:0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]: the per-scope-set engine seam the refresh and the widening ride on
+* link:0083-Per-request_OIDC_scope_is_named_per_call_on_one_engine_flow.adoc[ADR-0083]: the per-call scope seam the refresh and the widening ride on
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the `SessionBinding` seam and the reserved-path model the step-up path joins
 * link:../security-threat-model.adoc#bff-15[Threat model BFF-15] (scope over-request, under-check and session-wide scope growth) and link:../security-threat-model.adoc#bff-16[BFF-16] (authentication-branch downgrade)
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java`: the comparison, the refresh and widening seams, and the `403` problem members

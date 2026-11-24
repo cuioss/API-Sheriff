@@ -96,8 +96,6 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionPayload;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
-import de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests;
-import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
@@ -152,10 +150,7 @@ import de.cuioss.sheriff.token.client.discovery.DiscoveryResolver;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.dpop.DpopProofGenerator;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
-import de.cuioss.sheriff.token.client.flow.AuthorizationRequestBuilder;
-import de.cuioss.sheriff.token.client.flow.CallbackParameters;
 import de.cuioss.sheriff.token.client.flow.CredentialRejectedException;
-import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.sheriff.token.client.flow.ParClient;
 import de.cuioss.sheriff.token.client.flow.RefreshFailureClassification;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
@@ -351,36 +346,39 @@ class BffRuntimeProducerTest {
         }
 
         /**
-         * The wiring-level half of the response-mode assertion — the seam's own behaviour is pinned by
-         * {@code QueryResponseModeAuthorizationRequestBuilderTest}.
+         * The wiring-level half of the response-mode assertion — the seam's own behaviour, that every
+         * request it starts names {@code response_mode=query}, is pinned by {@code ScopedEngineFlowsTest}.
          * <p>
          * This exists because the failure mode it guards is an <em>omission</em>, and an omission is
-         * invisible to a behavioural test of the seam. The engine's
-         * {@link AuthorizationRequestBuilder} emits {@code response_mode=form_post} unconditionally,
-         * and its shorter constructors silently install that default: a future refactor that rebuilt
-         * {@code AuthorizationCodeFlow} through the 4-argument constructor, or {@code StepUpHandler}
-         * through its no-argument one, would compile, pass every seam test, and quietly reintroduce
-         * the cross-site POST callback on which the {@code SameSite=Lax} binding cookie is dropped.
+         * invisible to a behavioural test of the seam. The engine requests {@code response_mode=form_post}
+         * unless a call names another mode, so a future refactor that started an authorization request on
+         * the engine flow directly, bypassing {@link ScopedEngineFlows}, would compile, pass every seam
+         * test, and quietly reintroduce the cross-site POST callback on which the {@code SameSite=Lax}
+         * binding cookie is dropped.
          * <p>
-         * The assertion is therefore made against the object graph the producer actually built, and
-         * it is <strong>type-directed rather than name-directed</strong>: it finds every
-         * {@code AuthorizationRequestBuilder} reachable from the assembled runtime and requires each
-         * one to be the gateway's query-mode subclass. Renaming an engine field does not break it;
-         * reverting a seam to the engine default does — which is exactly the intended sensitivity.
+         * The assertion is therefore made against the object graph the producer actually built, and it
+         * is <strong>type-directed rather than name-directed</strong>: the runtime holds exactly one
+         * engine {@link AuthorizationCodeFlow}, it is the one the one {@link ScopedEngineFlows} drives,
+         * and the login and the widening seam each reach that seam. Renaming an engine field does not
+         * break it; a second flow, or a seam wired past {@link ScopedEngineFlows}, does.
          */
         @Test
-        @DisplayName("Should wire the query-mode response builder into every engine authorization seam")
-        void shouldWireQueryResponseModeIntoEveryAuthorizationSeam() {
-            List<AuthorizationRequestBuilder> wired = reachableInstancesOf(runtime, AuthorizationRequestBuilder.class);
+        @DisplayName("Should start every engine authorization request through the one ScopedEngineFlows")
+        void shouldStartEveryAuthorizationRequestThroughTheScopedSeam() {
+            AuthorizationCodeFlow engineFlow = single(reachableInstancesOf(runtime, AuthorizationCodeFlow.class),
+                    "engine authorization-code flow");
+            ScopedEngineFlows scopedFlows = single(reachableInstancesOf(runtime, ScopedEngineFlows.class),
+                    "per-call scope seam");
+            LoginFlow loginFlow = single(reachableInstancesOf(runtime, LoginFlow.class), "login flow");
+            SessionWidening widening = single(reachableInstancesOf(runtime, SessionWidening.class), "session widening");
 
-            assertFalse(wired.isEmpty(),
-                    "no AuthorizationRequestBuilder was reachable from the assembled runtime — this test "
-                            + "must never pass vacuously; if the producer's wiring moved, retarget the walk");
-            assertAll("every engine seam that builds an authorization URL carries the query-mode builder",
-                    wired.stream().map(builder -> (Executable) () ->
-                            assertInstanceOf(QueryResponseModeAuthorizationRequestBuilder.class, builder,
-                                    "an engine seam is still on the default builder, which emits "
-                                            + "response_mode=form_post")));
+            assertAll("one flow, driven through the one seam that names response_mode=query",
+                    () -> assertSame(engineFlow, single(reachableInstancesOf(scopedFlows, AuthorizationCodeFlow.class),
+                            "flow behind the seam"), "the seam drives the runtime's one flow"),
+                    () -> assertSame(scopedFlows, single(reachableInstancesOf(loginFlow, ScopedEngineFlows.class),
+                            "seam behind the login flow"), "a login starts its request through the seam"),
+                    () -> assertSame(scopedFlows, single(reachableInstancesOf(widening, ScopedEngineFlows.class),
+                            "seam behind the widening"), "a widening starts its request through the seam"));
         }
     }
 
@@ -463,27 +461,20 @@ class BffRuntimeProducerTest {
     }
 
     /**
-     * The {@link ParClient} instances reachable from {@code root} that the engine's own
-     * {@link AuthorizationCodeFlow} does not own. Since TokenSheriff 0.9.10 that flow constructs a
-     * private {@link ParClient} for its {@code authorizePushed} seam. The gateway never calls that
-     * seam — it pushes through {@link PushedAuthorizationRequests} over the one client its producer
-     * builds — so the engine's instance is dormant and not a second client the runtime dials the
-     * identity provider with. Excluding it by owner, rather than by count, keeps every other
-     * {@link ParClient} the producer or a collaborator might build visible to the caller's
-     * exactly-one assertion. The exclusion is kept honest by
-     * {@code engineFlowOwnsADormantPushedRequestClient}: it fails if the engine stops owning one, or
-     * shares the gateway's.
+     * Every {@link ParClient} reachable from {@code root}, the engine-owned one included. The runtime
+     * dials the pushed-authorization-request endpoint through exactly two: the one the engine's
+     * {@link AuthorizationCodeFlow} owns, which pushes every login and widening request
+     * ({@code authorizePushed}), and the one {@link ScopedEngineFlows} owns for the RFC 9470 step-up
+     * re-drive, which the engine offers no pushed entry point for. Nothing is excluded, so a third
+     * client the producer or a collaborator might build is visible to the caller's count;
+     * {@code pushedRequestClientsAreTheEngineFlowsAndTheStepUpSeams} pins which client belongs to which
+     * leg.
      *
      * @param root the assembled object graph to search
-     * @return every reachable {@link ParClient} not held by an {@link AuthorizationCodeFlow}, in walk order
+     * @return every reachable {@link ParClient}, in walk order
      */
     private static List<ParClient> gatewayParClients(Object root) {
-        Set<ParClient> engineOwned = Collections.newSetFromMap(new IdentityHashMap<>());
-        reachableInstancesOf(root, AuthorizationCodeFlow.class)
-                .forEach(flow -> engineOwned.addAll(reachableInstancesOf(flow, ParClient.class)));
-        return reachableInstancesOf(root, ParClient.class).stream()
-                .filter(client -> !engineOwned.contains(client))
-                .toList();
+        return reachableInstancesOf(root, ParClient.class);
     }
 
     /**
@@ -2109,7 +2100,7 @@ class BffRuntimeProducerTest {
             OidcConfig oidc = serverModeOidc();
 
             ClientConfiguration configuration = assembledBackChannel(producer(oidc,
-                    new EgressTlsConfig(true, true, null, true, PROFILE), registry), oidc, oidc.scopes());
+                    new EgressTlsConfig(true, true, null, true, PROFILE), registry), oidc);
 
             assertSame(registry.profileContext(), configuration.getSslContext(),
                     "a named oidc_tls_profile must put exactly its own trust anchors on the back-channel");
@@ -2123,7 +2114,7 @@ class BffRuntimeProducerTest {
             OidcConfig oidc = serverModeOidc();
 
             ClientConfiguration configuration = assembledBackChannel(producer(oidc, EgressTlsConfig.defaults(),
-                    TestTlsConfigurationRegistry.empty()), oidc, oidc.scopes());
+                    TestTlsConfigurationRegistry.empty()), oidc);
 
             assertNull(configuration.getSslContext(),
                     "without a profile no caller context is set, so the resolver — which would refuse the "
@@ -2144,45 +2135,27 @@ class BffRuntimeProducerTest {
         }
 
         @Test
-        @DisplayName("every scoped configuration carries the base configuration's pinned hostname and trust posture")
-        void scopedConfigurationsCarryTheBasePosture() {
+        @DisplayName("the one back-channel configuration carries no scope of its own and the pinned hostname and trust posture")
+        void theOneConfigurationCarriesNoScopeAndThePinnedPosture() {
             TestTlsConfigurationRegistry registry = TestTlsConfigurationRegistry.with(PROFILE);
             OidcConfig oidc = serverModeOidc();
             BffRuntimeProducer profiled = producer(oidc, new EgressTlsConfig(true, true, null, true, PROFILE), registry);
             BffRuntimeProducer relaxed = producer(oidc, oidcHostname(false), TestTlsConfigurationRegistry.empty());
-            List<String> scoped = List.of("openid", SCOPED_ENDPOINT_SCOPE);
 
-            ClientConfiguration profiledBase = profiled.backChannelConfiguration(oidc, oidc.scopes());
-            ClientConfiguration profiledScoped = profiled.backChannelConfiguration(oidc, scoped);
-            ClientConfiguration relaxedBase = relaxed.backChannelConfiguration(oidc, oidc.scopes());
-            ClientConfiguration relaxedScoped = relaxed.backChannelConfiguration(oidc, scoped);
+            ClientConfiguration profiledConfiguration = profiled.backChannelConfiguration(oidc);
+            ClientConfiguration relaxedConfiguration = relaxed.backChannelConfiguration(oidc);
 
-            assertAll("the scope list is the only thing a scoped variant changes",
-                    () -> assertEquals(scoped, profiledScoped.getScopes(), "the variant carries the requested scopes"),
-                    () -> assertEquals(oidc.scopes(), profiledBase.getScopes(), "the base carries oidc.scopes"),
-                    () -> assertSame(registry.profileContext(), profiledScoped.getSslContext(),
-                            "a scoped variant dials with the profile's own trust anchors"),
-                    () -> assertEquals(profiledBase.isVerifyHostname(), profiledScoped.isVerifyHostname()),
-                    () -> assertFalse(relaxedScoped.isVerifyHostname(),
-                            "a relaxed hostname posture reaches every scoped variant too"),
-                    () -> assertEquals(relaxedBase.isVerifyHostname(), relaxedScoped.isVerifyHostname()),
-                    () -> assertNull(relaxedScoped.getSslContext(), "no profile, no caller context, on every variant"));
-        }
-
-        @Test
-        @DisplayName("the hostname/profile collision is refused for a scoped variant as well as at boot")
-        void scopedVariantRefusesTheCollision() {
-            OidcConfig oidc = serverModeOidc();
-            BffRuntimeProducer colliding = producer(oidc, new EgressTlsConfig(true, true, null, false, PROFILE),
-                    TestTlsConfigurationRegistry.with(PROFILE));
-            List<String> scoped = List.of("openid", SCOPED_ENDPOINT_SCOPE);
-
-            GatewayException thrown = assertThrows(GatewayException.class,
-                    () -> colliding.backChannelConfiguration(oidc, scoped));
-
-            assertEquals(EventType.CONFIG_INVALID, thrown.getEventType(),
-                    "a scoped variant can never be built on the posture boot refuses");
-            assertThrows(GatewayException.class, colliding::bffRuntime, "and boot itself still refuses it");
+            assertAll("every leg names its scope set per call, so the configuration carries none",
+                    () -> assertFalse(oidc.scopes().isEmpty(), "control: oidc.scopes is declared"),
+                    () -> assertEquals(List.of(), profiledConfiguration.getScopes(),
+                            "the declared oidc.scopes are not the configuration's — a leg that named no set "
+                                    + "would otherwise send them"),
+                    () -> assertSame(registry.profileContext(), profiledConfiguration.getSslContext(),
+                            "the configuration dials with the profile's own trust anchors"),
+                    () -> assertTrue(profiledConfiguration.isVerifyHostname()),
+                    () -> assertFalse(relaxedConfiguration.isVerifyHostname(),
+                            "a relaxed hostname posture reaches the one configuration"),
+                    () -> assertNull(relaxedConfiguration.getSslContext(), "no profile, no caller context"));
         }
 
         /**
@@ -2225,62 +2198,63 @@ class BffRuntimeProducerTest {
         }
 
         @Test
-        @DisplayName("the pushed-authorization-request client dials with the base configuration when oidc_verify_hostname is false")
-        void pushedRequestClientRidesTheBaseConfigurationWithARelaxedHostname() {
-            assertPushedRequestClientRidesTheBaseConfiguration(oidcHostname(false), false);
+        @DisplayName("both pushed-authorization-request clients dial with the one configuration when oidc_verify_hostname is false")
+        void pushedRequestClientsRideTheOneConfigurationWithARelaxedHostname() {
+            assertPushedRequestClientsRideTheOneConfiguration(oidcHostname(false), false);
         }
 
         @Test
-        @DisplayName("the pushed-authorization-request client dials with the base configuration at the default hostname posture")
-        void pushedRequestClientRidesTheBaseConfigurationAtTheDefaultPosture() {
-            assertPushedRequestClientRidesTheBaseConfiguration(null, true);
+        @DisplayName("both pushed-authorization-request clients dial with the one configuration at the default hostname posture")
+        void pushedRequestClientsRideTheOneConfigurationAtTheDefaultPosture() {
+            assertPushedRequestClientsRideTheOneConfiguration(null, true);
         }
 
         /**
-         * The control for {@link #gatewayParClients(Object)}, which leaves out the {@link ParClient}
-         * the engine's {@link AuthorizationCodeFlow} owns. Without this case that exclusion could
-         * outlive its reason, or hide a gateway client that merely happens to sit behind the flow.
-         * The engine flow owns exactly one {@link ParClient}, it is not the one the gateway's
-         * {@link PushedAuthorizationRequests} adapter pushes through, and the adapter's is not
-         * reachable from the engine flow. Should a TokenSheriff release stop building the extra client,
-         * this fails and the exclusion is deleted with it.
+         * The topology of the push: the runtime dials the pushed-authorization-request endpoint through
+         * exactly two {@link ParClient} instances, and each has its own leg. The one the engine's
+         * {@link AuthorizationCodeFlow} owns is the live client of every login and widening — the engine
+         * pushes those requests itself ({@code authorizePushed}). The other is owned by
+         * {@link ScopedEngineFlows} alone and serves the RFC 9470 step-up re-drive, which the engine
+         * offers no pushed entry point for. The flow the seam drives is the runtime's one flow, so the
+         * seam reaches both clients; the flow reaches only its own.
          */
         @Test
-        @DisplayName("the engine's authorization-code flow owns a dormant pushed-authorization-request client the gateway does not push through")
-        void engineFlowOwnsADormantPushedRequestClient() {
+        @DisplayName("the engine flow's pushed-request client serves login and widening, the seam's serves the step-up re-drive")
+        void pushedRequestClientsAreTheEngineFlowsAndTheStepUpSeams() {
             BffRuntime runtime = producer(serverModeOidc()).bffRuntime();
 
             AuthorizationCodeFlow engineFlow = single(reachableInstancesOf(runtime, AuthorizationCodeFlow.class),
                     "engine authorization-code flow");
-            ParClient engineOwned = single(reachableInstancesOf(engineFlow, ParClient.class),
+            ScopedEngineFlows scopedFlows = single(reachableInstancesOf(runtime, ScopedEngineFlows.class),
+                    "per-call scope seam");
+            ParClient loginAndWidening = single(reachableInstancesOf(engineFlow, ParClient.class),
                     "pushed-authorization-request client the engine flow owns");
-            ParClient gatewayOwned = single(gatewayParClients(runtime), "pushed-authorization-request client");
-            PushedAuthorizationRequests adapter = single(
-                    reachableInstancesOf(runtime, PushedAuthorizationRequests.class), "pushed-request adapter");
+            List<ParClient> all = gatewayParClients(runtime);
+            List<ParClient> stepUpOnly = all.stream().filter(client -> client != loginAndWidening).toList();
 
-            assertAll("two distinct clients, only one of them on the gateway's push path",
-                    () -> assertNotSame(engineOwned, gatewayOwned,
-                            "the engine flow's client is not the gateway's"),
-                    () -> assertSame(gatewayOwned, single(reachableInstancesOf(adapter, ParClient.class),
-                            "client behind the pushed-request adapter"),
-                            "the adapter the gateway pushes through holds the gateway's client"),
-                    () -> assertEquals(0, reachableInstancesOf(adapter, AuthorizationCodeFlow.class).size(),
-                            "and the push path does not run through the engine flow"));
+            assertAll("two distinct clients, one per push leg",
+                    () -> assertEquals(2, all.size(), "exactly two pushed-authorization-request clients: " + all),
+                    () -> assertEquals(1, stepUpOnly.size(), "one of them is not the engine flow's"),
+                    () -> assertSame(engineFlow, single(reachableInstancesOf(scopedFlows, AuthorizationCodeFlow.class),
+                            "flow behind the seam"), "the seam pushes login and widening through the runtime's one flow"),
+                    () -> assertEquals(2, reachableInstancesOf(scopedFlows, ParClient.class).size(),
+                            "the seam reaches the flow's client and its own step-up client"),
+                    () -> assertFalse(reachableInstancesOf(engineFlow, ParClient.class).contains(stepUpOnly.getFirst()),
+                            "the step-up client is the seam's own, not the flow's"));
         }
 
         /**
-         * The pushed authorization request has to carry the hostname and trust posture of every other
-         * back-channel leg (ADR-0045), which it does by riding the base back-channel configuration.
-         * The assertion is type-directed, in the style of the query-mode builder walk: it collects the
-         * one {@link ParClient} reachable from the assembled runtime, then the one
-         * {@link ClientConfiguration} reachable from that client, and requires it to be the very
-         * instance the producer built as its base configuration. No engine field is named, so an
-         * engine field rename does not break it; a client built over any other configuration does.
+         * The pushed authorization requests have to carry the hostname and trust posture of every other
+         * back-channel leg (ADR-0045), which they do by riding the one back-channel configuration. The
+         * assertion is type-directed: it collects every {@link ParClient} reachable from the assembled
+         * runtime, then the one {@link ClientConfiguration} reachable from each, and requires it to be the
+         * very instance the producer built. No engine field is named, so an engine field rename does not
+         * break it; a client built over any other configuration does.
          *
          * @param egressTls        the {@code egress_tls} block, {@code null} for an omitted block
-         * @param verifiesHostname the hostname posture the base configuration must then carry
+         * @param verifiesHostname the hostname posture the configuration must then carry
          */
-        private void assertPushedRequestClientRidesTheBaseConfiguration(@Nullable EgressTlsConfig egressTls,
+        private void assertPushedRequestClientsRideTheOneConfiguration(@Nullable EgressTlsConfig egressTls,
                 boolean verifiesHostname) {
             OidcConfig oidc = serverModeOidc();
             RecordingProducer recording = new RecordingProducer(
@@ -2289,17 +2263,19 @@ class BffRuntimeProducerTest {
 
             BffRuntime runtime = recording.bffRuntime();
 
-            ParClient parClient = single(gatewayParClients(runtime), "pushed-authorization-request client");
-            ClientConfiguration dialled = single(reachableInstancesOf(parClient, ClientConfiguration.class),
-                    "client configuration the pushed-authorization-request client holds");
-            assertAll("the configuration the push dials the identity provider with",
-                    () -> assertEquals(List.of(oidc.scopes()), recording.requested,
-                            "assembly builds the base configuration and no scoped variant"),
-                    () -> assertEquals(1, recording.built.size(), "so exactly one configuration exists to compare with"),
-                    () -> assertSame(recording.built.getFirst(), dialled,
-                            "the push rides the base back-channel configuration itself, not a copy or a variant"),
-                    () -> assertEquals(verifiesHostname, dialled.isVerifyHostname(),
-                            "and so carries the hostname posture of every other back-channel leg"));
+            List<ParClient> parClients = gatewayParClients(runtime);
+            assertEquals(2, parClients.size(), "the login/widening client and the step-up client");
+            assertEquals(1, recording.built.size(), "assembly builds exactly one back-channel configuration");
+            List<Executable> checks = new ArrayList<>();
+            for (ParClient parClient : parClients) {
+                ClientConfiguration dialled = single(reachableInstancesOf(parClient, ClientConfiguration.class),
+                        "client configuration a pushed-authorization-request client holds");
+                checks.add(() -> assertSame(recording.built.getFirst(), dialled,
+                        "a push rides the one back-channel configuration itself, not a copy or a variant"));
+                checks.add(() -> assertEquals(verifiesHostname, dialled.isVerifyHostname(),
+                        "and so carries the hostname posture of every other back-channel leg"));
+            }
+            assertAll("the configuration each push dials the identity provider with", checks);
         }
 
         /**
@@ -2350,33 +2326,39 @@ class BffRuntimeProducerTest {
 
         /**
          * The refresh binding the producer hands the coordinator is driven directly, against the
-         * fixture's discovery document, and the back-channel configuration factory is recorded: the
-         * engine sends exactly the {@code scope} of the configuration it is driven over, so the scope
-         * list that configuration is built for IS the refresh grant's {@code scope}
-         * ({@code ScopedEngineFlowsTest} proves that last step on the wire). The fixture serves no token
-         * endpoint, so the grant itself is refused — the factory call happens before the post.
+         * fixture's discovery document, and the back-channel configuration builds are recorded. The
+         * scope set rides the call, not a configuration: a refresh builds no configuration of its own
+         * and goes through the runtime's one {@link ScopedEngineFlows}, which names the canonical set on
+         * the grant ({@code ScopedEngineFlowsTest} proves the grant's {@code scope} on the wire, and
+         * {@code StubIdentityProviderRuntime} on a produced runtime). The fixture serves no token
+         * endpoint, so the grant itself is refused.
          */
         @Test
-        @DisplayName("the assembled refresh binding requests exactly the set it is given, never the static oidc.scopes")
-        void refreshBindingRequestsTheSetItIsGiven() {
+        @DisplayName("the assembled refresh binding builds no configuration per refresh and goes through the one seam")
+        void refreshBindingGoesThroughTheOneSeam() {
             RecordingProducer recording = recordingProducer();
+            BffRuntime runtime = recording.bffRuntime();
             TokenRefreshCoordinator coordinator = single(
-                    reachableInstancesOf(recording.bffRuntime(), TokenRefreshCoordinator.class), "refresh coordinator");
+                    reachableInstancesOf(runtime, TokenRefreshCoordinator.class), "refresh coordinator");
             TokenRefreshCoordinator.RefreshExchange exchange = single(
                     reachableInstancesOf(coordinator, TokenRefreshCoordinator.RefreshExchange.class),
                     "refresh exchange the coordinator holds");
             Set<String> activeScopes = Set.of("openid", "profile", "email", SCOPED_ENDPOINT_SCOPE);
             String refreshToken = token();
-            recording.requested.clear();
+            int builtAtAssembly = recording.built.size();
 
             assertThrows(RuntimeException.class, () -> exchange.exchange(refreshToken, activeScopes),
-                    "the fixture serves no token endpoint, so the grant is refused after the configuration is built");
+                    "the fixture serves no token endpoint, so the grant is refused");
 
-            assertEquals(List.of(List.of("email", "openid", SCOPED_ENDPOINT_SCOPE, "profile")), recording.requested,
-                    "the refresh rides a configuration built for exactly A (canonical order) — the pre-change "
-                            + "binding drove a flow over the base configuration and asked the factory for nothing");
-            assertFalse(recording.requested.contains(List.of("openid")),
-                    "the static oidc.scopes are never what a refresh requests");
+            assertAll("the refresh rides the one configuration through the one seam",
+                    () -> assertEquals(1, builtAtAssembly, "assembly builds exactly one configuration"),
+                    () -> assertEquals(builtAtAssembly, recording.built.size(),
+                            "a refresh builds no configuration of its own — the set is named per call"),
+                    () -> assertSame(single(reachableInstancesOf(runtime, ScopedEngineFlows.class), "per-call scope seam"),
+                            single(reachableInstancesOf(exchange, ScopedEngineFlows.class), "seam behind the exchange"),
+                            "the exchange refreshes through the runtime's one seam"),
+                    () -> assertEquals(1, reachableInstancesOf(runtime, RefreshFlow.class).size(),
+                            "one refresh flow serves every scope set"));
         }
 
         private RecordingProducer recordingProducer() {
@@ -2404,8 +2386,7 @@ class BffRuntimeProducerTest {
                     .redirectUri(REDIRECT_URI)
                     .session(OidcConfig.Session.builder().mode("server").ttlSeconds(3600).build())
                     .build();
-            return assembledBackChannel(producer(oidc, egressTls, TestTlsConfigurationRegistry.empty()), oidc,
-                    oidc.scopes());
+            return assembledBackChannel(producer(oidc, egressTls, TestTlsConfigurationRegistry.empty()), oidc);
         }
 
         private static EgressTlsConfig oidcHostname(boolean verify) {
@@ -2414,17 +2395,15 @@ class BffRuntimeProducerTest {
     }
 
     /**
-     * A producer that records every scope list its back-channel configuration factory is asked for and
-     * every configuration it then yields, building each exactly as the production method does. Only
-     * the recording is added.
+     * A producer that records every back-channel configuration it builds, building each exactly as the
+     * production method does. Only the recording is added.
      * {@link Vetoed} because {@code @ApplicationScoped} is inherited: without it the test-class index a
      * {@code @QuarkusTest} run builds would see a second producer bean.
      */
     @Vetoed
     private static final class RecordingProducer extends BffRuntimeProducer {
 
-        private final List<List<String>> requested = new CopyOnWriteArrayList<>();
-        /** The configurations the factory built, in call order — one per entry of {@link #requested}. */
+        /** The configurations the producer built, in call order. */
         private final List<ClientConfiguration> built = new CopyOnWriteArrayList<>();
 
         RecordingProducer(GatewayConfig gatewayConfig, TokenValidator tokenValidator,
@@ -2436,9 +2415,8 @@ class BffRuntimeProducerTest {
         }
 
         @Override
-        ClientConfiguration backChannelConfiguration(OidcConfig oidc, List<String> scopes) {
-            requested.add(List.copyOf(scopes));
-            ClientConfiguration configuration = super.backChannelConfiguration(oidc, scopes);
+        ClientConfiguration backChannelConfiguration(OidcConfig oidc) {
+            ClientConfiguration configuration = super.backChannelConfiguration(oidc);
             built.add(configuration);
             return configuration;
         }
@@ -2653,7 +2631,7 @@ class BffRuntimeProducerTest {
         @DisplayName("Should complete discovery against the stub when the trust profile is named")
         void discoveryReachesTheStubThroughTheNamedProfile() {
             OidcConfig oidc = stubOidc().build();
-            ClientConfiguration configuration = assembledBackChannel(stubProducer(oidc), oidc, oidc.scopes());
+            ClientConfiguration configuration = assembledBackChannel(stubProducer(oidc), oidc);
 
             ProviderMetadata metadata = assertDoesNotThrow(() -> new DiscoveryResolver(configuration).resolve(),
                     "the profile holds the stub's root, and the served certificate names the dialled address");
@@ -2674,8 +2652,7 @@ class BffRuntimeProducerTest {
         void discoveryIsRefusedWithoutTheProfile() {
             OidcConfig oidc = stubOidc().build();
             DiscoveryResolver withoutProfile = new DiscoveryResolver(assembledBackChannel(
-                    producer(oidc, EgressTlsConfig.defaults(), TestTlsConfigurationRegistry.empty()), oidc,
-                    oidc.scopes()));
+                    producer(oidc, EgressTlsConfig.defaults(), TestTlsConfigurationRegistry.empty()), oidc));
 
             assertThrows(TransportException.class, withoutProfile::resolve,
                     "the JVM default trust store does not hold the stub's root, so the handshake is refused");
@@ -2689,7 +2666,7 @@ class BffRuntimeProducerTest {
         void discoveryIsRefusedWithoutTheEgressAllowance() {
             OidcConfig oidc = stubOidc().allowedEgressHosts(List.of()).build();
             DiscoveryResolver withoutAllowance = new DiscoveryResolver(
-                    assembledBackChannel(stubProducer(oidc), oidc, oidc.scopes()));
+                    assembledBackChannel(stubProducer(oidc), oidc));
 
             TransportException refused = assertThrows(TransportException.class, withoutAllowance::resolve);
 
@@ -2706,8 +2683,8 @@ class BffRuntimeProducerTest {
             OidcConfig declared = stubOidc().allowedEgressHosts(List.of("keycloak", "idp.internal")).build();
             OidcConfig omitted = stubOidc().allowedEgressHosts(null).backChannelOrigin("https://keycloak:8443").build();
 
-            ClientConfiguration withHosts = assembledBackChannel(stubProducer(declared), declared, declared.scopes());
-            ClientConfiguration withoutHosts = assembledBackChannel(stubProducer(omitted), omitted, omitted.scopes());
+            ClientConfiguration withHosts = assembledBackChannel(stubProducer(declared), declared);
+            ClientConfiguration withoutHosts = assembledBackChannel(stubProducer(omitted), omitted);
 
             assertAll("the allowance is the declared list alone",
                     () -> assertEquals(List.of("keycloak", "idp.internal"), withHosts.getAllowedEgressHosts()),
@@ -2722,7 +2699,7 @@ class BffRuntimeProducerTest {
         void plainHttpIssuerIsRefusedBeforeAnythingIsSent() {
             OidcConfig oidc = stubOidc().issuer(stub.issuer().replaceFirst("^https", "http")).build();
             DiscoveryResolver plainHttp = new DiscoveryResolver(
-                    assembledBackChannel(stubProducer(oidc), oidc, oidc.scopes()));
+                    assembledBackChannel(stubProducer(oidc), oidc));
 
             TransportException refused = assertThrows(TransportException.class, plainHttp::resolve);
 
@@ -3137,7 +3114,7 @@ class BffRuntimeProducerTest {
         }
 
         /**
-         * The code exchange of a widening callback runs on the base flow, through the runtime's one
+         * The code exchange of a widening callback runs on the runtime's one flow, through its one
          * token-endpoint client, exactly as the exchange of a login does. So it carries the client
          * credential of the widening's own push and a proof of the key a login's exchange proves.
          */
@@ -3262,24 +3239,28 @@ class BffRuntimeProducerTest {
         }
 
         /**
-         * The widening and the step-up path add no second client of the identity provider. Whatever
-         * reaches the pushed-authorization-request endpoint is the runtime's one adapter over its one
-         * {@link ParClient}, whatever reaches the token endpoint its one refusing client, and every
-         * authenticated leg holds the one {@link ClientAuthentication}. The walk is type-directed and
-         * made on a runtime with {@code oidc.step_up.path} declared, in both client-authentication modes.
+         * The widening and the step-up path add no further client of the identity provider. Whatever
+         * reaches the pushed-authorization-request endpoint for a login or a widening is the engine
+         * flow's own {@link ParClient}, which the runtime's one {@link ScopedEngineFlows} drives; the
+         * step-up re-drive pushes through the seam's own client, which makes two in all. Whatever reaches
+         * the token endpoint is the runtime's one refusing client, and every authenticated leg holds the
+         * one {@link ClientAuthentication}. The walk is type-directed and made on a runtime with
+         * {@code oidc.step_up.path} declared, in both client-authentication modes.
          */
         @ParameterizedTest(name = "client secret configured: {0}")
         @ValueSource(booleans = {false, true})
-        @DisplayName("Should give the login, the widening and the step-up path one pushed-request adapter, one token-endpoint client and one client authentication")
-        void shouldShareOnePushedRequestAdapterAndOneTokenEndpointClientWithTheWidening(boolean clientSecret) {
+        @DisplayName("Should give the login, the widening and the step-up path one engine flow, one token-endpoint client and one client authentication")
+        void shouldShareTheEngineFlowAndOneTokenEndpointClientWithTheWidening(boolean clientSecret) {
             OidcConfig.OidcConfigBuilder oidc = clientSecret
                     ? stubOidc().clientSecret(Generators.letterStrings(16, 32).next())
                     : stubOidc();
             BffRuntime runtime = stubProducer(
                     oidc.stepUp(OidcConfig.StepUp.builder().path("/auth/step-up").build()).build()).bffRuntime();
 
-            PushedAuthorizationRequests adapter = single(
-                    reachableInstancesOf(runtime, PushedAuthorizationRequests.class), "pushed-request adapter");
+            ScopedEngineFlows scopedFlows = single(reachableInstancesOf(runtime, ScopedEngineFlows.class),
+                    "per-call scope seam");
+            AuthorizationCodeFlow engineFlow = single(reachableInstancesOf(runtime, AuthorizationCodeFlow.class),
+                    "engine authorization-code flow");
             SessionWidening widening = single(reachableInstancesOf(runtime, SessionWidening.class), "session widening");
             LoginFlow loginFlow = single(reachableInstancesOf(runtime, LoginFlow.class), "login flow");
             StepUpEndpoint stepUpEndpoint = single(reachableInstancesOf(runtime, StepUpEndpoint.class),
@@ -3287,13 +3268,15 @@ class BffRuntimeProducerTest {
             List<TokenEndpointClient> tokenEndpointClients = reachableInstancesOf(runtime, TokenEndpointClient.class);
 
             assertAll("one identity-provider client of each kind for the whole runtime",
-                    () -> assertEquals(1, gatewayParClients(runtime).size(),
-                            "exactly one pushed-authorization-request client is constructed"),
-                    () -> assertSame(adapter, single(reachableInstancesOf(widening, PushedAuthorizationRequests.class),
-                            "pushed-request adapter behind the widening seam"),
-                            "a widening pushes through the adapter a login pushes through"),
-                    () -> assertSame(adapter, single(reachableInstancesOf(loginFlow, PushedAuthorizationRequests.class),
-                            "pushed-request adapter behind the login seam")),
+                    () -> assertEquals(2, gatewayParClients(runtime).size(),
+                            "exactly two pushed-authorization-request clients: the engine flow's and the step-up one"),
+                    () -> assertSame(engineFlow, single(reachableInstancesOf(scopedFlows, AuthorizationCodeFlow.class),
+                            "flow behind the seam"), "login and widening push through the runtime's one flow"),
+                    () -> assertSame(scopedFlows, single(reachableInstancesOf(widening, ScopedEngineFlows.class),
+                            "seam behind the widening"),
+                            "a widening pushes through the seam a login pushes through"),
+                    () -> assertSame(scopedFlows, single(reachableInstancesOf(loginFlow, ScopedEngineFlows.class),
+                            "seam behind the login flow")),
                     () -> assertSame(widening, single(reachableInstancesOf(stepUpEndpoint, SessionWidening.class),
                             "session widening behind the step-up endpoint"),
                             "the step-up path starts its widening through the runtime's one SessionWidening"),
@@ -3605,28 +3588,26 @@ class BffRuntimeProducerTest {
         }
 
         /**
-         * One sender constraint binds every flow. The base flow's exchange and the refresh grant are
-         * driven through the runtime's own seams; the per-scope login flow's exchange has no production
-         * caller and is driven by hand — see {@link #loginFlowExchange(BffRuntime)}, which reads the
-         * cached flow from {@code ScopedEngineFlows.authorizationFlows} by name.
+         * One sender constraint binds every flow. The runtime holds one authorization-code flow, which
+         * pushes every login and widening and redeems every callback code, and one refresh flow; both are
+         * driven through the runtime's own seams.
          */
         @ParameterizedTest(name = "{0} sender-constraint key")
         @EnumSource(KeyMode.class)
-        @DisplayName("Should prove possession of one key on the code exchange, a per-scope login flow and a refresh")
+        @DisplayName("Should prove possession of one key on the code exchange and on a refresh")
         void shouldProveOneKeyOnEveryFlow(KeyMode mode) throws Exception {
             KeyFixture fixture = senderConstraintFixture(mode);
             BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
 
-            String baseFlowKey = proofKeyThumbprint(proofOf(drive(Leg.CODE_EXCHANGE, runtime)));
-            String loginFlowKey = proofKeyThumbprint(proofOf(loginFlowExchange(runtime)));
+            String codeExchangeKey = proofKeyThumbprint(proofOf(drive(Leg.CODE_EXCHANGE, runtime)));
             String refreshKey = proofKeyThumbprint(proofOf(drive(Leg.REFRESH_GRANT, runtime)));
 
             assertAll("one proof key for the whole runtime, with a " + mode + " key",
-                    () -> assertEquals(baseFlowKey, loginFlowKey,
-                            "a per-scope login flow proves possession of the base flow's key"),
-                    () -> assertEquals(baseFlowKey, refreshKey,
-                            "the refresh grant proves possession of the base flow's key"),
-                    () -> fixture.expectedKeyId().ifPresent(expected -> assertEquals(expected, baseFlowKey,
+                    () -> assertEquals(1, reachableInstancesOf(runtime, AuthorizationCodeFlow.class).size(),
+                            "one flow serves the login, the widening and every callback exchange"),
+                    () -> assertEquals(codeExchangeKey, refreshKey,
+                            "the refresh grant proves possession of the code exchange's key"),
+                    () -> fixture.expectedKeyId().ifPresent(expected -> assertEquals(expected, codeExchangeKey,
                             "and that key is the configured sender-constraint key")));
         }
 
@@ -3941,11 +3922,6 @@ class BffRuntimeProducerTest {
             assertNoRecordCarriesTheSecret(fixture);
         }
 
-        /**
-         * The per-scope login flow's exchange has no production caller and is driven by hand, as in
-         * {@link #shouldProveOneKeyOnEveryFlow(KeyMode)} and for the same reason — see
-         * {@link #loginFlowExchange(BffRuntime)}.
-         */
         @ParameterizedTest(name = "{0} sender-constraint key")
         @EnumSource(KeyMode.class)
         @DisplayName("Should present the Basic credential and a DPoP proof of one key on every token leg in client-secret mode")
@@ -3954,22 +3930,17 @@ class BffRuntimeProducerTest {
             SecretFixture fixture = keyed.credential();
             BffRuntime runtime = stubProducer(fixture.oidc()).bffRuntime();
 
-            StubIdentityProvider.ReceivedRequest baseExchange = drive(Leg.CODE_EXCHANGE, runtime);
-            StubIdentityProvider.ReceivedRequest loginFlowExchange = loginFlowExchange(runtime);
+            StubIdentityProvider.ReceivedRequest codeExchange = drive(Leg.CODE_EXCHANGE, runtime);
             StubIdentityProvider.ReceivedRequest refresh = drive(Leg.REFRESH_GRANT, runtime);
 
-            assertPresentsTheBasicCredentialOnly(fixture, baseExchange, "the code exchange of the base flow");
-            assertPresentsTheBasicCredentialOnly(fixture, loginFlowExchange, "the code exchange of a per-scope flow");
+            assertPresentsTheBasicCredentialOnly(fixture, codeExchange, "the code exchange");
             assertPresentsTheBasicCredentialOnly(fixture, refresh, "the refresh grant");
-            String baseFlowKey = assertCarriesAProof(baseExchange, mode);
-            String loginFlowKey = assertCarriesAProof(loginFlowExchange, mode);
+            String codeExchangeKey = assertCarriesAProof(codeExchange, mode);
             String refreshKey = assertCarriesAProof(refresh, mode);
             assertAll("one proof key on every token leg of a client-secret runtime, with a " + mode + " key",
-                    () -> assertEquals(baseFlowKey, loginFlowKey,
-                            "a per-scope login flow proves possession of the base flow's key"),
-                    () -> assertEquals(baseFlowKey, refreshKey,
-                            "the refresh grant proves possession of the base flow's key"),
-                    () -> keyed.expectedProofKey().ifPresent(expected -> assertEquals(expected, baseFlowKey,
+                    () -> assertEquals(codeExchangeKey, refreshKey,
+                            "the refresh grant proves possession of the code exchange's key"),
+                    () -> keyed.expectedProofKey().ifPresent(expected -> assertEquals(expected, codeExchangeKey,
                             "and that key is the configured sender-constraint key")));
             assertNoRecordCarriesTheSecret(fixture);
         }
@@ -4571,55 +4542,6 @@ class BffRuntimeProducerTest {
             return new WideningCallback(pushed, code, exchange, answered.get());
         }
 
-        /**
-         * Drives a code exchange on the per-scope login flow the runtime cached, by hand.
-         * <p>
-         * In a running gateway that flow only renders the authorization URL: the callback's exchange
-         * runs on the base flow. So no dispatch reaches this exchange, and the flow sits in a
-         * {@link java.util.concurrent.ConcurrentHashMap} the reachable-instances walk does not enter.
-         * The cached flow is therefore read from {@code ScopedEngineFlows.authorizationFlows} by name
-         * and driven directly against the stub's token endpoint, with the client authentication the
-         * runtime itself holds. The stub refuses the grant; the request it recorded is what is asserted.
-         *
-         * @param runtime a runtime whose login leg has already been dispatched once, so that exactly
-         *                one per-scope flow is cached
-         * @return the token request the per-scope flow sent
-         */
-        private StubIdentityProvider.ReceivedRequest loginFlowExchange(BffRuntime runtime) {
-            AuthorizationCodeFlow loginFlow = cachedLoginFlowOf(runtime);
-            ClientAuthentication authentication = single(
-                    reachableInstancesOf(runtime, ClientAuthentication.class), "client authentication");
-            ProviderMetadata metadata = stubMetadata();
-            FlowContext context = loginFlow.authorize(metadata).context();
-            CallbackParameters callback = CallbackParameters.parse("code=" + token() + "&state=" + context.state());
-
-            StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.TOKEN,
-                    () -> assertThrows(TransportException.class,
-                            () -> loginFlow.exchange(metadata, context, callback, authentication),
-                            "the stub refuses the grant"));
-
-            assertEquals("authorization_code", request.form().get("grant_type"),
-                    "the request is the per-scope flow's code exchange");
-            return request;
-        }
-
-        /** The one per-scope login flow the runtime cached, read from the seam's cache field by name. */
-        private static AuthorizationCodeFlow cachedLoginFlowOf(BffRuntime runtime) {
-            ScopedEngineFlows scopedFlows = single(reachableInstancesOf(runtime, ScopedEngineFlows.class),
-                    "per-scope engine flow seam");
-            try {
-                Field cache = ScopedEngineFlows.class.getDeclaredField("authorizationFlows");
-                cache.setAccessible(true);
-                Map<?, ?> flows = (Map<?, ?>) cache.get(scopedFlows);
-                assertEquals(1, flows.size(),
-                        "the login leg cached exactly the one flow of the scope set it requested");
-                return assertInstanceOf(AuthorizationCodeFlow.class, flows.values().iterator().next());
-            } catch (ReflectiveOperationException e) {
-                throw new AssertionError("ScopedEngineFlows no longer holds an authorizationFlows field — "
-                        + "retarget this read to where the per-scope login flows are cached", e);
-            }
-        }
-
         /** The provider metadata of the stub, hand-built: the issuer, the token endpoint and PKCE S256. */
         private ProviderMetadata stubMetadata() {
             ProviderMetadata metadata = new ProviderMetadata();
@@ -4929,7 +4851,7 @@ class BffRuntimeProducerTest {
          * the secret.
          */
         private void assertNoRecordCarriesTheSecret(SecretFixture fixture) {
-            SheriffDebugCapture.assertDebugIsCaptured(BffRuntimeProducer.class, PushedAuthorizationRequests.class,
+            SheriffDebugCapture.assertDebugIsCaptured(BffRuntimeProducer.class, ScopedEngineFlows.class,
                     ParClient.class, TokenEndpointClient.class);
             List<LogRecord> records = SheriffDebugCapture.capturedRecords();
             assertFalse(records.isEmpty(),
@@ -4961,8 +4883,8 @@ class BffRuntimeProducerTest {
      * authorization endpoint on the public issuer — the origin is transport, never identity.
      * <p>
      * <strong>The cleartext opt-in.</strong> {@code allowInsecureHttp} is set only when the opt-in is
-     * {@code true}, on the base configuration and on every scoped variant alike, and the widening is
-     * reported once per runtime build, never once per scoped variant.
+     * {@code true}, on the one configuration every leg dials with, and the widening is reported once per
+     * runtime build.
      */
     @Nested
     @EnableTestLogger
@@ -4979,7 +4901,6 @@ class BffRuntimeProducerTest {
         private static final String SCOPED_ROUTE_PREFIX = "/orders";
         /** {@code oidc.scopes ∪ endpoint.scopes} for the scoped session route. */
         private static final Set<String> SCOPED_NEEDED_SCOPES = Set.of("openid", SCOPED_ENDPOINT_SCOPE);
-        private static final List<String> SCOPED_SCOPES = List.of("openid", SCOPED_ENDPOINT_SCOPE);
 
         private StubIdentityProvider stub;
 
@@ -5028,8 +4949,8 @@ class BffRuntimeProducerTest {
         }
 
         @Test
-        @DisplayName("Should carry the origin on every scoped variant, and push a scoped login through it")
-        void shouldCarryTheOriginOnEveryScopedVariant() {
+        @DisplayName("Should carry the origin on the one configuration, and push a scoped login through it")
+        void shouldCarryTheOriginOnTheOneConfiguration() {
             OidcConfig oidc = publicIssuerOidc(stub.origin());
             BffRuntimeProducer producer = stubProducer(oidc, new RouteTable(List.of(
                     StubIdentityProviderRuntime.scopedRoute("orders", SCOPED_ROUTE_PREFIX, SCOPED_NEEDED_SCOPES))));
@@ -5038,14 +4959,12 @@ class BffRuntimeProducerTest {
             BffRuntime.ReservedHttpResponse answer =
                     StubIdentityProviderRuntime.login(runtime, SCOPED_ROUTE_PREFIX + "/list");
 
-            ClientConfiguration base = producer.backChannelConfiguration(oidc, oidc.scopes());
-            ClientConfiguration scoped = producer.backChannelConfiguration(oidc, SCOPED_SCOPES);
+            ClientConfiguration configuration = producer.backChannelConfiguration(oidc);
             List<StubIdentityProvider.ReceivedRequest> pushed =
                     stub.received(StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST);
-            assertAll("the origin is set on the base configuration and on every scoped variant alike",
-                    () -> assertEquals(stub.origin(), base.getBackChannelOrigin()),
-                    () -> assertEquals(stub.origin(), scoped.getBackChannelOrigin(),
-                            "a scoped variant can never fall back to dialling the issuer"),
+            assertAll("the origin is set on the one configuration a scoped login is pushed over",
+                    () -> assertEquals(stub.origin(), configuration.getBackChannelOrigin(),
+                            "no leg can fall back to dialling the issuer"),
                     () -> assertEquals(302, answer.status(), "the scoped login is redirected"),
                     () -> assertEquals(1, pushed.size(), "its pushed request reached the stub through the origin"),
                     () -> assertEquals(SCOPED_NEEDED_SCOPES, Set.of(String.valueOf(pushed.getFirst().form()
@@ -5108,34 +5027,29 @@ class BffRuntimeProducerTest {
             OidcConfig oidc = serverModeOidc();
             BffRuntimeProducer producer = producer(oidc);
 
-            ClientConfiguration base = assembledBackChannel(producer, oidc, oidc.scopes());
-            ClientConfiguration scoped = producer.backChannelConfiguration(oidc, SCOPED_SCOPES);
+            ClientConfiguration base = assembledBackChannel(producer, oidc);
 
             assertAll("an absent key means one authority for everything, over TLS",
                     () -> assertNull(base.getBackChannelOrigin()),
-                    () -> assertNull(scoped.getBackChannelOrigin()),
                     () -> assertFalse(base.isAllowInsecureHttp()),
-                    () -> assertFalse(scoped.isAllowInsecureHttp()),
                     () -> assertEquals(0, insecureHttpWarnings(), "nothing is widened, so nothing is reported"));
         }
 
         @Test
-        @DisplayName("Should admit cleartext on every variant under the opt-in and report it once per runtime build")
+        @DisplayName("Should admit cleartext under the opt-in and report it once per runtime build")
         void shouldAdmitCleartextUnderTheOptInAndReportItOnce() {
             OidcConfig oidc = withBackChannel(serverModeOidc(), CLEARTEXT_ORIGIN, true);
             BffRuntimeProducer producer = producer(oidc);
 
             BffRuntime runtime = producer.bffRuntime();
-            ClientConfiguration base = producer.backChannelConfiguration(oidc, oidc.scopes());
-            ClientConfiguration scoped = producer.backChannelConfiguration(oidc, SCOPED_SCOPES);
+            ClientConfiguration base = producer.backChannelConfiguration(oidc);
 
-            assertAll("the opt-in widens the whole client, on the base configuration and every scoped variant",
+            assertAll("the opt-in widens the whole client",
                     () -> assertTrue(runtime.isActive()),
                     () -> assertEquals(CLEARTEXT_ORIGIN, base.getBackChannelOrigin()),
                     () -> assertTrue(base.isAllowInsecureHttp()),
-                    () -> assertTrue(scoped.isAllowInsecureHttp(), "a scoped variant carries the same posture"),
                     () -> assertEquals(1, insecureHttpWarnings(),
-                            "the widening is reported once per runtime build, never once per scoped variant"));
+                            "the widening is reported once per runtime build, not once per configuration built"));
         }
 
         @Test
@@ -5145,13 +5059,11 @@ class BffRuntimeProducerTest {
             BffRuntimeProducer producer = producer(oidc);
 
             producer.bffRuntime();
-            ClientConfiguration base = producer.backChannelConfiguration(oidc, oidc.scopes());
-            ClientConfiguration scoped = producer.backChannelConfiguration(oidc, SCOPED_SCOPES);
+            ClientConfiguration base = producer.backChannelConfiguration(oidc);
 
             assertAll("the key alone sets the origin and never the cleartext posture",
                     () -> assertEquals(HTTPS_ORIGIN, base.getBackChannelOrigin()),
                     () -> assertFalse(base.isAllowInsecureHttp()),
-                    () -> assertFalse(scoped.isAllowInsecureHttp()),
                     () -> assertEquals(0, insecureHttpWarnings()));
         }
 
@@ -5620,12 +5532,11 @@ class BffRuntimeProducerTest {
 
     /**
      * Builds the back-channel configuration exactly as {@code build} does: the posture is reported once,
-     * then the configuration for {@code scopes} is built through the same seam every scoped variant uses.
+     * then the one configuration every leg dials with is built.
      */
-    private static ClientConfiguration assembledBackChannel(BffRuntimeProducer producer, OidcConfig oidc,
-            List<String> scopes) {
+    private static ClientConfiguration assembledBackChannel(BffRuntimeProducer producer, OidcConfig oidc) {
         producer.reportBackChannelPosture(oidc);
-        return producer.backChannelConfiguration(oidc, scopes);
+        return producer.backChannelConfiguration(oidc);
     }
 
     private static OidcConfig serverModeOidc() {

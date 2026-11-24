@@ -28,7 +28,7 @@ image::../resources/diagrams/auth-variants-and-scope-enforcement.svg[Authenticat
 route's `neededScopes = oidc.scopes ∪ endpoint.scopes` is materialized once at boot (`endpoint.scopes`
 alone without an `oidc` block) so requesting and checking never drift apart
 (link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057],
-link:../adr/0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]):
+link:../adr/0083-Per-request_OIDC_scope_is_named_per_call_on_one_engine_flow.adoc[ADR-0083]):
 
 * *Bearer check.* Compares the validated token against `neededScopes`; a shortfall is `403
   SCOPE_MISSING` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"` (RFC
