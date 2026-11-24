@@ -45,12 +45,13 @@ decision.
 
 <!-- ANNOTATION ZONE — hand-written, and deliberately OUTSIDE the generated table markers. -->
 
-- PLAN-20 — staged, HELD 2026-11-22 on the operator's call behind PLAN-33: the two share 14 files (`TokenRefreshCoordinator`
+- PLAN-20 — staged, was HELD 2026-11-22 behind PLAN-33, which landed 2026-11-24 (#656); re-ground it before emitting. The hold's reason: the two share 14 files (`TokenRefreshCoordinator`
   and its test, `CallbackEndpoint`, ADR-0057/0063/0074, the threat model, `LogMessages`, two JWKS ITs). Re-ground it again against
   PLAN-33's result before emitting; it still needs the operator decision at outline (replay against the streaming stance) and must
   call the step-up result verifier.
-- PLAN-33 — staged 2026-11-12, **emitted and `launched` 2026-11-22** (operator chose it alone over PLAN-20; the cleanup
-  re-ground of the same day is in its `## Expected Surface` banner). WS-05; the operator's next plan to run. Its overlap with PLAN-31 on
+- PLAN-33 — **SHIPPED 2026-11-24 as #656 (`6ea8bf31`)**; D4 dropped (dependency kept for PLAN-34), D1-D3 and D5 met with findings:
+  see `landings/PLAN-33.md`. The note below is the pre-landing record. Staged 2026-11-12, emitted and `launched` 2026-11-22 (operator chose it alone over PLAN-20; the cleanup
+  re-ground of the same day is in its `## Expected Surface` banner). WS-05. Its overlap with PLAN-31 on
   `RetryingJwksLoader` and its test is gone: PLAN-31 merged as #605 (2026-11-15), so the spec's surface now
   sits on the merged `RefreshBasis` rule. Staged PLAN-SEC-06 (sibling epic) deliverable 3 also edits
   `RetryingJwksLoader.settleRefresh`: re-run the cross-check at the gate.
@@ -58,8 +59,8 @@ decision.
   `token-sheriff-client-quarkus` (it interacts with PLAN-34 D1: TokenSheriff's native-image plan would put
   the registration into that extension), readiness for a stale-degraded issuer.
 - PLAN-34 — staged 2026-11-12, WS-05; **TokenSheriff 0.9.10 released 2026-11-23 and PINNED on `main`** (bump PR #658 merged
-  `4213eb1f`, with a test-only fix for the dormant engine `ParClient`). Still BLOCKED, now on PLAN-33 (#656) alone, which has not
-  landed. Not emitted; first step at outline is the verify-first read of the resolved jar. Depends on PLAN-33 and on TokenSheriff epic
+  `4213eb1f`, with a test-only fix for the dormant engine `ParClient`). **Unblocked 2026-11-24: PLAN-33 landed (#656).** Not emitted: every
+  claim is stale against the new `main` and the verify-first re-ground of the resolved 0.9.10 jar is owed first. first step at outline is the verify-first read of the resolved jar. Depends on PLAN-33 and on TokenSheriff epic
   `api-sheriff-seams`; every TokenSheriff API name in it is a proposal to re-verify against the
   released jar. Shares `BffRuntimeProducer` with PLAN-20; the order of PLAN-20 and PLAN-34 is open.
 
@@ -190,6 +191,23 @@ decision.
 
 ## Decisions
 
+- 2026-11-24 — **Emit: PLAN-34 alone (operator answer to the overlap prompt).** `parallelization_scope` 2, nothing in flight, so two
+  slots. PLAN-20 and PLAN-34 both pass the prep-ready test (no blocking verdict; every claim of both is stale after #656, and
+  staleness never blocks), the declared test (both spec-skills declarations flagged only, `emit_allowed`) and the disjointness test
+  against in-flight work (none). Emitting both would have shared 36 files; the operator chose PLAN-34 only. `auto_emit` is true, so
+  PLAN-34 is recorded `launched`; launched to running stays operator-owned. PLAN-20 stays held: re-ground against the new `main`, take
+  its outline decision, call the step-up result verifier. The re-ground of PLAN-34 is its own first step (verify-first read of the
+  resolved 0.9.10 jar), as the Queue annotations say.
+- 2026-11-24 — **`analyze`: PLAN-33 landed (#656, `6ea8bf31`) and was reconciled.** One inbox landing drained (incomplete at three
+  optional-class keys, recorded as an Open Defect), a three-layer read by one read-only leaf, eight points re-read by the orchestrator,
+  the rest recorded as leads. D4 was dropped by design, D1-D3 and D5 met; no blocker. The row is `shipped`, stamped `#656`,
+  `landings/PLAN-33.md`, `plan-33-adapt-to-token-sheriff-0-9-9`. **Fix routing:** the new findings (L3-1 test gap, L3-2 Javadoc, L2-1
+  logout-verifier WARN reason, L2-2 `destroyIfCurrent` test, `@since`, doc wording lag) join the DUE fix plan, which is still
+  unstaged, so the proposed scope grows from nine to **twelve** deliverables (the spec cap), with the five held `RetryingJwksLoader`
+  fixes that were to join later: re-group at staging, or split. The layer-3 defects were reported to the operator in the same turn.
+  **Open consequence for the held fixes:** PLAN-33 changed `RetryingJwksLoader` (`getLoaderStatus`, `settleRefresh` neighbourhood), so
+  the five fixes of item 2 must be re-read against the merged file at PLAN-34's re-ground before they are routed. **PLAN-34 and PLAN-20:**
+  every claim of both is now stale against the new `main`; both need the verify-first re-ground, PLAN-34 against the resolved 0.9.10 jar.
 - 2026-11-24 — **Batch B2 closed by the operator's Actions check.** The operator ran `.plan/temp/check-main-runs.sh`. Maven Build is
   GREEN with `deploy-snapshot` success on `5aa17338`, `3e3addc`, `69b322b`, `c1b09c7`, `f6067588` and `ad00807d`; Integration Tests
   is GREEN on `5aa17338`. Those four entries are retired in place. **Kept open (two residuals):** PLAN-18's Integration Tests run
@@ -386,6 +404,25 @@ decision.
   large plan covering both; rejected because PLAN-34 cannot start before a TokenSheriff release.
 
 ## Open Defects
+
+- **PLAN-33's inbox landing is incomplete (2026-11-24).** `plan-33-adapt-to-token-sheriff-0-9-9-001.md` misses the required keys
+  `effort`, `review_body_findings_total` and `review_body_findings_handled` (`inbox landing-check`: `complete: false`); it was drained
+  and reconciled as far as it goes. A manual paste from that plan may still surface the missing facts. — source: `landings/PLAN-33.md`
+- **PLAN-33 layer-3 and layer-2 findings, reported to the operator, nothing fixed inline (2026-11-24).** No blocker. (L3-1, major but
+  conditional) `degradedLoaderRejectsAValidTokenFailClosed` degrades the loader BEFORE the validator is built, so whether the library
+  issuer cache re-reads the status on every validation (an issuer admitted and degraded afterwards) is tested nowhere here, and the
+  `max_staleness_seconds` fail-closed claim rests on it; the 0.9.10 `IssuerConfigCache` was not decompiled
+  (`TokenValidatorProducerTest.java:1272`). (L3-2) the `RetryingJwksLoader` Javadoc :756 and :822-824 still says an unknown key id "can
+  still claim a refresh that re-admits the issuer", which ADR-0063 contradicts. (L3-3, lead) after a first load the library recovered
+  itself, `runRetry` replaces the recovered `OK` delegate with a fresh `LOADING` one (:501-503). (L3-4, lead) the loser of a
+  refresh-versus-widening race abandons its rotated refresh token unrevoked (`TokenRefreshCoordinator.java:666`; operator-accepted
+  residual, a reasoning not a test). (L3-5, lead) a refresh that loses to a widening gets `NO_SESSION` (:630-632). (L2-1) the logout
+  verifier now refuses a non-`OK` issuer (`SignatureOnlyTokenVerifier.java:149-150`), explained by no deliverable and logged as
+  "signature-rejected", which misleads during a JWKS outage. (L2-2) `CookieSessionBinding.destroyIfCurrent` has no direct test.
+  (L1-1) the Done-when trace YAML key to rejected token is split in two links. (L3-6) `SessionBinding.PersistResult` factories
+  :360, :367, :375 lack `@since`. (L3-7) wording lag in `doc/user/bff-session.adoc` :1003 and :870, `doc/variants/02-bff-session.adoc`
+  :208 and four ADR or doc tables the PR left open on purpose. **Routed (standing fix-routing rule): these join the due fix plan's
+  scope**, see `## Decisions` 2026-11-24. — source: `landings/PLAN-33.md`
 
 > ↪ Decided 2026-11-23 by the operator in `handle-open` (item 1; the recommendation sat at confidence 70, below the 75 threshold, so it was
 > put to the operator): **the narrowing is ACCEPTED in writing.** PLAN-31's shipped publish rule discards a refresh whose basis moved
