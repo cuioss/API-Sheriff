@@ -220,7 +220,7 @@ decision.
   decisions, not orchestrator decisions.
 - 2026-11-23 — **Threshold lowered to 60; second `handle-open` re-read pass (operator: "revisit all finding, decide if you are 60%
   confident").** The `orchestrator.decision_confidence_threshold` knob was found at 90 (the earlier change to 75 was not on disk)
-  and is now 60, uncommitted in `.plan/marshal.json`. Decided this pass: item 5 narrowed (2 fixes to the backlog, applied at the
+  and was set to 60 for this run only; the operator reverted it to 90 on 2026-11-24, so the knob stays 90 and nothing is owed. Decided this pass: item 5 narrowed (2 fixes to the backlog, applied at the
   threshold on the operator's wording), the WARN-id/ADR-ordinal watch retired on PLAN-20's spec, and the retry-jitter question
   answered (SmallRye's default jitter is 200 ms; 1 wording fix to the backlog). **Backlog now: 8** (5 from item 2, 2 from item 5,
   1 retry wording), under 10, so no fix plan yet; target plan still held for PLAN-34's re-ground. Items 3 and 4 were answered by
