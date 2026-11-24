@@ -15,10 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
-import java.util.Optional;
-import java.util.regex.Pattern;
-
-
 import de.cuioss.sheriff.gateway.config.PolicyBlock;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
@@ -30,6 +26,7 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
+import de.cuioss.sheriff.token.commons.transport.EgressHostValidator;
 import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
 
@@ -71,16 +68,6 @@ import org.jspecify.annotations.Nullable;
  */
 @UtilityClass
 public class RuleSupport {
-
-    /**
-     * An {@code allowed_egress_hosts} entry carrying a port, matched against the WHOLE entry
-     * ({@link java.util.regex.Matcher#matches()}): a single-colon {@code name:digits} form, or a
-     * bracketed {@code [v6]:digits} form. The name part of the first alternative excludes every colon,
-     * so a bare IPv6 literal such as {@code fd00::1} — whose second colon cannot be followed by digits
-     * only — never matches. Every quantifier is possessive; the character classes are disjoint from
-     * the delimiters that follow them, so no give-back could ever succeed.
-     */
-    private static final Pattern HOST_WITH_PORT = Pattern.compile("[^:\\[\\]]*+:\\d++|\\[[^\\]]*+\\]:\\d++");
 
     /** The file name every refusal of a {@code gateway.yaml} key is reported against. */
     public static final String GATEWAY_FILE = "gateway.yaml";
@@ -220,33 +207,32 @@ public class RuleSupport {
     }
 
     /**
-     * The shape review every {@code allowed_egress_hosts} list is held to, whichever block declares it:
-     * each entry is handed to token-sheriff's egress guard, which exempts exactly the host it names from
-     * the private-address refusal and matches it host-exact. Two shapes can therefore never match
-     * anything, and an operator declaring one believes an exemption is in force that no dial ever meets:
-     * <ul>
-     *   <li>a <strong>blank or whitespace-only</strong> entry names no host at all;</li>
-     *   <li>a <strong>{@code host:port}</strong> entry — a single-colon {@code name:digits} form or a
-     *       bracketed {@code [v6]:digits} form — names a host the guard never compares against. A bare
-     *       IPv6 literal such as {@code fd00::1} is a host, not a {@code host:port} pair, and is
-     *       admitted.</li>
-     * </ul>
-     * The refusal reason is fixed text and echoes nothing of the entry.
+     * Words the token engine's refusal of one {@code allowed_egress_hosts} entry for the boot log,
+     * whichever block declares the list. Whether an entry is refused, and why, is decided by the
+     * engine's own shape check ({@link EgressHostValidator#refusal}) — the check its SSRF egress guard
+     * holds the same list to — so the boot review and the guard cannot disagree about which entry names
+     * a bare host. The engine refuses a blank entry, a control, whitespace or non-ASCII character, URL
+     * syntax ({@code / @ ? # %}), a port (a single colon, or a colon after a bracketed IPv6 literal), a
+     * malformed IPv6 literal and anything that is no host name or IPv4 literal; a bare IPv6 literal
+     * such as {@code fd00::1} is a host and is admitted.
+     * <p>
+     * Only the wording is the gateway's: a blank entry — the engine refuses exactly
+     * {@link String#isBlank() blank} entries as blank — is given the caller's remedy, and every other
+     * refusal carries the engine's fixed reason followed by the host-exact remedy. Both are fixed text
+     * that echoes nothing of the entry; the caller echoes the entry through {@link #renderForMessage}.
      *
-     * @param entry       the configured entry
-     * @param blankRemedy what the operator does about a blank entry, completing the sentence
-     *                    {@code "a blank entry names no host to exempt from the SSRF egress guard — "}
-     * @return the refusal reason, or empty when the entry names a bare host
+     * @param entry         the configured entry the engine refused
+     * @param engineRefusal the engine's fixed refusal reason for {@code entry}
+     * @param blankRemedy   what the operator does about a blank entry, completing the sentence
+     *                      {@code "a blank entry names no host to exempt from the SSRF egress guard — "}
+     * @return the refusal reason to report
      */
-    public static Optional<String> egressHostRefusal(String entry, String blankRemedy) {
+    public static String egressEntryRefusalReason(String entry, String engineRefusal, String blankRemedy) {
         if (entry.isBlank()) {
-            return Optional.of("a blank entry names no host to exempt from the SSRF egress guard — " + blankRemedy);
+            return "a blank entry names no host to exempt from the SSRF egress guard — " + blankRemedy;
         }
-        if (HOST_WITH_PORT.matcher(entry).matches()) {
-            return Optional.of("the allowlist matches hosts only (host-exact), so an entry carrying a port "
-                    + "never matches — declare the bare host");
-        }
-        return Optional.empty();
+        return engineRefusal + "; the allowlist matches hosts only (host-exact), so an entry carrying a port "
+                + "or any other decoration never matches — declare the bare host";
     }
 
     /**

@@ -15,7 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.bff.client;
 
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.AlgorithmParameters;
 import java.security.GeneralSecurityException;
@@ -29,7 +28,6 @@ import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Signature;
 import java.security.interfaces.ECKey;
-import java.security.interfaces.ECPublicKey;
 import java.security.interfaces.RSAKey;
 import java.security.interfaces.RSAPublicKey;
 import java.security.spec.ECGenParameterSpec;
@@ -40,7 +38,6 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.PSSParameterSpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -54,6 +51,7 @@ import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.KeyFiles;
 import de.cuioss.sheriff.token.client.auth.PrivateKeyJwtAuth;
 import de.cuioss.sheriff.token.client.dpop.DpopProofGenerator;
+import de.cuioss.sheriff.token.client.dpop.JwkPublicMembers;
 import de.cuioss.sheriff.token.client.dpop.SenderConstraint;
 import de.cuioss.sheriff.token.validation.security.JwsAlgorithm;
 import de.cuioss.sheriff.token.validation.util.JwkThumbprintUtil;
@@ -71,6 +69,13 @@ import org.jspecify.annotations.Nullable;
  * PKCS#8 {@code PRIVATE KEY} block and exactly one {@code PUBLIC KEY} block and nothing else but
  * whitespace. The key type is established by which JDK key factory accepts the blocks — no ASN.1 is
  * parsed here. One sign-and-verify round proves that the two halves belong together.
+ * <p>
+ * The PEM parse is the gateway's own, not the token engine's {@code PemKeyPairLoader}: the engine's
+ * loader answers with fixed texts that cannot say which block is missing or repeated, which label was
+ * refused, or that the key is an EdDSA key, and it reads the file itself rather than through the
+ * bounded read the BFF key files share. Every one of those refusals is part of the operator contract
+ * pinned by {@code ClientSigningKeyTest}. The public members, by contrast, are rendered by the engine
+ * ({@link JwkPublicMembers}), so the published JWK and the engine's DPoP header encode one key alike.
  * <p>
  * <strong>(b) {@link Mode#GENERATED}.</strong> No key file is configured, so an EC P-256 key pair is
  * generated from {@link SecureRandom} at boot and INFO {@code SIGNING_KEY_GENERATED} records the
@@ -124,11 +129,11 @@ public final class ClientSigningKey {
     private static final String EC = "EC";
     private static final String EDDSA = "EdDSA";
     private static final String CURVE_SECP256R1 = "secp256r1";
-    private static final String JWK_CURVE_P256 = "P-256";
-    private static final int P256_COORDINATE_BYTES = 32;
     private static final String ECDSA_SHA256 = "SHA256withECDSA";
     private static final String PROBE_MESSAGE = "api-sheriff:client-signing-key:halves-probe:v1";
-    private static final Base64.Encoder BASE64_URL = Base64.getUrlEncoder().withoutPadding();
+    private static final String KTY = "kty";
+    private static final List<String> RSA_MEMBER_ORDER = List.of("n", "e");
+    private static final List<String> EC_MEMBER_ORDER = List.of("crv", "x", "y");
 
     private final Purpose purpose;
     private final Mode mode;
@@ -146,11 +151,11 @@ public final class ClientSigningKey {
         this.algorithm = requireSupportedKey(purpose, privateKey, publicKey);
         Map<String, Object> publicMembers = publicMembersOf(publicKey);
         Map<String, Object> thumbprintInput = new LinkedHashMap<>();
-        thumbprintInput.put("kty", algorithm.getKeyType());
+        thumbprintInput.put(KTY, algorithm.getKeyType());
         thumbprintInput.putAll(publicMembers);
         this.keyId = JwkThumbprintUtil.computeThumbprint(thumbprintInput);
         Map<String, Object> jwk = new LinkedHashMap<>();
-        jwk.put("kty", algorithm.getKeyType());
+        jwk.put(KTY, algorithm.getKeyType());
         jwk.put("use", "sig");
         jwk.put("alg", algorithm.getJwaName());
         jwk.put("kid", keyId);
@@ -486,41 +491,19 @@ public final class ClientSigningKey {
     }
 
     /**
-     * Renders the public members of the key type, in the order they are published. The encodings
-     * follow RFC 7518: the RSA members are unsigned and variable-width, the EC coordinates are
-     * left-padded to the full coordinate width.
+     * The public members of the key type, in the order they are published. The encodings are the
+     * token engine's ({@link JwkPublicMembers#of}, RFC 7518: the RSA members unsigned and
+     * variable-width, the EC coordinates left-padded to the full coordinate width), so the gateway's
+     * JWK and the engine's DPoP {@code jwk} header cannot render one key differently. The engine
+     * returns the members unordered and with {@code kty}; only the order — and the omission of
+     * {@code kty}, which the callers place first — is the gateway's.
      */
     private static Map<String, Object> publicMembersOf(PublicKey publicKey) {
+        Map<String, Object> rendered = JwkPublicMembers.of(publicKey);
+        List<String> order = publicKey instanceof RSAPublicKey ? RSA_MEMBER_ORDER : EC_MEMBER_ORDER;
         Map<String, Object> members = new LinkedHashMap<>();
-        if (publicKey instanceof RSAPublicKey rsaKey) {
-            members.put("n", base64UrlUnsigned(rsaKey.getModulus()));
-            members.put("e", base64UrlUnsigned(rsaKey.getPublicExponent()));
-        } else if (publicKey instanceof ECPublicKey ecKey) {
-            members.put("crv", JWK_CURVE_P256);
-            members.put("x", base64UrlFixedWidth(ecKey.getW().getAffineX()));
-            members.put("y", base64UrlFixedWidth(ecKey.getW().getAffineY()));
-        }
+        order.forEach(member -> members.put(member, rendered.get(member)));
         return members;
-    }
-
-    private static String base64UrlUnsigned(BigInteger value) {
-        byte[] bytes = value.toByteArray();
-        if (bytes.length > 1 && bytes[0] == 0) {
-            bytes = Arrays.copyOfRange(bytes, 1, bytes.length);
-        }
-        return BASE64_URL.encodeToString(bytes);
-    }
-
-    private static String base64UrlFixedWidth(BigInteger coordinate) {
-        byte[] magnitude = coordinate.toByteArray();
-        int offset = 0;
-        while (offset < magnitude.length - 1 && magnitude[offset] == 0) {
-            offset++;
-        }
-        int significant = magnitude.length - offset;
-        byte[] fixedWidth = new byte[P256_COORDINATE_BYTES];
-        System.arraycopy(magnitude, offset, fixedWidth, P256_COORDINATE_BYTES - significant, significant);
-        return BASE64_URL.encodeToString(fixedWidth);
     }
 
     private static IllegalStateException refusal(Purpose purpose, String defect) {

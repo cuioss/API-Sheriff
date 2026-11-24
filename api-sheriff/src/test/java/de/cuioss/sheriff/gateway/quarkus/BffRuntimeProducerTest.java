@@ -4170,6 +4170,49 @@ class BffRuntimeProducerTest {
         }
 
         /**
+         * The second caller of {@link BffRuntimeProducer#revokeRefreshToken}: the refresh coordinator's
+         * best-effort revocation of a refresh token still live after its session ended. Against a
+         * provider without a {@code revocation_endpoint} it sends nothing, raises nothing and records
+         * the gap at {@code DEBUG} only, exactly as the logout caller does.
+         */
+        @Test
+        @DisplayName("Should send no revocation request on the refresh path when the provider declares no revocation_endpoint")
+        void shouldSendNothingOnTheRefreshPathWithoutARevocationEndpoint() {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            ProviderMetadata withoutRevocation = stubMetadata();
+            int warningsBefore = warningCount();
+
+            assertDoesNotThrow(() -> BffRuntimeProducer.revokeRefreshToken(revocationClientOf(runtime),
+                    withoutRevocation, token(), clientAuthenticationOf(runtime)));
+
+            assertAll("a refresh-path revocation against a provider without a revocation_endpoint",
+                    () -> assertEquals(Optional.empty(), withoutRevocation.getRevocationEndpoint(),
+                            "precondition: the metadata names no revocation endpoint"),
+                    () -> assertEquals(List.of(), stub.received(StubIdentityProvider.Endpoint.REVOCATION),
+                            "nothing is sent to the identity provider"),
+                    () -> assertEquals(1, recordsContaining(TestLogLevel.DEBUG, "declares no revocation_endpoint"),
+                            "the gap is recorded at DEBUG"),
+                    () -> assertEquals(warningsBefore, warningCount(), "and at no level above it"));
+        }
+
+        /** The matched control of the refresh-path case above: a declared endpoint receives one request. */
+        @Test
+        @DisplayName("Should send one revocation request on the refresh path when the provider declares a revocation_endpoint")
+        void shouldRevokeOnTheRefreshPathWithARevocationEndpoint() {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            String refreshToken = token();
+
+            StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.REVOCATION,
+                    () -> BffRuntimeProducer.revokeRefreshToken(revocationClientOf(runtime), revocationMetadata(),
+                            refreshToken, clientAuthenticationOf(runtime)));
+
+            assertAll("the RFC 7009 request the refresh path sends",
+                    () -> assertEquals(refreshToken, request.form().get("token"), "the live refresh token is revoked"),
+                    () -> assertEquals("refresh_token", request.form().get("token_type_hint")));
+            assertNoRecordCarries(refreshToken, "refresh token");
+        }
+
+        /**
          * The caller, {@code RpInitiatedLogout}, logs only the exception types of the throwable this
          * binding raises, never the throwable or a message. The binding does not lean on that: neither
          * the message of the throwable it raises nor the message of any cause it chains holds the

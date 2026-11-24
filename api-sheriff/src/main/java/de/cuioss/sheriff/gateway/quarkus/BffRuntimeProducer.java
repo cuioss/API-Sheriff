@@ -1327,9 +1327,11 @@ public class BffRuntimeProducer {
      * {@code token_type_hint=refresh_token}. It has two callers: the refresh coordinator's best-effort
      * revocation of a token still live after its session ended, and {@link #revokeOnLogout}, which
      * revokes the session's refresh token on RP-initiated logout. A provider that declares no
-     * {@code revocation_endpoint} leaves nothing to call, so the token is not revoked and the gap is
-     * recorded at {@code DEBUG}; the session has already been destroyed locally either way. A transport
-     * failure or a non-success answer of the endpoint propagates to the caller.
+     * {@code revocation_endpoint} leaves nothing to call: the engine's
+     * {@link RevocationClient#revokeIfSupported} sends no request and records the gap at {@code DEBUG},
+     * and the gateway's own {@code DEBUG} line names it as well; the session has already been destroyed
+     * locally either way. A transport failure or a non-success answer of the endpoint propagates to the
+     * caller.
      *
      * @param revocationClient     the engine revocation client on the pinned back-channel posture
      * @param metadata             the resolved provider metadata
@@ -1338,12 +1340,10 @@ public class BffRuntimeProducer {
      */
     static void revokeRefreshToken(RevocationClient revocationClient, ProviderMetadata metadata,
             String refreshToken, ClientAuthentication clientAuthentication) {
-        Optional<String> revocationEndpoint = metadata.getRevocationEndpoint();
-        if (revocationEndpoint.isEmpty()) {
+        if (!revocationClient.revokeIfSupported(metadata, refreshToken, REFRESH_TOKEN_TYPE_HINT,
+                clientAuthentication)) {
             LOGGER.debug("Provider declares no revocation_endpoint — refresh token not revoked after the session ended");
-            return;
         }
-        revocationClient.revoke(revocationEndpoint.get(), refreshToken, REFRESH_TOKEN_TYPE_HINT, clientAuthentication);
     }
 
     /**

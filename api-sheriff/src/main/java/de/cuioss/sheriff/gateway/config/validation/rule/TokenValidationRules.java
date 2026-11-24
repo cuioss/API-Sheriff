@@ -25,6 +25,7 @@ import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
+import de.cuioss.sheriff.token.commons.transport.EgressHostValidator;
 import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
 
@@ -35,9 +36,9 @@ import org.jspecify.annotations.Nullable;
  * The JWKS egress-allowlist refusal ({@link #validateJwksEgressHosts}): every
  * {@code allowed_egress_hosts} entry of an {@code http}-sourced issuer must be usable as the
  * host-exact exemption token-sheriff's SSRF egress guard matches on, so a blank or whitespace-only
- * entry and a {@code host:port} entry are refused (a bare IPv6 literal is not a {@code host:port}
- * entry and is admitted). The schema declares the entries unrestricted strings; this rule is the
- * single enforcing authority.
+ * entry, a {@code host:port} entry and every other entry the guard's own shape check refuses are
+ * refused (a bare IPv6 literal is not a {@code host:port} entry and is admitted). The schema declares
+ * the entries unrestricted strings; this rule is where boot validation enforces them.
  * <p>
  * The JWKS refresh rule ({@link #validateJwksRefresh}) bounds the refresh keys of an issuer's
  * {@code jwks} block and refuses each of them on a {@code file} source, where it would parse and
@@ -68,14 +69,17 @@ public class TokenValidationRules {
      * <p>
      * Each entry is handed to token-sheriff's egress guard, which exempts exactly the host it names
      * from the private-address refusal and matches it host-exact — the port of the JWKS url plays no
-     * part. Two shapes can therefore never match anything, and an operator declaring one believes an
-     * exemption is in force that no fetch ever meets:
+     * part. An entry that is no bare host can therefore never match anything, and an operator
+     * declaring one believes an exemption is in force that no fetch ever meets. Each entry is held to
+     * the guard's own shape check ({@link EgressHostValidator#refusal}), worded by
+     * {@link RuleSupport#egressEntryRefusalReason}:
      * <ul>
      *   <li>a <strong>blank or whitespace-only</strong> entry names no host at all;</li>
-     *   <li>a <strong>{@code host:port}</strong> entry — a single-colon {@code name:digits} form or a
-     *       bracketed {@code [v6]:digits} form ({@link RuleSupport#egressHostRefusal}) — names a host the guard never
-     *       compares against. A bare IPv6 literal such as {@code fd00::1} is a host, not a
-     *       {@code host:port} pair, and is admitted.</li>
+     *   <li>a <strong>{@code host:port}</strong> entry — a single colon, or a colon after a bracketed
+     *       IPv6 literal — names a host the guard never compares against, and so does an entry carrying
+     *       a control, whitespace or non-ASCII character, URL syntax, a malformed IPv6 literal or
+     *       anything else that is no host name or IPv4 literal. A bare IPv6 literal such as
+     *       {@code fd00::1} is a host, not a {@code host:port} pair, and is admitted.</li>
      * </ul>
      * The host part is never compared with the {@code jwks.url} host: a non-empty list is
      * authoritative, and whether it names the key endpoint's host is the operator's decision. Because
@@ -105,9 +109,10 @@ public class TokenValidationRules {
             }
             String pointer = "/token_validation/issuers/%d/jwks/allowed_egress_hosts".formatted(index);
             for (String entry : jwks.allowedEgressHosts()) {
-                RuleSupport.egressHostRefusal(entry, JWKS_BLANK_ENTRY_REMEDY).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                        "issuer '%s' jwks.allowed_egress_hosts entry '%s' is refused: %s"
-                                .formatted(renderForMessage(issuer.name()), renderForMessage(entry), reason))));
+                EgressHostValidator.refusal(entry).ifPresent(refusal -> errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                        "issuer '%s' jwks.allowed_egress_hosts entry '%s' is refused: %s".formatted(
+                                renderForMessage(issuer.name()), renderForMessage(entry),
+                                RuleSupport.egressEntryRefusalReason(entry, refusal, JWKS_BLANK_ENTRY_REMEDY)))));
             }
         }
     }

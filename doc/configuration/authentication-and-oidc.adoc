@@ -141,9 +141,11 @@ Required when any route's *effective* auth is `require: bearer`.
     `https:///path`) *fails the boot* with `CONFIG_INVALID`, naming the issuer, never the URL.
   * *Non-empty -- authoritative.* Each entry exempts exactly the host it names (no wildcard or
     suffix); the `jwks.url` host is *never* merged in. Declaring the list pins the allowance: a later
-    `jwks.url` change to another host fails closed. A blank or whitespace-only entry and a
-    `host:port` entry are *refused at boot*, naming the entry (a bare IPv6 literal such as
-    `fd00::1` is admitted).
+    `jwks.url` change to another host fails closed. Every entry is held to token-sheriff's own
+    egress-host shape check and *refused at boot*, naming the entry, unless it is a bare host name,
+    IPv4 literal or IPv6 literal: a blank or whitespace-only entry, a `host:port` entry, and an entry
+    carrying a control, whitespace or non-ASCII character or URL syntax (`/ @ ? # %`) are refused (a
+    bare IPv6 literal such as `fd00::1`, bracketed or not, is admitted).
 
   *Caveat of the derived form:* the `jwks.url` host is exempted in every deployment, so a public IdP
   hostname that resolves to an internal address (DNS change, split-horizon resolver, poisoned cache)
