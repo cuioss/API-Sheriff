@@ -967,9 +967,9 @@ class BffRuntimeProducerTest {
         @DisplayName("the discovery cache values are the fixed operator decision: TTL 1 h, grace 24 h, retry 30 s")
         void discoveryCacheValuesArePinned() {
             assertAll("ADR-0084",
-                    () -> assertEquals(Duration.ofHours(1), BffRuntimeProducer.DISCOVERY_TTL),
-                    () -> assertEquals(Duration.ofHours(24), BffRuntimeProducer.DISCOVERY_GRACE_PERIOD),
-                    () -> assertEquals(Duration.ofSeconds(30), BffRuntimeProducer.DISCOVERY_MIN_REFRESH_INTERVAL));
+                    () -> assertEquals(BffRuntimeProducer.DISCOVERY_TTL, Duration.ofHours(1)),
+                    () -> assertEquals(BffRuntimeProducer.DISCOVERY_GRACE_PERIOD, Duration.ofHours(24)),
+                    () -> assertEquals(BffRuntimeProducer.DISCOVERY_MIN_REFRESH_INTERVAL, Duration.ofSeconds(30)));
         }
 
         @Test
