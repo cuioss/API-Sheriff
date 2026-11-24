@@ -191,6 +191,17 @@ decision.
 
 ## Decisions
 
+- 2026-11-24 — **Plan-marshall items routed out (operator: "move all plan-marshall related stuff in the corresponding inbox").** Nine
+  `kind=finding` messages written with `orchestrator inbox write` (run inside /home/oliver/git/plan-marshall) to its `lessons-routing`
+  inbox as sender `api-sheriff-kidicap-gateway-requirements`, sequence 018 to 026, all valid and unconsumed there: 018 `ci-verify`
+  routing, 019 `source_id` stored path, 020 `post_responses` triage prose, 021 merge-lock "already free", 022 review-body count
+  mismatch, 023 PLAN-33 landing-fact gaps, 024 the CI abstraction cannot read push runs on `main`, 025 the three-layer leaf's
+  `grep -r` walked into `.plan/`, 026 `handle-open` usability (one item per turn, threshold persistence, `corpus verdicts` size).
+  Five existing entries here were replaced by routed pointers; the PLAN-33 incomplete-landing defect stays open here with a pointer.
+  **Not routed, on purpose:** the framing-corpus flake (tracked in `api-sheriff-0-3-0`), the downstream's stale link to a removed doc,
+  the Sonar `architecture enrich insight` call and the executor/registry repin and `build.queue.max_slots` migrate (operator actions
+  in this repository, not defects), and the Nov 19 Integration Tests reporting-step failure (dropped by the operator). The messages sit
+  uncommitted in that repository's ledger worktree; this run did not touch its git state.
 - 2026-11-24 — **Emit: PLAN-34 alone (operator answer to the overlap prompt).** `parallelization_scope` 2, nothing in flight, so two
   slots. PLAN-20 and PLAN-34 both pass the prep-ready test (no blocking verdict; every claim of both is stale after #656, and
   staleness never blocks), the declared test (both spec-skills declarations flagged only, `emit_allowed`) and the disjointness test
@@ -405,6 +416,7 @@ decision.
 
 ## Open Defects
 
+> ↪ Routed 2026-11-24 to plan-marshall: the landing-fact gaps (effort, review-body counts, merge-gate stamp, freshness coverage, preference-emitter tag) are message `api-sheriff-kidicap-gateway-requirements-023.md` in the `lessons-routing` inbox; the entry below stays open here until a paste or a fix supplies the facts.
 - **PLAN-33's inbox landing is incomplete (2026-11-24).** `plan-33-adapt-to-token-sheriff-0-9-9-001.md` misses the required keys
   `effort`, `review_body_findings_total` and `review_body_findings_handled` (`inbox landing-check`: `complete: false`); it was drained
   and reconciled as far as it goes. A manual paste from that plan may still surface the missing facts. — source: `landings/PLAN-33.md`
@@ -448,10 +460,7 @@ decision.
   blank line from 457 existing files on every run (and earlier one from `MainListenerConnectionCapTest.java`, from
   #607), cleared by hand after each run. Not re-measured by this analysis: treat as a lead. A formatter PR with the
   `skip-bot-review` label, like #608, would close it; no plan owns it. — source: `landings/PLAN-31.md` residue
-> ✔ Accepted 2026-11-23 as outside this epic (`handle-open` batch B3, operator answer): tracked in `landings/PLAN-31.md`, where the false claim is already recorded. Stays here as a pointer; not retired, not relocated.
-- **`review_body_findings_total` of PLAN-31 disagrees with the provider (2026-11-15).** The landing claimed 5; `review-gate`
-  on the merged head reads 4 (and 0 dispositions, which only the run's progress file can settle). Recorded as a false
-  claim in the landing record; the thread count (0) matches. — source: `landings/PLAN-31.md`
+> ↪ Routed 2026-11-24 to plan-marshall (operator: "move all plan-marshall related stuff"): inbox message `api-sheriff-kidicap-gateway-requirements-022.md` in the `lessons-routing` inbox of /home/oliver/git/plan-marshall. Original text, summarised: PLAN-31's landing claimed 5 review-body findings, `review-gate` read 4; recorded as a false claim in `landings/PLAN-31.md`.
 > **Decided 2026-11-23 (operator, `handle-open`, proposal 1): ROUTED TO THE NEXT PLAN THAT TOUCHES `edge/`.** Re-read this run: no ADR covers the breaker identity (ADR-0064 does not mention keying or `guardFor`), the draft still exists, `SO_LINGER 0` is still at `EgressClients.java:221`; `PLAN-V02-46`'s row was not found in `api-sheriff-0-3-0`'s queue, so its status is unknown. The ADR is one deliverable for that plan, written from the draft after it reads V02-46's result. It is not in the pending-fix backlog (still 5). The entry stays open until the ADR exists.
 - **The circuit breaker's identity changed in #448 without an ADR.** `GatewayEdgeRoute.guardFor` no
   longer registers it under a SmallRye name (the JVM-global registry rejected a reused upstream port
@@ -499,17 +508,7 @@ decision.
   Small; fold into a later plan touching that surface rather than staging one. — source:
   `landings/PLAN-16.md`
 > ↪ Relocated to `settled.md` § "Project config housekeeping (marshal.json provisioning, build queue cap)" — the provisioning half was fixed 2026-11-09; ⚠ the `build.queue.max_slots` half stays an operator action (`manage-build-server config migrate`)
-> ✔ Accepted 2026-11-23 as outside this epic (`handle-open` batch B3, operator answer): tracked in project configuration of plan-marshall (`marshall-steward` architecture match rule) and plan-marshall lesson `2026-09-22-18-004`; not API Sheriff product work. Stays here as a pointer; not retired, not relocated.
-- `ci-verify` files this repository's Maven build jobs as `ci_policy_failure` rather than
-  `ci_build_failure`: the job names (`build / build (25|26)`, `build / sonar-build`, `build / conclusion`,
-  `integration-tests / test`) contain none of the build-profile tokens it matches (`verify`,
-  `quality-gate`, `module-tests`, `coverage`), so every red build or test job is routed to the policy
-  triage producer. Remedy is project configuration (the architecture match rule / `marshall-steward`),
-  not API Sheriff product work — outside this epic, recorded here so the next plan's triage is read with
-  that in mind. **Recurred in PLAN-16** (2026-09-22): a plain unit-test failure in `build (25)` was
-  presented as a CI policy failure, and the later green `ci_verify` did not overwrite the loop-back record
-  (corrected by hand in that run). Also promoted as plan-marshall lesson `2026-09-22-18-004`. — source:
-  inbox `plan-13-defect-fixes-002.md`, `plan-16-application-portal-004.md`
+> ↪ Routed 2026-11-24 to plan-marshall (operator: "move all plan-marshall related stuff"): inbox message `api-sheriff-kidicap-gateway-requirements-018.md` in the `lessons-routing` inbox of /home/oliver/git/plan-marshall. Original text, summarised: `ci-verify` files this repository's Maven build jobs as `ci_policy_failure` (job names carry none of the matched build-profile tokens); recurred in PLAN-16; plan-marshall lesson `2026-09-22-18-004`.
 > ↪ Relocated to `settled.md` § "Verification-currency gaps on the PLAN-13 and PLAN-15 merges" — both plans shipped; the gap is a historical reading aid, not an open defect
 > ↪ Relocated to `settled.md` § "Header-matcher defects, resolved by PLAN-18" — resolved 2026-09-24 by PLAN-18 (#346)
 
@@ -533,30 +532,11 @@ decision.
   `landings/PLAN-22.md`
 
 > ↪ Relocated to `settled.md` § "Duplicate ADR-0053, resolved by #367" — resolved 2026-10-02 by #367; the manage-adr scan blind-gate note moved with it
-> ✔ Accepted 2026-11-23 as outside this epic (`handle-open` batch B3, operator answer): tracked in plan-marshall (filed upstream as a lesson). The standing mitigation still applies to this epic: do not relocate the ledger while a plan is in flight. Stays here as a pointer; not retired, not relocated.
-- **`source_id` is a stored PATH, resolved at finalize time, so a ledger relocation orphans every
-  in-flight plan's outbox.** PLAN-23 shipped #369 with `emit-landing` reporting *not orchestrated, no
-  landing emitted*: its `source_id` was persisted on 2026-09-25 as
-  `.plan/local/orchestrator/…/PLAN-23-….md`, and the executor regeneration to 0.1.1826 (2026-10-01) made
-  that the RETIRED address — `detection: unrecognised_id`, `orchestrated: false`. Reproduced both ways at
-  2026-10-02. **Caused by this session**: the regeneration alone was sufficient, and the subsequent ledger
-  move made the new address correct without rewriting the pointer the running plan already held. The
-  landing was recovered from the operator's paste, so nothing was lost — but the automatic channel was
-  broken mid-flight, which is the consequence the four earlier detector-disagreement recurrences had not
-  yet produced. **Mitigation until the pointer is resolved dynamically: do not relocate the ledger while a
-  plan is in flight.** Filed upstream as a plan-marshall lesson. — source: `landings/PLAN-23.md`
-> ✔ Accepted 2026-11-23 as outside this epic (`handle-open` batch B3, operator answer): tracked in plan-marshall lesson `2026-09-24-05-001`; delete the comment by hand on GitHub if wanted. Stays here as a pointer; not retired, not relocated.
-- A stray PR-level comment on #346 (`IC_kwDOPatrT88AAAABWb_adQ`) carries internal triage prose that
-  `post_responses` transmitted verbatim as a public reply. Harmless; delete by hand on GitHub if wanted.
-  Mechanism filed as plan-marshall lesson `2026-09-24-05-001`. — source: inbox
-  `route-header-matcher-defects-003.md`
+> ↪ Routed 2026-11-24 to plan-marshall (operator: "move all plan-marshall related stuff"): inbox message `api-sheriff-kidicap-gateway-requirements-019.md` in the `lessons-routing` inbox of /home/oliver/git/plan-marshall. Original text, summarised: `source_id` is a stored path, so a ledger relocation orphans an in-flight plan's outbox (PLAN-23, `emit-landing` not orchestrated); local mitigation stays: do not relocate the ledger while a plan is in flight.
+> ↪ Routed 2026-11-24 to plan-marshall (operator: "move all plan-marshall related stuff"): inbox message `api-sheriff-kidicap-gateway-requirements-020.md` in the `lessons-routing` inbox of /home/oliver/git/plan-marshall. Original text, summarised: `post_responses` sent internal triage prose verbatim as a public reply on #346; the comment itself can still be deleted by hand on GitHub; lesson `2026-09-24-05-001`.
 > ↪ Relocated to `settled.md` § "Egress-allowance duplication, resolved by PLAN-17" — resolved 2026-09-23 by PLAN-17 (#345)
 
-> ✔ Accepted 2026-11-23 as outside this epic (`handle-open` batch B3, operator answer): tracked in plan-marshall lesson `2026-09-23-05-003`. Stays here as a pointer; not retired, not relocated.
-- The merge-lock release reported the lock **"already free"** during PLAN-17's finalize although that plan
-  had acquired it. The merge was unaffected, but the release path did not observe its own claim, so mutual
-  exclusion is unestablished for that window and the report reads as success. Plugin-side; filed as
-  plan-marshall lesson `2026-09-23-05-003`. — source: operator report, PLAN-17 landing
+> ↪ Routed 2026-11-24 to plan-marshall (operator: "move all plan-marshall related stuff"): inbox message `api-sheriff-kidicap-gateway-requirements-021.md` in the `lessons-routing` inbox of /home/oliver/git/plan-marshall. Original text, summarised: the merge-lock release said "already free" during PLAN-17's finalize although that plan held it; lesson `2026-09-23-05-003`.
 
 > ↪ Relocated to `settled.md` § "NO_PLAN sentinel fails the next gate, resolved in plan-marshall 0.1.1855" — resolved 2026-10-06 by plan-marshall 0.1.1855
 
