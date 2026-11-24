@@ -3264,9 +3264,11 @@ none. The refresh token the exchange returned is abandoned, not revoked: the
 refresh lost a race to the destruction, and a login callback's replacement session may share the
 identity provider's user session, which a grant-level revocation could end. *Residual risk
 (accepted):* on a genuine logout the RP-initiated leg revokes the refresh token of the record it
-resolved, which the rotation had already spent, and a back-channel logout comes from a provider that
-has ended its own session; whether the provider also invalidates the rotated successor is provider
-policy (RFC 7009 allows it but does not require it). The abandoned successor is held by nobody -- it
+destroys, or the resolved record's when the session was already gone at the destruction. This
+residual arises when the logout destroys the session before the refresh persists: the destroyed
+record still holds the presented token the rotation has spent, and the rotated successor is never
+stored, so it cannot be revoked. A back-channel logout comes from a provider that has ended its own
+session. Whether the provider also invalidates the rotated successor is provider policy (RFC 7009 allows it but does not require it). The abandoned successor is held by nobody -- it
 never reaches the browser and no copy is kept -- but it can stay valid at the provider until the
 provider's refresh-token lifetime ends, the same residual as a refresh superseded by a widening
 (<<bff-17>>). Revocation on the refresh path
@@ -3488,9 +3490,11 @@ RP-initiated logout and nothing else:
   answered as "no session" without a clearing cookie, and abandons the refresh token its exchange
   returned without revoking it
   (<<bff-08>>), because after a login callback a revocation could end the replacement session at the
-  provider. The RP-initiated leg revokes the refresh token of the record it resolved, which the
-  rotation had already spent; whether the provider also invalidates the rotated successor is provider
-  policy. The successor is held by nobody but can stay valid until the provider's refresh-token
+  provider. The RP-initiated leg revokes the refresh token of the record it destroys, or the resolved
+  record's when the session was already gone at the destruction. This residual arises when the logout
+  destroys the session before the refresh persists: the destroyed record still holds the presented
+  token the rotation has spent, and the rotated successor is never stored, so it cannot be revoked.
+  Whether the provider also invalidates the rotated successor is provider policy. The successor is held by nobody but can stay valid until the provider's refresh-token
   lifetime ends -- an accepted residual.
 * *Nothing at all, where no request can be sent.* A session that holds no refresh token -- with
   `oidc.session.refresh.enabled=false`, or when the provider granted none -- and a provider that

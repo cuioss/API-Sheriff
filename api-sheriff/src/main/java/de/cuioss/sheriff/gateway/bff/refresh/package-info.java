@@ -39,9 +39,11 @@
  *       session end and answers the request as holding no session, so no clearing cookie can delete the
  *       cookie a login callback has just set for a replacement session. It lost a race to that
  *       destruction, so its rotated refresh token is abandoned, not revoked — a session that replaced the
- *       destroyed one may share the identity provider's user session. A refused refresh ends only the session it read: when
- *       a widening or a step-up replaced the record, or the session was already ended, it destroys,
- *       marks and revokes nothing and answers the request as holding no session.</li>
+ *       destroyed one may share the identity provider's user session. In server mode a refused refresh
+ *       ends only the session it read: when a widening or a step-up replaced the record, or the session
+ *       was already ended, it destroys, marks and revokes nothing and answers the request as holding no
+ *       session. A stateless binding can observe neither, so in cookie mode a refusal always ends the
+ *       session.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens} is the coordinator's bounded,
  *       per-instance, in-memory marker of refresh tokens whose session it ended, keyed on a salted digest
  *       of the token, so a replayed cookie-mode refresh token of an ended session is refused locally

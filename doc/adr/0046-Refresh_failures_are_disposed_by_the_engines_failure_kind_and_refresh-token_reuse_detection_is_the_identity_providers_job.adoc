@@ -132,9 +132,12 @@ seam answered when the gateway wrote the rotated session:
   callback in the same browser destroys the session it presents and replaces it with a new one, and that new login may reuse
   the identity provider's user session through silent single sign-on; a grant-level revocation of the rotated token could then
   end, at the identity provider, the session that replaced it. The abandonment leaves a residual risk on a genuine logout
-  as well. RP-initiated logout revokes the refresh token of the record it resolved
-  (link:0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]),
-  and the rotation had already spent that token. A back-channel logout comes from an identity provider that has ended its own
+  as well. RP-initiated logout revokes the refresh token of the record it destroys, or the resolved record's when the
+  session was already gone at the destruction
+  (link:0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]).
+  This residual arises when the logout destroys the session before the refresh persists: the destroyed record still holds
+  the presented token the rotation has spent, and the rotated successor is never stored, so it cannot be revoked. A
+  back-channel logout comes from an identity provider that has ended its own
   session. Whether either also invalidates the rotated successor is the identity provider's policy: RFC 7009 lets it revoke
   the other tokens of the grant but does not require it. The abandoned token never reaches the browser and no copy is held,
   so it is held by nobody, but it can stay valid at the identity provider until its refresh-token lifetime ends. That is the

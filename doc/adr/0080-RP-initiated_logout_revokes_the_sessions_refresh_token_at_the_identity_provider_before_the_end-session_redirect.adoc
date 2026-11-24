@@ -124,7 +124,10 @@ destruction, and the coordinator cannot tell a logout from a login callback that
 with one that may share the identity provider's user session, which a revocation could end.
 
 That abandonment leaves a residual risk. The logout revoked the refresh token of the record it
-resolved, and the rotation had already spent that token. Whether the provider also invalidates the
+destroyed, or the resolved record's when the session was already gone at the destruction. The
+residual arises when the logout destroys the session before the refresh persists: the destroyed
+record still holds the presented token the rotation has spent, and the rotated successor is never
+stored, so it cannot be revoked. Whether the provider also invalidates the
 rotated successor is the provider's decision, as RFC 7009 allows but does not require (see the
 previous list). The successor is held by nobody: it is never sent to the browser and no copy is kept.
 It can stay valid at the identity provider until the provider's refresh-token lifetime ends. That is

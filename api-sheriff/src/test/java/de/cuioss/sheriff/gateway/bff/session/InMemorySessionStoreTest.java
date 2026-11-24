@@ -847,6 +847,11 @@ class InMemorySessionStoreTest {
                     () -> assertEquals(0, store.destroyBySid(OLD_SID), "the sid index was cleaned with it"),
                     () -> assertEquals(0, store.destroyBySub(OLD_SUB), "the sub index was cleaned with it"),
                     () -> assertEquals(List.of(SESSION_ID), ended, "the end is reported once"));
+            SessionRecord other = session("other", "other-sub", null, FUTURE);
+            assertDoesNotThrow(() -> store.create(other, handleOf(SESSION_ID), T0),
+                    "the destruction left no handle behind, so another session may take the same value");
+            assertEquals("other", store.resolve(handleOf(SESSION_ID), T0).orElseThrow().sessionId(),
+                    "the removed handle now resolves the session created under it");
         }
 
         @Test
@@ -891,12 +896,20 @@ class InMemorySessionStoreTest {
             create(store, STORED, T0);
             assertTrue(store.replaceAndReissueHandle(STORED, REISSUED_HANDLE),
                     "precondition: a re-issue swapped the handle and stored an equal record");
+            SessionRecord equalBasis = session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE);
+            assertNotSame(STORED, equalBasis, "precondition: the basis is a separately built record");
+            assertEquals(STORED, equalBasis, "precondition: the basis carries the stored record's components");
 
-            DestroyOutcome destroyed = store.destroyIfCurrent(STORED);
+            DestroyOutcome destroyed = store.destroyIfCurrent(equalBasis);
 
             assertEquals(DestroyOutcome.DESTROYED, destroyed,
                     "the handle is store-side state, not a record component, so the basis is still current");
             assertTrue(store.resolve(REISSUED_HANDLE, T0).isEmpty(), "the re-issued handle went with the session");
+            SessionRecord other = session("other", "other-sub", null, FUTURE);
+            assertDoesNotThrow(() -> store.create(other, REISSUED_HANDLE, T0),
+                    "the destruction left no re-issued handle behind, so another session may take the same value");
+            assertEquals("other", store.resolve(REISSUED_HANDLE, T0).orElseThrow().sessionId(),
+                    "the removed re-issued handle now resolves the session created under it");
         }
 
         @Test

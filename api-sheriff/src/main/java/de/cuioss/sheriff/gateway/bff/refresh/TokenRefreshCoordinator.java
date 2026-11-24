@@ -135,8 +135,11 @@ import org.jspecify.annotations.Nullable;
  *       exchange returned is abandoned — the presented one is already redeemed. A login callback's
  *       replacement session may share the identity provider's user session, and a grant-level revocation
  *       could end it. That leaves a residual risk on a genuine logout too: RP-initiated logout revokes
- *       the refresh token of the record it resolved, which the rotation had already spent, and whether
- *       the provider also invalidates the rotated successor is the provider's policy (RFC 7009 allows it
+ *       the refresh token of the record it destroys, or the resolved record's when the session was
+ *       already gone at the destruction. This residual arises when the logout destroys the session
+ *       before the refresh persists: the destroyed record still holds the presented token the rotation
+ *       has spent, and the rotated successor is never stored, so it cannot be revoked. Whether the
+ *       provider also invalidates the rotated successor is the provider's policy (RFC 7009 allows it
  *       but does not require it). The abandoned token is held by nobody — never sent to the browser, no
  *       copy kept — and may stay valid at the provider until its refresh-token lifetime ends, the same
  *       accepted residual as the superseded disposition below. Only a binding that holds

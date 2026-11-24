@@ -1264,8 +1264,11 @@ login callback, an expiry sweep or an eviction during the refresh stays ended (l
 ends nothing itself and clears no cookie; the browser's next request presents the cookie of a session
 that is gone, which resolves no session and is answered like any unauthenticated request. The refresh
 revokes nothing, and that leaves a residual: `oidc.logout.path` revokes the refresh token of the
-session it resolved, which the rotation had already spent, and a back-channel logout comes from an IdP
-that has ended its own session. Whether the IdP also invalidates the rotated successor is its own
+session record it destroys, or the resolved record's when the session was already gone at the
+destruction. The residual arises when the logout destroys the session before the refresh persists:
+the destroyed record still holds the presented token the rotation has spent, and the rotated
+successor is never stored, so it cannot be revoked. A back-channel logout comes from an IdP that has
+ended its own session. Whether the IdP also invalidates the rotated successor is its own
 policy (RFC 7009 allows it but does not require it). The successor is held by nobody -- never sent to
 the browser, no copy kept -- and can stay valid at the IdP until its refresh-token lifetime ends, the
 same accepted residual as a refresh superseded by a concurrent widening, which abandons its rotated

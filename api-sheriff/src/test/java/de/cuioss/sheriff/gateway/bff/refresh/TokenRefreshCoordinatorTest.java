@@ -2027,7 +2027,9 @@ class TokenRefreshCoordinatorTest {
         void shouldNotDestroyWideningWhenRefusalLandsAfterIt(String label, RuntimeException refusal, String reason) {
             SessionRecord live = storedSession();
             AtomicInteger calls = new AtomicInteger();
-            TokenRefreshCoordinator coordinator = coordinator(NEAR, refusingWith(live, this::widen, refusal, calls));
+            EndedRefreshTokens marker = EndedRefreshTokens.bounded();
+            TokenRefreshCoordinator coordinator = coordinatorMarkingInto(marker, NEAR,
+                    refusingWith(live, this::widen, refusal, calls));
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
@@ -2040,7 +2042,9 @@ class TokenRefreshCoordinatorTest {
                     () -> assertEquals(widened(live), storedUnderWidenedCookie(),
                             "the record the widening wrote is still the stored one"),
                     () -> assertEquals(List.of(), revoked,
-                            "nothing is revoked: the replacing write may share the identity provider's user session"));
+                            "nothing is revoked: the replacing write may share the identity provider's user session"),
+                    () -> assertFalse(marker.isEnded(CURRENT_REFRESH, NOW),
+                            "no session ended, so the presented refresh token is not marked"));
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_FAILED_ID);
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, reason);
         }
