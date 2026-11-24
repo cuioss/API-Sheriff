@@ -35,7 +35,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.LogRecord;
 
-
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -164,12 +163,12 @@ class ScopedEngineFlowsTest {
 
         /** The login. */
         LOGIN {
-            @Override
-            Started start(ScopedEngineFlows flows, ProviderMetadata metadata, List<String> scopes) {
-                AuthorizationCodeFlow.AuthorizationRedirect redirect = flows.authorize(metadata, scopes);
-                return new Started(redirect.authorizationUrl(), redirect.context());
-            }
-        },
+        @Override
+        Started start(ScopedEngineFlows flows, ProviderMetadata metadata, List<String> scopes) {
+            AuthorizationCodeFlow.AuthorizationRedirect redirect = flows.authorize(metadata, scopes);
+            return new Started(redirect.authorizationUrl(), redirect.context());
+        }
+    },
 
         /** The silent ({@code prompt=none}) widening attempt. */
         SILENT_WIDENING {
@@ -206,11 +205,11 @@ class ScopedEngineFlowsTest {
 
         /** The endpoint answers {@code 500}. */
         SERVER_ERROR {
-            @Override
-            MockResponse answer() {
-                return json(500, "{\"error\":\"server_error\"}");
-            }
-        },
+        @Override
+        MockResponse answer() {
+            return json(500, "{\"error\":\"server_error\"}");
+        }
+    },
 
         /** The endpoint refuses the request with {@code 400}. */
         CLIENT_ERROR {

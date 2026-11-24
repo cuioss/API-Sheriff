@@ -38,7 +38,6 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaField;
 import com.tngtech.archunit.core.domain.JavaModifier;
@@ -116,7 +115,7 @@ class TokenClientNativeMetadataTest {
 
     @Test
     @DisplayName("Should name every generated DSL-JSON converter of the engine jar in its reflect-config.json")
-    void shouldRegisterEveryEngineConverterForReflection() throws IOException, URISyntaxException {
+    void shouldRegisterEveryEngineConverterForReflection() throws Exception {
         // Arrange
         EngineNativeMetadata metadata = readEngineJar();
 
@@ -135,7 +134,7 @@ class TokenClientNativeMetadataTest {
 
     @Test
     @DisplayName("Should name the two fail-open converters in the engine reflect-config.json")
-    void shouldRegisterTheFailOpenConverters() throws IOException, URISyntaxException {
+    void shouldRegisterTheFailOpenConverters() throws Exception {
         // Arrange
         EngineNativeMetadata metadata = readEngineJar();
 
@@ -151,7 +150,7 @@ class TokenClientNativeMetadataTest {
 
     @Test
     @DisplayName("Should initialize every engine class holding a static final SecureRandom at run time")
-    void shouldInitializeEveryEngineSecureRandomHolderAtRunTime() throws IOException, URISyntaxException {
+    void shouldInitializeEveryEngineSecureRandomHolderAtRunTime() throws Exception {
         // Arrange
         EngineNativeMetadata metadata = readEngineJar();
         Set<String> holders = engineStaticSecureRandomHolders();
@@ -176,7 +175,7 @@ class TokenClientNativeMetadataTest {
      */
     @Test
     @DisplayName("Should read a non-empty converter set, metadata files and SecureRandom holders from the jar")
-    void shouldReadNonEmptyEngineMetadata() throws IOException, URISyntaxException {
+    void shouldReadNonEmptyEngineMetadata() throws Exception {
         // Arrange / Act
         EngineNativeMetadata metadata = readEngineJar();
         Set<String> holders = engineStaticSecureRandomHolders();
@@ -207,7 +206,7 @@ class TokenClientNativeMetadataTest {
 
         @Test
         @DisplayName("Converter matcher reports a converter missing from the list (negative control)")
-        void converterMatcherFailsOnMissingConverter() throws IOException, URISyntaxException {
+        void converterMatcherFailsOnMissingConverter() throws Exception {
             // Arrange
             Set<String> converters = readEngineJar().converters();
             Set<String> listed = new TreeSet<>(converters);
@@ -224,7 +223,7 @@ class TokenClientNativeMetadataTest {
 
         @Test
         @DisplayName("Converter matcher accepts a list naming every converter (positive control)")
-        void converterMatcherAcceptsCompleteList() throws IOException, URISyntaxException {
+        void converterMatcherAcceptsCompleteList() throws Exception {
             // Arrange
             Set<String> converters = readEngineJar().converters();
             Set<String> parsed = parseReflectionNames(reflectConfigNaming(converters));
@@ -238,7 +237,7 @@ class TokenClientNativeMetadataTest {
 
         @Test
         @DisplayName("Runtime-init matcher reports a holder no entry covers (negative control)")
-        void runtimeInitMatcherFailsOnUncoveredHolder() throws IOException, URISyntaxException {
+        void runtimeInitMatcherFailsOnUncoveredHolder() throws Exception {
             // Arrange
             Set<String> holders = engineStaticSecureRandomHolders();
             Set<String> entries = parseRuntimeInitEntries(
@@ -253,7 +252,7 @@ class TokenClientNativeMetadataTest {
 
         @Test
         @DisplayName("Runtime-init matcher accepts entries naming every holder (positive control)")
-        void runtimeInitMatcherAcceptsCompleteList() throws IOException, URISyntaxException {
+        void runtimeInitMatcherAcceptsCompleteList() throws Exception {
             // Arrange
             Set<String> holders = engineStaticSecureRandomHolders();
             Set<String> entries = parseRuntimeInitEntries("Args=" + RUNTIME_INIT_PREFIX + String.join(",", holders));
@@ -268,7 +267,7 @@ class TokenClientNativeMetadataTest {
 
     /** What one walk over the engine jar yields. */
     private record EngineNativeMetadata(Set<String> converters, Set<String> reflectionNames,
-            Set<String> runtimeInitEntries, List<String> metadataFiles) {
+    Set<String> runtimeInitEntries, List<String> metadataFiles) {
     }
 
     private static Set<String> missingConverters(Set<String> converters, Set<String> registered) {

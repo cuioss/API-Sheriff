@@ -77,7 +77,6 @@ import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
-
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
