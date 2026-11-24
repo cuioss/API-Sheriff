@@ -28,10 +28,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
-
 
 import de.cuioss.http.security.core.UrlSecurityFailureType;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
@@ -946,6 +947,41 @@ class SheriffMetricsTest {
             assertEquals(0L, data.get("issuers_loaded"));
         }
 
+        /**
+         * Matched positive/negative control for an issuer degraded past its
+         * {@code jwks.max_staleness_seconds} bound. The gateway's loader reads such an issuer as
+         * {@link KeySetState#FAILED} (pinned in {@code RetryingJwksLoaderTest}); here one issuer's live
+         * reader moves from loaded to degraded under the same probe, so the only difference between the
+         * two responses is the degradation.
+         */
+        @Test
+        @DisplayName("a stale-degraded issuer drives readiness DOWN (jwks=unavailable, counted not loaded); undegraded it stays UP")
+        void staleDegradedIssuerIsCountedNotLoaded() {
+            GatewayConfig config = configWith(null, twoIssuers(), null);
+            AtomicReference<KeySetState> secondary = new AtomicReference<>(KeySetState.LOADED);
+            Map<String, Supplier<KeySetState>> readers = new LinkedHashMap<>();
+            readers.put(PRIMARY_ISSUER, () -> KeySetState.LOADED);
+            readers.put(SECONDARY_ISSUER, secondary::get);
+            GatewayReadinessCheck check = checkWith(config, new IssuerKeySetStatus(readers));
+
+            HealthCheckResponse undegraded = check.call();
+            secondary.set(KeySetState.FAILED);
+            HealthCheckResponse degraded = check.call();
+
+            Map<String, Object> upData = undegraded.getData().orElseThrow();
+            Map<String, Object> downData = degraded.getData().orElseThrow();
+            assertAll("the same issuer, undegraded then stale-degraded",
+                    () -> assertEquals(HealthCheckResponse.Status.UP, undegraded.getStatus(), "the control stays UP"),
+                    () -> assertEquals("ready", upData.get("jwks")),
+                    () -> assertEquals(2L, upData.get("issuers_loaded")),
+                    () -> assertEquals(HealthCheckResponse.Status.DOWN, degraded.getStatus(),
+                            "a stale-degraded issuer takes readiness DOWN"),
+                    () -> assertEquals("unavailable", downData.get("jwks")),
+                    () -> assertEquals(2L, downData.get("issuers")),
+                    () -> assertEquals(1L, downData.get("issuers_loaded"), "the degraded issuer is counted not loaded"));
+            assertNothingDisclosed(downData);
+        }
+
         @Test
         @DisplayName("server mode stays DOWN while an issuer has no key set, even with oidc_discovery=resolved")
         void serverModeKeySetDownIsNotLiftedByResolvedDiscovery() {
@@ -1057,7 +1093,7 @@ class SheriffMetricsTest {
         private IssuerConfig issuer(String name, String realm) {
             String base = "https://idp.internal.example.com/realms/" + realm;
             IssuerConfig.Jwks jwks = new IssuerConfig.Jwks("http",
-                    base + "/protocol/openid-connect/certs", null, List.of(), null, null, null, null);
+                    base + "/protocol/openid-connect/certs", null, List.of(), null, null, null, null, null);
             return new IssuerConfig(name, base, null, jwks);
         }
 

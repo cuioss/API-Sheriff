@@ -42,9 +42,12 @@ import java.util.Optional;
  * (single-node / sticky-session deployments).
  * <p>
  * <strong>Three writes, and only one of them creates.</strong> {@link #create} is the write for a
- * <em>new</em> session. {@link #replaceIfPresent} and {@link #replaceAndReissueHandle} are the writes
+ * <em>new</em> session. {@link #replaceIfCurrent} and {@link #replaceAndReissueHandle} are the writes
  * for a session that already exists: neither ever creates, so a write that was in flight when the
- * session was destroyed cannot bring the session back.
+ * session was destroyed cannot bring the session back. {@link #replaceIfCurrent} additionally writes
+ * only over the exact record its caller read, so a refresh that was in flight while a widening
+ * replaced the record cannot overwrite the widening. {@link #destroyIfCurrent} applies the same basis
+ * check to a destruction, so a refused refresh cannot end the session a widening left.
  * <p>
  * <strong>Two deadlines.</strong> A session is expired at the earlier of its absolute lifetime
  * ({@link SessionRecord#expiresAt()}) and its idle deadline — the last access recorded through
@@ -73,7 +76,7 @@ public interface SessionStore {
      * subject ends that subject's oldest session — the one created earliest — before the new one is
      * stored, and before the max-session bound is tested.
      * <p>
-     * A session that already exists is updated through {@link #replaceIfPresent} or
+     * A session that already exists is updated through {@link #replaceIfCurrent} or
      * {@link #replaceAndReissueHandle}, never through this method. An id the store already holds is
      * nevertheless accepted here: the stored record is replaced in place, {@code cookieHandle} replaces
      * the handle it had, the secondary indexes follow the new record, and no capacity is consumed.
@@ -89,37 +92,53 @@ public interface SessionStore {
     void create(SessionRecord session, String cookieHandle, Instant now);
 
     /**
-     * Replaces the record stored under {@code session}'s session id, <strong>only if a record for that
-     * id is currently stored</strong>, and reports whether it did — the write a refresh makes to a
-     * session that already exists.
+     * Replaces the record stored under {@code replacement}'s session id, <strong>only if the record
+     * stored there is still {@code basis}</strong> — the record the caller read before it computed the
+     * replacement — and reports what it found — the write a refresh makes to a session that already
+     * exists.
      * <p>
-     * When no record is stored under the id, nothing is written and the store is left exactly as it
-     * was. That is what keeps a destroyed session destroyed: a writer that resolved the session, was
-     * overtaken by {@link #destroyById}, {@link #destroyBySid} or {@link #destroyBySub}, and then
-     * writes, replaces nothing.
+     * Three outcomes, and only one of them writes:
+     * <ul>
+     *   <li>{@link ReplaceOutcome#REPLACED} — the stored record equals {@code basis}; it is replaced by
+     *       {@code replacement}.</li>
+     *   <li>{@link ReplaceOutcome#ABSENT} — no record is stored under the id. Nothing is written. That
+     *       is what keeps a destroyed session destroyed: a writer that resolved the session, was
+     *       overtaken by any path that removes it — {@link #destroyById}, {@link #destroyBySid},
+     *       {@link #destroyBySub} or {@link #destroyIfCurrent}, the expiry eviction in {@link #resolve} or
+     *       {@link #sweepExpired}, or the per-subject eviction of a {@link #create} — and then writes,
+     *       replaces nothing.</li>
+     *   <li>{@link ReplaceOutcome#SUPERSEDED} — a record is stored under the id but it is no longer
+     *       {@code basis}: another updating write — a widening or a step-up through
+     *       {@link #replaceAndReissueHandle} — replaced it after the caller read it. Nothing is written,
+     *       so a replacement computed from the earlier record cannot overwrite the later one.</li>
+     * </ul>
      * <p>
-     * The presence check and the replacement are <strong>one atomic step</strong>: no destruction can
-     * take effect between them. A replacement may carry a different {@code sid} or {@code sub} than
-     * the record it replaces; the secondary indexes then stop resolving the previous values to the
-     * session and resolve the new ones instead.
+     * The comparison and the replacement are <strong>one atomic step</strong>: no destruction and no
+     * other write can take effect between them. The comparison is record equality over every
+     * component; the cookie handle and the last access are store-side state, not components, so a
+     * re-issue of the handle alone or a recorded access does not supersede the caller's basis. A
+     * replacement may carry a different {@code sid} or {@code sub} than the record it replaces; the
+     * secondary indexes then stop resolving the previous values to the session and resolve the new ones
+     * instead.
      * <p>
      * <strong>The session keeps the cookie handle it has</strong>, and its last access. The handle is
      * the one the store holds for the id at the moment of the replacement — never one the caller read
-     * earlier — so a replacement that was in flight across a {@link #replaceAndReissueHandle} leaves
-     * the re-issued handle in place and cannot put the previous one back.
+     * earlier.
      * <p>
      * A replacement consumes no capacity — the replaced record is already counted against the
      * max-session bound — so it never sweeps and is never refused at the bound.
      * <p>
-     * The check is on presence, not on liveness: a record whose lifetime has lapsed but that nothing
-     * has evicted yet is replaced like any other, and {@link #resolve} goes on enforcing both deadlines.
+     * The check is not on liveness: a record whose lifetime has lapsed but that nothing has evicted yet
+     * is replaced like any other, and {@link #resolve} goes on enforcing both deadlines.
      *
-     * @param session the replacement record; its session id names the record to replace
-     * @return {@code true} when a record was stored under the id and has been replaced; {@code false}
-     *         when none was stored, in which case the store is unchanged
+     * @param basis       the record the caller read and computed {@code replacement} from
+     * @param replacement the replacement record; its session id names the record to replace
+     * @return {@link ReplaceOutcome#REPLACED} when the stored record was {@code basis} and has been
+     *         replaced; {@link ReplaceOutcome#ABSENT} or {@link ReplaceOutcome#SUPERSEDED} otherwise, in
+     *         which case the store is unchanged
      * @since 1.0
      */
-    boolean replaceIfPresent(SessionRecord session);
+    ReplaceOutcome replaceIfCurrent(SessionRecord basis, SessionRecord replacement);
 
     /**
      * Replaces the record stored under {@code session}'s session id and swaps the cookie handle that
@@ -130,7 +149,14 @@ public interface SessionStore {
      * atomic step</strong>. Afterwards {@code newCookieHandle} resolves the session and the handle it
      * had before resolves nothing. The session id, the absolute expiry the record carries and the last
      * access are unchanged; the secondary indexes follow the replacement record as they do for
-     * {@link #replaceIfPresent}.
+     * {@link #replaceIfCurrent}.
+     * <p>
+     * Unlike {@link #replaceIfCurrent} this write checks presence only, so the widening it serves wins
+     * over an overlapping refresh in either order. A refresh that persists after this write finds its
+     * basis replaced and is told it was superseded. A refresh that persisted between the widening's
+     * resolve and this write was told its update was written; this write then replaces that record with
+     * the widening's merge, and the refresh is never told it was superseded. Either way the refresh side
+     * gives way, never the widening.
      * <p>
      * When no record is stored under the id, nothing is written: no record is stored and
      * {@code newCookieHandle} is not registered.
@@ -179,7 +205,7 @@ public interface SessionStore {
      * <p>
      * <strong>The returned record is the one stored at the moment of removal</strong> — not one the
      * caller resolved earlier. The lookup and the removal are one atomic step, so a
-     * {@link #replaceIfPresent} or {@link #replaceAndReissueHandle} that ran after the caller resolved
+     * {@link #replaceIfCurrent} or {@link #replaceAndReissueHandle} that ran after the caller resolved
      * the session is reflected in the result: a logout that revokes the returned record's refresh token
      * revokes the token a refresh rotated in, not the one it spent.
      * <p>
@@ -192,6 +218,36 @@ public interface SessionStore {
      * @since 1.0
      */
     Optional<SessionRecord> destroyById(String sessionId);
+
+    /**
+     * Destroys the session stored under {@code basis}'s session id together with its cookie handle,
+     * <strong>only if the record stored there is still {@code basis}</strong> — the record the caller
+     * read — and reports what it found — the destruction a refused refresh makes.
+     * <p>
+     * Three outcomes, and only one of them removes anything:
+     * <ul>
+     *   <li>{@link DestroyOutcome#DESTROYED} — the stored record equals {@code basis}; the session is
+     *       removed exactly as {@link #destroyById} removes it.</li>
+     *   <li>{@link DestroyOutcome#ABSENT} — no record is stored under the id; the session was already
+     *       ended. Nothing is changed.</li>
+     *   <li>{@link DestroyOutcome#SUPERSEDED} — a record is stored under the id but it is no longer
+     *       {@code basis}: another updating write — a widening or a step-up through
+     *       {@link #replaceAndReissueHandle} — replaced it after the caller read it. Nothing is removed,
+     *       so a destruction decided on the earlier record cannot end the session the later write
+     *       left.</li>
+     * </ul>
+     * <p>
+     * The comparison and the removal are <strong>one atomic step</strong>, and the comparison is the
+     * record equality {@link #replaceIfCurrent} uses: a re-issue of the handle alone or a recorded access
+     * does not supersede the caller's basis. The removal does not test liveness.
+     *
+     * @param basis the record the caller read; its session id names the session to destroy
+     * @return {@link DestroyOutcome#DESTROYED} when the stored record was {@code basis} and has been
+     *         removed; {@link DestroyOutcome#ABSENT} or {@link DestroyOutcome#SUPERSEDED} otherwise, in
+     *         which case the store is unchanged
+     * @since 1.0
+     */
+    DestroyOutcome destroyIfCurrent(SessionRecord basis);
 
     /**
      * Destroys every session carrying the given IdP {@code sid} (back-channel logout), O(1) via
@@ -229,4 +285,47 @@ public interface SessionStore {
      * @return the number of sessions swept
      */
     int sweepExpired(Instant now);
+
+    /**
+     * What {@link #replaceIfCurrent} found under the session id, and therefore whether it wrote.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    enum ReplaceOutcome {
+
+        /** The stored record was the caller's basis and has been replaced. */
+        REPLACED,
+
+        /** No record is stored under the id — the session was destroyed; nothing was written. */
+        ABSENT,
+
+        /**
+         * A record is stored under the id but it is no longer the caller's basis — another updating
+         * write replaced it after the caller read it; nothing was written.
+         */
+        SUPERSEDED
+    }
+
+    /**
+     * What {@link #destroyIfCurrent} found under the session id, and therefore whether it removed the
+     * session.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    enum DestroyOutcome {
+
+        /** The stored record was the caller's basis and the session has been removed. */
+        DESTROYED,
+
+        /** No record is stored under the id — the session was already ended; nothing was removed. */
+        ABSENT,
+
+        /**
+         * A record is stored under the id but it is no longer the caller's basis — another updating
+         * write replaced it after the caller read it; nothing was removed.
+         */
+        SUPERSEDED
+    }
 }

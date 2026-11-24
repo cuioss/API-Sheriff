@@ -171,6 +171,15 @@ Required when any route's *effective* auth is `require: bearer`.
 | *Optional* integer, `source: http` only; refused on `source: file`. Per-issuer window within which
   an unknown key id triggers at most one key-set refresh. Range `5`-`3600`; omitted, `30`. See
   link:#_jwks_key_rotation[Key rotation and the refresh cadence].
+
+| `issuers[].jwks.max_staleness_seconds`
+| *Optional* integer, `source: http` only; refused on `source: file`. How long a loaded key set stays
+  usable while every background refresh fails. Range `60`-`604800` (one minute to seven days);
+  omitted, *off* -- the token library's default, which keeps serving the loaded keys indefinitely.
+  Checked once per refresh cycle, after a cycle that installed no keys, so a bound below
+  `refresh_interval_seconds` behaves like one equal to it and only fails closed sooner; choose at
+  least three refresh intervals. Past the bound the issuer's tokens are rejected and readiness counts
+  it not loaded until a refresh succeeds (see link:#_jwks_readiness[Key-set loading and readiness]).
 |===
 
 The BFF variants use the same validator for the access and ID tokens of a login, widening or refresh,
@@ -185,9 +194,10 @@ The validator is assembled at boot: a missing `url`, a host-less `url` while
 are fetched asynchronously, so the gateway can boot before the IdP answers.
 
 * *Readiness is `DOWN` while any issuer has no key set*, reporting `jwks: loading` (no attempt has
-  produced one yet) or `jwks: unavailable` (the most recent attempt failed), with the counts
-  `issuers` and `issuers_loaded`. It turns `UP` with `jwks: ready` once every issuer has a key set.
-  The payload names no issuer, URL or host; reading it never triggers a fetch.
+  produced one yet) or `jwks: unavailable` (the most recent attempt failed, or a loaded key set is
+  past its `max_staleness_seconds` bound), with the counts `issuers` and `issuers_loaded`. It turns
+  `UP` with `jwks: ready` once every issuer has a usable key set. The payload names no issuer, URL or
+  host; reading it never triggers a fetch.
 * *A failed load is retried.* One attempt includes the HTTP client's own retries (jittered backoff
   of about 1, 2, 4 and 8 seconds over five tries, logged as `HTTP-112`), so an unreachable provider
   fails an attempt after about 17 seconds. The gateway's next attempt follows 1 second later and the
@@ -202,11 +212,19 @@ the unrouted `404` while `uniform_not_found` is on (see
 xref:security-and-edge-hardening.adoc#_uniform_not_found[The uniform 404 (`uniform_not_found`)]). A
 `file`-sourced issuer normally reports `ready` immediately.
 
-*Readiness reports availability, not freshness.* A background-refresh failure after the first load
-keeps the loaded keys in service and readiness `UP`, so an IdP lost after boot or a stalled rotation
-needs separate alerting
+*Readiness reports availability, and freshness only when bounded.* Without `max_staleness_seconds`, a
+background-refresh failure after the first load keeps the loaded keys in service and readiness `UP`,
+so an IdP lost after boot or a stalled rotation needs separate alerting
 (link:../adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#_live_key_set_readiness[ADR-0027]);
 the stalled-rotation record is `WARN ApiSheriff-136` (see link:#_jwks_key_rotation[Key rotation and the refresh cadence]).
+With the key declared, an issuer whose refreshes have failed for longer than the bound is
+*stale-degraded*: the token library logs `JWKS_KEYS_STALE` and stops reporting the key set usable, so
+the issuer's tokens are rejected fail-closed and readiness reports `DOWN` with `jwks: unavailable`,
+counting the issuer out of `issuers_loaded`. The keys are kept, and the next refresh that installs
+usable keys re-admits the issuer and turns readiness `UP` again. The trade-off is availability: in a
+single-issuer deployment a stale-degraded issuer takes the gateway out of rotation exactly when it
+can validate no token, so an IdP outage longer than the bound becomes a gateway outage (see
+link:../security-threat-model.adoc#bff-07[BFF-07]).
 
 *BFF provider-metadata state, never gating.* With an active BFF runtime (`oidc.session.mode: server`
 or `cookie`) the payload carries two more data, on `UP` and `DOWN`, with or without
@@ -243,8 +261,9 @@ carries neither datum.
 [[_jwks_key_rotation]]
 === Key rotation and the refresh cadence
 
-Three optional keys of an `http`-sourced issuer's `jwks` block set how quickly the gateway follows a
-signing-key change and how long it accepts the previous key
+Four optional keys of an `http`-sourced issuer's `jwks` block set how quickly the gateway follows a
+signing-key change, how long it accepts the previous key and how long it keeps a key set it can no
+longer refresh
 (link:../adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]).
 
 [cols="2,1,1,3", options="header"]
@@ -265,6 +284,14 @@ signing-key change and how long it accepts the previous key
 | `30`
 | `5`-`3600`
 | The per-issuer window of the refresh described below.
+
+| `max_staleness_seconds`
+| off
+| `60`-`604800`
+| How long the loaded key set stays usable while every background refresh fails. Past it the issuer
+  is stale-degraded: its tokens are rejected and readiness counts it not loaded until a refresh
+  installs usable keys (see link:#_jwks_readiness[Key-set loading and readiness]). Choose at least
+  three refresh intervals. The default is the token library's; an omitted key passes nothing.
 |===
 
 [source,yaml]
@@ -283,7 +310,7 @@ token_validation:
 
 *Boot refusals.* A non-integer is refused by the schema; an out-of-range integer by the validator
 with `ApiSheriff-200` at `/token_validation/issuers/<index>/jwks/<key>`, naming issuer, key, value
-and range, never the JWKS URL. Each of the three keys on a `source: file` issuer is refused at the
+and range, never the JWKS URL. Each of the four keys on a `source: file` issuer is refused at the
 same pointer, whatever its value. All violations of all issuers are reported in one pass.
 
 *Unknown key id.* Token verification never fetches: it uses the current key set, then a replaced one
@@ -1207,18 +1234,45 @@ token is answered.
 | `ApiSheriff-111` (`persist-failure`)
 
 | *Session terminated meanwhile* (`session.mode: server` only) -- the exchange succeeded, but a
-  logout or a back-channel logout destroyed the session while the refresh was in flight
-| *Stays ended.* The rotated session is not written back; the session cookie is cleared and the
-  request is answered through `on_failure`.
-| Best-effort, the refresh token the exchange returned.
-| `ApiSheriff-111` (`session-terminated`)
+  logout, a back-channel logout, a login callback that replaced the session, an expiry sweep or an
+  eviction destroyed it while the refresh was in flight
+| *Stays ended*, by whatever destroyed it; the refresh itself ends nothing. The rotated session is not
+  written back, the session cookie is *not* cleared -- a clearing cookie could delete the cookie a
+  login callback has just set for the replacement session -- and the request is answered through
+  `on_failure` as "no session".
+| None -- the refresh token the exchange returned is abandoned, not revoked: a session that replaced
+  the destroyed one may share the IdP's user session, and a revocation could end it.
+| Not logged above `DEBUG`
 |===
 
-Revocation is best-effort; a failed revocation never changes the disposition.
+*A refusal ends only the session it read* (`session.mode: server` only). A *credential rejected* or
+*redeemed* refusal whose session record a widening or a step-up replaced while the exchange was in
+flight, or whose session was already destroyed by a logout, a back-channel logout, a login callback,
+an expiry sweep or an eviction, ends nothing: nothing is destroyed or revoked, the session cookie is
+not cleared, the request is answered through `on_failure` as "no session", and `ApiSheriff-111` is not
+logged for it -- the refusal lost a race, and the write that replaced or ended the session owns it.
+In `cookie` mode the gateway can observe neither, and the two rows always end the session.
+
+Revocation is best-effort; a failed revocation never changes the disposition. Only a refresh that
+itself ends the session -- *redeemed* when it destroyed the record it read, and *persist failure* --
+revokes; a refresh that lost a race to a session replacement or destruction abandons its live token,
+which lapses under the IdP's refresh-token lifetime.
 
 *A logout wins over a refresh in server mode.* The rotated session is written only while the store
-still holds the session, so a session destroyed by `oidc.logout.path` or a back-channel logout during
-the refresh stays ended (last row, its own reason, no exception). In `cookie` mode the row never
+still holds the session, so a session destroyed by `oidc.logout.path`, a back-channel logout, a
+login callback, an expiry sweep or an eviction during the refresh stays ended (last row). The refresh
+ends nothing itself and clears no cookie; the browser's next request presents the cookie of a session
+that is gone, which resolves no session and is answered like any unauthenticated request. The refresh
+revokes nothing, and that leaves a residual: `oidc.logout.path` revokes the refresh token of the
+session record it destroys, or the resolved record's when the session was already gone at the
+destruction. The residual arises when the logout destroys the session before the refresh persists:
+the destroyed record still holds the presented token the rotation has spent, and the rotated
+successor is never stored, so it cannot be revoked. A back-channel logout comes from an IdP that has
+ended its own session. Whether the IdP also invalidates the rotated successor is its own
+policy (RFC 7009 allows it but does not require it). The successor is held by nobody -- never sent to
+the browser, no copy kept -- and can stay valid at the IdP until its refresh-token lifetime ends, the
+same accepted residual as a refresh superseded by a concurrent widening, which abandons its rotated
+token too. In `cookie` mode the row never
 applies: the gateway cannot observe a logout and re-seals the rotated session -- see
 link:../variants/03-bff-cookie.adoc#_logout[Variant 3 -- Logout].
 
@@ -1227,8 +1281,9 @@ per-session single-flight, the back-off and this table. Its one extra, non-failu
 session is kept but still lacks the scope (narrower `scope` granted, no refresh token, or the request
 joined a concurrent refresh that did not ask for it); no back-off, no warning, and the request goes on
 to widening or `403`. Requested scopes the IdP did not return leave the granted set. An IdP answering
-`invalid_scope` is disposed as *pre-redemption* (session kept, `ApiSheriff-127`, back-off), because
-the engine reports it without the OAuth error code
+`invalid_scope` is classified by the token engine as its own `SCOPE_REFUSED` kind, and the gateway deliberately disposes it as
+*pre-redemption* (session kept, `ApiSheriff-127`, back-off): the IdP issued no grant and would refuse
+the same request again, so an immediate retry would only repeat the refusal
 (link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 
 *Refresh-token reuse detection is the IdP's job.* The gateway cannot recognise a replayed refresh

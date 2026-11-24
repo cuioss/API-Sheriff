@@ -26,7 +26,6 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
-
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -72,15 +71,16 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>The gateway owns each issuer's loader.</strong> Every issuer's library loader is wrapped in
  * a {@link RetryingJwksLoader} installed through the library's public
- * {@code IssuerConfigBuilder.jwksLoader(..)} seam, so the gateway — not the library — records whether
- * a key set has actually been loaded. The same loaders back the {@link IssuerKeySetStatus} bean
+ * {@code IssuerConfigBuilder.jwksLoader(..)} seam, which reports the library loader's own status and
+ * adds the gateway's fast first-load retry, its bounded unknown-key-id refresh and a non-fetching
+ * record of whether a key set is loaded. The same loaders back the {@link IssuerKeySetStatus} bean
  * produced alongside the validator, which is the non-fetching per-issuer view readiness reads.
  * <p>
  * <strong>The JWKS refresh cadence is configurable per issuer.</strong> An {@code http} source's
- * {@code jwks.refresh_interval_seconds} and {@code jwks.key_rotation_grace_period_seconds} are passed
- * through to the library's loader configuration, and {@code jwks.unknown_kid_refresh_window_seconds}
- * bounds the refresh the gateway's own loader schedules when a token names a key id it does not know.
- * Each key that is omitted keeps its default.
+ * {@code jwks.refresh_interval_seconds}, {@code jwks.key_rotation_grace_period_seconds} and
+ * {@code jwks.max_staleness_seconds} are passed through to the library's loader configuration, and
+ * {@code jwks.unknown_kid_refresh_window_seconds} bounds the refresh the gateway's own loader schedules
+ * when a token names a key id it does not know. Each key that is omitted keeps its default.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -369,10 +369,13 @@ public class TokenValidatorProducer {
      * builder failure rather than as a configuration error.
      * <p>
      * <strong>The refresh cadence is passed through only when declared.</strong> A declared
-     * {@code jwks.refresh_interval_seconds} becomes the library's background refresh interval and a
-     * declared {@code jwks.key_rotation_grace_period_seconds} its key-rotation grace period. An omitted
-     * key leaves the builder untouched, so the library's own default applies (600 seconds for the
-     * refresh interval).
+     * {@code jwks.refresh_interval_seconds} becomes the library's background refresh interval, a
+     * declared {@code jwks.key_rotation_grace_period_seconds} its key-rotation grace period, and a
+     * declared {@code jwks.max_staleness_seconds} its maximum staleness
+     * ({@link HttpJwksLoaderConfig.HttpJwksLoaderConfigBuilder#maxStaleness(Duration)}), past which a
+     * loaded key set whose refreshes keep failing is no longer reported usable. An omitted key leaves
+     * the builder untouched, so the library's own default applies (600 seconds for the refresh
+     * interval; no staleness bound, so loaded keys stay usable while refreshes fail).
      *
      * @param issuer the gateway issuer entry, for the identifier and error context
      * @param jwks   the issuer's {@code http} JWKS block
@@ -429,8 +432,8 @@ public class TokenValidatorProducer {
         }
         // Each cadence key is passed through only when declared, so an omitted key keeps the token
         // library's own default instead of a second copy of it kept here (doc/technical_aspects.adoc,
-        // "Adopting Upstream Security-Default Changes"). ConfigValidator has already bounded both values to
-        // ranges the library accepts.
+        // "Adopting Upstream Security-Default Changes"). ConfigValidator has already bounded every value
+        // to a range the library accepts.
         Integer refreshIntervalSeconds = jwks.refreshIntervalSeconds();
         if (refreshIntervalSeconds != null) {
             builder.refreshIntervalSeconds(refreshIntervalSeconds);
@@ -438,6 +441,13 @@ public class TokenValidatorProducer {
         Integer keyRotationGracePeriodSeconds = jwks.keyRotationGracePeriodSeconds();
         if (keyRotationGracePeriodSeconds != null) {
             builder.keyRotationGracePeriod(Duration.ofSeconds(keyRotationGracePeriodSeconds));
+        }
+        // Omitted means off, the library's default: the loaded keys stay usable while refreshes fail.
+        // The library refuses a staleness bound only together with a zero refresh interval, which no
+        // admitted refresh_interval_seconds produces.
+        Integer maxStalenessSeconds = jwks.maxStalenessSeconds();
+        if (maxStalenessSeconds != null) {
+            builder.maxStaleness(Duration.ofSeconds(maxStalenessSeconds));
         }
         return builder.build();
     }

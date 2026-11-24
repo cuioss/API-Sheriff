@@ -69,8 +69,11 @@ import org.jspecify.annotations.Nullable;
  *       loaders, so polling the probe never causes a JWKS request. When every issuer is loaded the
  *       probe reports {@code jwks: ready} and {@code UP}. Otherwise it reports {@code DOWN} with
  *       {@code jwks: loading} (no load attempt has produced a key set yet) or
- *       {@code jwks: unavailable} (at least one issuer's last attempt failed), together with the
- *       bounded count {@code issuers_loaded} beside {@code issuers}. A validator whose assembly
+ *       {@code jwks: unavailable} (at least one issuer's last attempt failed, or an issuer's loaded
+ *       key set is past its {@code jwks.max_staleness_seconds} bound and the library no longer reports
+ *       it usable), together with the bounded count {@code issuers_loaded} beside {@code issuers}; a
+ *       stale-degraded issuer counts as not loaded. The verdict rule is unchanged by that bound: UP
+ *       only while every configured issuer is loaded. A validator whose assembly
  *       fails ({@link GatewayException}) is reported {@code DOWN} through the same renderer with a
  *       fixed status token (see {@link #ERROR_VALIDATION_UNAVAILABLE}). No DOWN payload names an
  *       issuer, a URL, a hostname or a cause; causes reach the operator through the log.
@@ -113,7 +116,10 @@ public class GatewayReadinessCheck implements HealthCheck {
     private static final String JWKS_READY = "ready";
     /** At least one issuer has no key set yet and none of the pending issuers' attempts has failed. */
     private static final String JWKS_LOADING = "loading";
-    /** At least one issuer's most recent load attempt failed, or the validator could not be built. */
+    /**
+     * At least one issuer's most recent load attempt failed, an issuer's loaded key set is past its
+     * staleness bound, or the validator could not be built.
+     */
     private static final String JWKS_UNAVAILABLE = "unavailable";
     private static final String DATA_OIDC = "oidc";
     /** The provider-metadata datum, one of the fixed {@link DiscoveryStatus.State} tokens. */

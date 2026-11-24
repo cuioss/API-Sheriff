@@ -185,10 +185,13 @@ without touching the eager-boot disposition.
 
 * *The gateway owns each issuer's loader.* Every issuer's library loader is wrapped in a
   gateway-owned loader installed through the library's public issuer-configuration loader seam. The
-  wrapper records the outcome of each load attempt itself and reports the library's `OK` status
-  exactly when a key set has been loaded. That second part matters beyond readiness: the library's
-  own loader never moves from its undefined status to `OK` after a failed first fetch, and its issuer
-  cache re-admits an issuer only on `OK`, so the wrapper also repairs the library's recovery path.
+  wrapper records the outcome of each load attempt itself and reports the library loader's own
+  status, so an issuer the library has degraded (an opt-in `jwks.max_staleness_seconds` bound
+  exceeded) is no longer reported `OK`. That matters beyond readiness: the library's issuer cache
+  admits an issuer only while its loader reports `OK`, so a degraded issuer is rejected fail-closed
+  until a refresh installs keys again. Since token-sheriff 0.9.9 the library loader recovers a failed
+  first load on its own refresh; the wrapper still adds the non-fetching key-set view readiness reads
+  and the fast, bounded first-load retry.
 * *Readiness reads a non-fetching per-issuer view.* A per-issuer key-set state published alongside
   the qualified validator is read by the gateway's readiness check after the validator resolves.
   Readiness is `UP` with `jwks: ready` only when every configured issuer has a key set; otherwise it

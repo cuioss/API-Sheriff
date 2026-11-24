@@ -89,18 +89,29 @@ first carries a flag: `idpDestruction()` reports `UNSUPPORTED` for the cookie bi
 back-channel logout endpoint is *gated on that signal* rather than on the mode name -- it answers a
 deliberate `404` instead of claiming a destruction that never happened.
 
-The second has no flag, because the result carries it. `persist` is the seam's *updating* write: it
-updates a session that already exists and never creates one, and it returns an empty result when
-the binding observed that the session is gone. `ServerSessionBinding` reports that when a logout
-destroyed the session after the caller resolved it. `CookieSessionBinding` holds nothing a logout
-could have removed, so it always re-seals and never returns empty -- a refresh or a widening that
-was in flight during a logout still produces a session cookie. Callers must handle the empty result
-(`TokenRefreshCoordinator` ends the request as session-ended, `CallbackEndpoint` answers `403`);
+The second has no flag, because the result carries it. The seam has two *updating* writes. Each
+updates a session that already exists and never creates one, and the two report what the binding
+observed through different result types:
+
+* `persist` is the refresh's write. It takes the record the caller resolved as its basis and answers
+  a `SessionBinding.PersistResult`: `Written` when it wrote the session, `Gone` when the binding
+  observed that the session no longer exists, and `Superseded` when it observed that the session's
+  record is no longer that basis because a widening or a step-up replaced it. In server mode
+  `ServerSessionBinding` answers `Gone` when a logout destroyed the session after the caller resolved
+  it and `Superseded` when a widening replaced the record; on either, `TokenRefreshCoordinator`
+  answers the request as no session and sends no clearing cookie. `CookieSessionBinding` holds nothing
+  a logout or a widening could have changed, so it ignores the basis, always re-seals and always
+  answers `Written` -- a refresh that was in flight during a logout still produces a session cookie.
+* `persistReissuingCookie` is the write a widening merge uses. It answers an empty `Optional` when the
+  binding observed that the session is gone, and `CallbackEndpoint` then answers `403`.
+  `CookieSessionBinding` never answers empty here either, so a widening that was in flight during a
+  logout still produces a session cookie.
+
 `bind` stays the only creating write. See the updating writes in
 link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018].
 
-The updating write has a second variant, `persistReissuingCookie`, which a widening merge uses. In
-server mode it swaps the handle the browser holds. Here it does exactly what `persist` does: every
+In server mode `persistReissuingCookie` swaps the handle the browser holds. Here it does exactly what
+`persist` does: every
 update of a sealed session already produces a new cookie value, so there is nothing further to
 re-issue. *Do not re-mint the nonce in it.* The nonce is minted once, in `bind`, and the derived
 session identity depends on it; a new nonce would be a different session to the refresh

@@ -34,7 +34,6 @@ import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
@@ -52,7 +51,8 @@ import org.jspecify.annotations.Nullable;
  * <strong>through the engine</strong> ({@code token-sheriff-client}'s {@code RefreshFlow}, reached
  * via the {@link RefreshExchange} seam) and persists the rotated token material through the
  * mode-neutral {@link SessionBinding} seam — a store write in server mode, made only while the store
- * still holds the session, and a re-sealed cookie in a stateless mode — so the browser never sees a
+ * still holds the session exactly as the refresh resolved it, and a re-sealed cookie in a stateless
+ * mode — so the browser never sees a
  * token and never drives a leg. The gateway re-implements
  * <strong>no</strong> OAuth leg: the engine owns the refresh grant and refresh-token rotation.
  * <p>
@@ -80,16 +80,19 @@ import org.jspecify.annotations.Nullable;
  * {@code scope} refuses nothing (RFC 6749 §5.1) and leaves {@code S} as it was, as does every outcome
  * in which the provider did not process the grant.
  * <p>
- * An identity provider that refuses the
- * requested scope outright ({@code invalid_scope}) is <em>not</em> told apart:
- * {@code token-sheriff-client} surfaces that answer as a bare transport failure, which
- * {@code RefreshFlow.classify} maps to {@code PRE_REDEMPTION}, so it takes the back-off disposition below
- * (upstream: <a href="https://github.com/cuioss/TokenSheriff/issues/763">TokenSheriff#763</a>). The
- * caller never relays a session short of its needed scopes, whichever outcome it receives.
+ * An identity provider that refuses the requested scope outright ({@code invalid_scope}) <em>is</em>
+ * told apart: {@code RefreshFlow.classify} reports that answer as its own {@code SCOPE_REFUSED} kind.
+ * The gateway deliberately gives it the pre-redemption disposition below — the session is kept, the
+ * next attempt waits out the bounded back-off, and {@code ApiSheriff-127} is recorded — because the
+ * provider issued no grant and rotated nothing, and the same request would be refused again, so an
+ * immediate retry would only hammer the provider. That engine kind is therefore <em>not</em> this
+ * coordinator's {@link RefreshOutcome.Kind#SCOPE_REFUSED SCOPE_REFUSED} outcome: the caller receives
+ * {@link RefreshOutcome.Kind#DEFERRED DEFERRED} or {@link RefreshOutcome.Kind#UNAVAILABLE UNAVAILABLE}.
+ * The caller never relays a session short of its needed scopes, whichever outcome it receives.
  * <p>
  * <strong>A refused refresh is disposed by what the identity provider did to the presented refresh
  * token.</strong> Only the exchange itself is classified, through the engine's
- * {@code RefreshFlow.classify}, and every kind has its own disposition:
+ * {@code RefreshFlow.classify}, and every kind maps to one disposition:
  * <ul>
  *   <li><strong>{@code PRE_REDEMPTION}</strong> — the provider never processed the grant (a connection
  *       or DNS failure, a {@code 5xx}, a {@code 4xx} not attributed to the credential). The presented
@@ -97,30 +100,89 @@ import org.jspecify.annotations.Nullable;
  *       next attempt waits out a fixed five-second back-off. The outcome is
  *       {@link RefreshOutcome.Kind#DEFERRED DEFERRED} while the access token has not expired, otherwise
  *       {@link RefreshOutcome.Kind#UNAVAILABLE UNAVAILABLE}; the record is {@code ApiSheriff-127}.</li>
+ *   <li><strong>{@code SCOPE_REFUSED}</strong> — the provider answered {@code invalid_scope}. It issued
+ *       no grant, so the presented token is still valid, and the gateway deliberately disposes it exactly
+ *       as {@code PRE_REDEMPTION}: session kept, nothing revoked, the same back-off, the same outcomes and
+ *       {@code ApiSheriff-127}.</li>
  *   <li><strong>{@code CREDENTIAL_REJECTED}</strong> — the provider answered {@code invalid_grant},
  *       which is also how a provider enforcing strict rotation rejects a replayed refresh token. The
  *       session is destroyed, nothing is revoked (nothing was redeemed), and the outcome is
- *       {@link RefreshOutcome.Kind#FAILED FAILED} with reason {@code credential-rejected}.</li>
+ *       {@link RefreshOutcome.Kind#FAILED FAILED} with reason {@code credential-rejected} — unless the
+ *       session's record was replaced or the session already ended meanwhile (see below).</li>
  *   <li><strong>{@code REDEEMED}</strong> — the provider redeemed the grant and the gateway refused its
  *       response. The session is destroyed and the one live refresh token the gateway can name is
  *       revoked: the successor when rotated, the presented token when not rotated, none when rotation
  *       is unknown. The outcome is {@link RefreshOutcome.Kind#FAILED FAILED} with reason
- *       {@code redeemed-response-refused}.</li>
+ *       {@code redeemed-response-refused} — unless the session's record was replaced or the session
+ *       already ended meanwhile, in which case nothing is revoked (see below).</li>
  *   <li><strong>Persist failure</strong> — the exchange succeeded but the binding could not hold the
  *       rotated session. The presented token is already redeemed, so the session is destroyed and the
  *       refresh token the exchange returned is revoked. The outcome is
  *       {@link RefreshOutcome.Kind#FAILED FAILED} with reason {@code persist-failure}.</li>
  *   <li><strong>Session terminated at the persist</strong> — the exchange succeeded, but the binding
- *       reported the session gone when the rotated session was written: a logout or a validated
- *       back-channel logout destroyed it while the refresh was in flight. The rotated session is
- *       <em>not</em> written, so the session stays terminated, and the refresh token the exchange
- *       returned is revoked — the presented one is already redeemed. The outcome is
- *       {@link RefreshOutcome.Kind#FAILED FAILED} with reason {@code session-terminated}. Only a binding
- *       that holds server-side state can report a session gone, so this disposition occurs in server
- *       mode only: a stateless binding cannot observe a logout and re-seals the rotated session.</li>
+ *       reported the session gone when the rotated session was written: a logout, a validated
+ *       back-channel logout, a login callback that replaced the session in the same browser, an expiry
+ *       sweep or an eviction destroyed it while the refresh was in flight. The rotated session is
+ *       <em>not</em> written, so the session stays terminated. This refresh did not end the session, so it
+ *       ends nothing either: nothing is destroyed, nothing is marked ended, no {@code ApiSheriff-111} is
+ *       recorded, the back-off entry is dropped and the record is a {@code DEBUG} line carrying neither
+ *       token nor session id. The outcome is {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION}, so the
+ *       caller sends no clearing cookie: a clearing response from this refresh could reach the browser
+ *       after a login callback's own response and delete the replacement session's new cookie. A request
+ *       presenting the cookie of a session that is really gone is answered by the ordinary no-session
+ *       path, so a genuine logout that raced the refresh still leaves the browser unauthenticated.
+ *       Nothing is revoked: the refresh lost a race to a session destruction, so the refresh token the
+ *       exchange returned is abandoned — the presented one is already redeemed. A login callback's
+ *       replacement session may share the identity provider's user session, and a grant-level revocation
+ *       could end it. That leaves a residual risk on a genuine logout too: RP-initiated logout revokes
+ *       the refresh token of the record it destroys, or the resolved record's when the session was
+ *       already gone at the destruction. This residual arises when the logout destroys the session
+ *       before the refresh persists: the destroyed record still holds the presented token the rotation
+ *       has spent, and the rotated successor is never stored, so it cannot be revoked. Whether the
+ *       provider also invalidates the rotated successor is the provider's policy (RFC 7009 allows it
+ *       but does not require it). The abandoned token is held by nobody — never sent to the browser, no
+ *       copy kept — and may stay valid at the provider until its refresh-token lifetime ends, the same
+ *       accepted residual as the superseded disposition below. Only a binding that holds
+ *       server-side state can report a session gone, so this disposition occurs in server mode only: a
+ *       stateless binding cannot observe a logout and re-seals the rotated session.</li>
+ *   <li><strong>Superseded at the persist</strong> — the exchange succeeded, but the binding reported
+ *       that the session's record was no longer the one the leader resolved: a widening or a step-up
+ *       replaced it while the refresh was in flight. The leader passes the record it resolved as the
+ *       basis of the persist, and a server-state binding compares and writes in one atomic step, so the
+ *       rotated session is <em>not</em> written and the widening's scopes, refresh token, {@code acr} and
+ *       {@code auth_time} stay as it left them. The session lives on: nothing is destroyed, nothing is
+ *       marked ended, the back-off entry is dropped and the record is a {@code DEBUG} line carrying
+ *       neither token nor session id. The outcome is {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION},
+ *       and nothing is revoked: the refresh token the exchange returned is abandoned, because the
+ *       widening's grant shares its client session at the identity provider and a grant-level
+ *       revocation could end the very session this disposition keeps; it lapses under the provider's
+ *       refresh-token lifetime. Like a terminated session this occurs in server mode only: a stateless
+ *       binding holds no record to compare against and re-seals the rotated session, so whichever
+ *       cookie the browser stores last wins — the stated residual of that mode.</li>
  * </ul>
  * Both legs share these dispositions, and so does every request that coalesced with the refresh.
- * Every session-ending disposition records {@code ApiSheriff-111}. The session-ended outcome is published
+ * <strong>A refusal ends only the session it read.</strong> {@code CREDENTIAL_REJECTED} and
+ * {@code REDEEMED} destroy the session through {@link SessionBinding#destroyIfCurrent} against the record
+ * the leader resolved. When a widening or a step-up replaced that record while the exchange was in
+ * flight — such a write does not pass this coordinator's single-flight — a server-state binding reports
+ * it superseded, and the refusal takes the superseded disposition instead: nothing is destroyed,
+ * marked or revoked, a {@code DEBUG} line records it and the outcome is
+ * {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION}, because the replacing write may share the identity
+ * provider's user session and a grant-level revocation could end it. When a logout, a back-channel
+ * logout, a login callback that replaced the session, an expiry sweep or an eviction already destroyed
+ * the record, the binding reports it gone, and the refusal ends nothing either: it lost a race to that
+ * destruction and takes the same disposition as a refresh whose persist finds the session gone, so
+ * nothing is destroyed, marked or revoked, a {@code DEBUG} line records it and the outcome is
+ * {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION}. A stateless binding can observe neither, so in
+ * cookie mode a refusal always ends the session.
+ * Every session-ending disposition records {@code ApiSheriff-111}; a refresh that was superseded or found
+ * its session gone — at the persist or at the refusal — ends no session and records none. Only the two
+ * dispositions in which the refresh <em>itself</em> ends the session revoke a token — a {@code REDEEMED}
+ * refusal that destroyed the record it read, and a persist failure. A refresh that lost a race to a
+ * session replacement (superseded, at the persist or at the refusal) or to a session destruction
+ * (terminated at the persist, or a refusal that found the session gone) abandons its live token
+ * unrevoked, and {@code CREDENTIAL_REJECTED}, {@code PRE_REDEMPTION}, {@code SCOPE_REFUSED} and a written
+ * refresh revoke nothing. Where a revocation is due, the session-ended outcome is published
  * to the failing request and every coalesced waiter <em>first</em>; the revocation is dispatched only
  * afterwards, off the request path, so a slow or hanging revocation endpoint delays the revocation and
  * nothing else. At most {@link #MAX_CONCURRENT_REVOCATIONS} revocations are in flight at once; beyond
@@ -159,8 +221,10 @@ import org.jspecify.annotations.Nullable;
  * mode the header can name a cookie handle a step-up has just re-issued while the session lives on.
  * It is reported as {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION} — nothing is destroyed, marked
  * or revoked, and the caller answers without a clearing cookie. The rotated session of a refresh that
- * was in flight across such a re-issue is persisted under the stable session id, so it still finds the
- * session and leaves the re-issued handle in place. The scope-driven leg leads through the same map: a
+ * was in flight across a re-issue that left the record as the leader resolved it is persisted under the
+ * stable session id, so it still finds the session and leaves the re-issued handle in place; a re-issue
+ * that carried a widened record supersedes the refresh instead (see the dispositions above). The
+ * scope-driven leg leads through the same map: a
  * request that coalesces with a refresh of the other leg shares that refresh's result, and a scope
  * request whose shared current or refreshed session does not carry its requested set receives
  * {@link RefreshOutcome.Kind#SCOPE_REFUSED SCOPE_REFUSED} with the shared session and cookies rather
@@ -225,8 +289,8 @@ public final class TokenRefreshCoordinator {
     static final int MAX_BACKOFF_ENTRIES = 10_000;
 
     /**
-     * The upper bound on best-effort revocations in flight at once. A session-ending disposition that
-     * finds the bound saturated skips its revocation and records that at {@code DEBUG}, so a slow or
+     * The upper bound on best-effort revocations in flight at once. A revoking disposition that finds
+     * the bound saturated skips its revocation and records that at {@code DEBUG}, so a slow or
      * hanging revocation endpoint can hold at most this many dispatched tasks. Not configurable.
      */
     static final int MAX_CONCURRENT_REVOCATIONS = 64;
@@ -237,20 +301,12 @@ public final class TokenRefreshCoordinator {
     /** The bounded reason recorded when the gateway refused a response the provider already redeemed. */
     static final String REASON_REDEEMED_RESPONSE_REFUSED = "redeemed-response-refused";
 
-    /** The bounded reason recorded when the binding could not hold the rotated session. */
-    static final String REASON_PERSIST_FAILURE = "persist-failure";
-
     /**
-     * The bounded reason recorded when the binding reported the session gone at the persist: a logout or
-     * a back-channel logout destroyed it while the refresh was in flight (server mode only).
-     * <p>
-     * Deliberately its own reason rather than {@link #REASON_PERSIST_FAILURE}. {@code persist-failure}
-     * says the binding could not hold a session that was still there — a fault worth investigating, and
-     * recorded with the exception that caused it. This reason says a termination overtook the refresh,
-     * which is the gateway refusing to bring a logged-out session back; there is no exception to record.
-     * An operator reading {@code ApiSheriff-111} has to be able to tell the two apart.
+     * The bounded reason recorded when the binding could not hold the rotated session of a session that was
+     * still there — a fault worth investigating, recorded with the exception that caused it. A persist that
+     * finds the session already gone is not a failure of this kind: it ends nothing and records nothing.
      */
-    static final String REASON_SESSION_TERMINATED = "session-terminated";
+    static final String REASON_PERSIST_FAILURE = "persist-failure";
 
     /** The RFC 6749 §3.3 delimiter between the names of a {@code scope} value. */
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
@@ -288,7 +344,8 @@ public final class TokenRefreshCoordinator {
      * @param sessionBinding         the mode-neutral session binding the rotated record is persisted
      *                               through and an ended session is destroyed through
      * @param refreshTokenRevocation the best-effort RFC 7009 revocation seam a live refresh token is
-     *                               revoked through when its session ends after a redemption
+     *                               revoked through when the refresh itself ends its session after a
+     *                               redemption (a refused redeemed response or a persist failure)
      * @param revocationExecutor     the executor a revocation is dispatched on, off the request path,
      *                               after the session-ended outcome has been published (the session
      *                               runtime binds the Quarkus-managed virtual-thread executor)
@@ -322,8 +379,11 @@ public final class TokenRefreshCoordinator {
      *         {@link RefreshOutcome#refreshed(SessionRecord, List) refreshed} carrying the rotated
      *         session, {@link RefreshOutcome#deferred(SessionRecord) deferred} or
      *         {@link RefreshOutcome#unavailable() unavailable} when the session was kept after a
-     *         pre-redemption failure, or {@link RefreshOutcome#failed() failed} when the session was
-     *         destroyed; a request that coalesced with a concurrent {@link #refreshForScopes scope refresh}
+     *         pre-redemption failure, {@link RefreshOutcome#failed() failed} when the session was
+     *         destroyed, or {@link RefreshOutcome#noSession() no session} when the leader resolved none,
+     *         its persist or its refusal was superseded by a concurrent widening or step-up, or its persist
+     *         or its refusal found the session already ended; a request that coalesced with a
+     *         concurrent {@link #refreshForScopes scope refresh}
      *         shares its result, which may be {@link RefreshOutcome.Kind#SCOPE_REFUSED SCOPE_REFUSED}
      *         carrying the kept session
      */
@@ -350,11 +410,16 @@ public final class TokenRefreshCoordinator {
      * exchange persists the rotated session through the binding; its {@code S} is the previous one less
      * every requested scope the response's {@code scope} did not return, so it is unchanged whenever the
      * set was obtained or the response omitted {@code scope}. When the binding reports the session gone
-     * at that persist — a logout overtook the refresh, server mode — nothing is written and the outcome is
-     * {@link RefreshOutcome#failed() failed}, never {@code SCOPE_REFUSED}. A refused
+     * at that persist — a logout, a back-channel logout, a login callback, an expiry sweep or an eviction
+     * destroyed it meanwhile, server mode — nothing is written, this refresh ends nothing itself, and the
+     * outcome is {@link RefreshOutcome#noSession() no session}, never {@code SCOPE_REFUSED}; when it
+     * reports the session's record superseded — a widening or a step-up landed meanwhile, server mode —
+     * nothing is written and the outcome is {@link RefreshOutcome#noSession() no session} too. A refused
      * exchange takes exactly the near-expiry leg's disposition (see the class documentation); an
-     * {@code invalid_scope} answer is among the refusals classified {@code PRE_REDEMPTION} and therefore
-     * backs off (<a href="https://github.com/cuioss/TokenSheriff/issues/763">TokenSheriff#763</a>).
+     * {@code invalid_scope} answer is reported by {@code RefreshFlow.classify} as {@code SCOPE_REFUSED}, and
+     * the gateway deliberately gives it the pre-redemption disposition — the session is kept and backs off
+     * ({@code ApiSheriff-127}), so the outcome is {@code DEFERRED} or {@code UNAVAILABLE} — because the
+     * provider issued no grant and the same request would be refused again.
      *
      * @param session         the resolved live session
      * @param cookieHeader    the raw request {@code Cookie} header value the session was resolved from —
@@ -370,7 +435,10 @@ public final class TokenRefreshCoordinator {
      *         refresh token; or a shared refresh that did not request it),
      *         {@link RefreshOutcome#deferred(SessionRecord) deferred} or
      *         {@link RefreshOutcome#unavailable() unavailable} after a pre-redemption failure, or
-     *         {@link RefreshOutcome#failed() failed} when the session was destroyed
+     *         {@link RefreshOutcome#failed() failed} when the session was destroyed, or
+     *         {@link RefreshOutcome#noSession() no session} when the leader resolved none, its persist
+     *         or its refusal was superseded by a concurrent widening or step-up, or its persist or its
+     *         refusal found the session already ended
      */
     public RefreshOutcome refreshForScopes(SessionRecord session, @Nullable String cookieHeader,
             Set<String> requestedScopes, Instant now) {
@@ -536,30 +604,71 @@ public final class TokenRefreshCoordinator {
         // The identity provider processed the grant: whatever follows, the outage the probe tested is over.
         releaseProbe(admission);
         // The presented token is already redeemed here, so a persist failure cannot keep the session.
-        Optional<SessionBinding.BoundSession> persisted;
+        SessionBinding.PersistResult persisted;
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             SessionRecord rotated = rotate(latest, rotation, scopes, scopeDriven);
-            // persist() updates in place and never creates (a replace-if-present in server mode, a
-            // re-seal in a stateless mode), so no pre-persist destroy is needed on the success path.
-            // Destroying first would open a window where a concurrent resolve() misses the rotating
-            // session.
-            persisted = sessionBinding.persist(rotated, now);
+            // persist() updates in place and never creates (a replace-if-current against latest in
+            // server mode, a re-seal in a stateless mode), so no pre-persist destroy is needed on the
+            // success path. Destroying first would open a window where a concurrent resolve() misses the
+            // rotating session.
+            persisted = sessionBinding.persist(latest, rotated, now);
         } catch (RuntimeException persistFailure) {
             return endSession(sessionId, latest, now, persistFailure, REASON_PERSIST_FAILURE,
                     rotation.refreshToken());
         }
-        if (persisted.isEmpty()) {
-            // The binding found the session gone: a logout or a back-channel logout destroyed it after
-            // the leader resolved it (server mode). Nothing was written, so it stays terminated. The
-            // rotated refresh token is live at the identity provider and held nowhere, so it is revoked
-            // exactly as on the persist-failure path.
-            return endSession(sessionId, latest, now, null, REASON_SESSION_TERMINATED, rotation.refreshToken());
-        }
-        SessionBinding.BoundSession bound = persisted.get();
+        return switch (persisted) {
+            case SessionBinding.PersistResult.Written(SessionBinding.BoundSession bound) -> {
+                retryNotBefore.remove(sessionId);
+                LOGGER.info(BffLogMessages.INFO.TOKEN_REFRESHED);
+                yield Disposition.of(RefreshOutcome.refreshed(bound.session(), bound.setCookieHeaders()));
+            }
+            // The binding found the session gone: a logout, a back-channel logout, a login callback, an
+            // expiry sweep or an eviction destroyed it after the leader resolved it (server mode). Nothing
+            // was written, so it stays terminated, and this refresh ends nothing itself — no clearing
+            // cookie, no session-end record, the rotated refresh token abandoned: see foundSessionGone(...).
+            case SessionBinding.PersistResult.Gone _ -> foundSessionGone(sessionId, "persist");
+            // The rotated refresh token is abandoned, not revoked: see superseded(...).
+            case SessionBinding.PersistResult.Superseded _ -> superseded(sessionId, "persist");
+        };
+    }
+
+    /**
+     * The disposition of a refresh whose persist found the session's record superseded: a widening or a
+     * step-up replaced it after the leader resolved it (server mode), so the rotated session was computed
+     * from a record that is no longer the session's.
+     * <p>
+     * Nothing is written, so the later grant's scopes, refresh token, {@code acr} and {@code auth_time}
+     * stay as that write left them. The session lives on under the cookie value the widening re-issued,
+     * so nothing is destroyed, nothing is marked ended and nothing is logged at {@code WARN}; the
+     * session's back-off entry is dropped, because the identity provider has just processed a grant
+     * for it. The request is answered {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION} — it is
+     * unauthenticated, and the caller must not clear the browser's cookie.
+     * <p>
+     * The refresh token the exchange returned is <em>abandoned, not revoked</em>. The widening is a grant
+     * for the same client on the identity provider's session, so the refresh token it stored belongs to
+     * the same client session as the rotated one. RFC 7009 lets the provider revoke the whole grant on a
+     * revocation, and a provider that does so would end at the provider the very session this disposition
+     * keeps: Keycloak answers a refresh-token revocation by detaching the revoking client from the user
+     * session the token belongs to, which the {@code BffLogoutIT} integration suite pins; that the next
+     * refresh of the kept session would then fail is reasoning, not asserted by a test. The rotated token
+     * is never sent to the browser and no copy is held, so it lapses under the provider's own
+     * refresh-token lifetime — exactly as the rotated token of a refresh a widening overwrites after it
+     * persisted.
+     * <p>
+     * {@link #endRefusedSession} takes the same disposition for a refusal whose destruction found the
+     * record superseded.
+     *
+     * @param sessionId the session whose back-off entry is dropped
+     * @param step      which step found the record superseded — {@code persist} or {@code refusal} —
+     *                  named in the {@code DEBUG} line only
+     */
+    private Disposition superseded(String sessionId, String step) {
         retryNotBefore.remove(sessionId);
-        LOGGER.info(BffLogMessages.INFO.TOKEN_REFRESHED);
-        return Disposition.of(RefreshOutcome.refreshed(bound.session(), bound.setCookieHeaders()));
+        // Neither the token nor the session id: the line says only which disposition was taken.
+        LOGGER.debug("Refresh %s superseded by a concurrent widening or step-up — nothing written, destroyed or revoked",
+                step);
+        return Disposition.of(RefreshOutcome.noSession());
     }
 
     private Disposition disposeRefusal(String sessionId, SessionRecord latest, String presentedRefreshToken,
@@ -573,15 +682,80 @@ public final class TokenRefreshCoordinator {
             case PRE_REDEMPTION, SCOPE_REFUSED -> Disposition.of(backOff(sessionId, latest, refreshFailure, now, admission));
             case CREDENTIAL_REJECTED -> {
                 releaseProbe(admission);
-                yield endSession(sessionId, latest, now, refreshFailure, REASON_CREDENTIAL_REJECTED, null);
+                yield endRefusedSession(sessionId, latest, now, refreshFailure, REASON_CREDENTIAL_REJECTED, null);
             }
             case REDEEMED -> {
                 releaseProbe(admission);
-                yield endSession(sessionId, latest, now, refreshFailure, REASON_REDEEMED_RESPONSE_REFUSED,
+                yield endRefusedSession(sessionId, latest, now, refreshFailure, REASON_REDEEMED_RESPONSE_REFUSED,
                         liveRefreshToken(Objects.requireNonNull(classification.redemption(), "redemption"),
                                 presentedRefreshToken));
             }
         };
+    }
+
+    /**
+     * The session end of a refused refresh, decided on {@code latest}: the session is destroyed only
+     * while the binding still holds that record, through {@link SessionBinding#destroyIfCurrent}.
+     * <p>
+     * A widening or a step-up that replaced the record while the exchange was in flight writes through
+     * the binding without passing this coordinator's single-flight, so the record the refusal was decided
+     * on may no longer be the session's. The binding then reports it superseded, and the refusal takes the
+     * superseded disposition: nothing is destroyed, nothing is marked ended, nothing is revoked and no
+     * {@code ApiSheriff-111} is recorded; the request is answered
+     * {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION}. Nothing is revoked for the same reason a
+     * superseded persist abandons its rotated token: the replacing write may share the identity
+     * provider's user session, and a grant-level revocation could end it.
+     * <p>
+     * When the binding instead finds the session already gone — something else ended it while the exchange
+     * was in flight — the refusal ended nothing and lost a race to that destruction: see
+     * {@link #foundSessionGone}, which destroys, marks, records and revokes nothing.
+     * <p>
+     * Only when the binding destroyed the record the refusal read is the disposition the ordinary session
+     * end, including the revocation of {@code liveRefreshToken}.
+     */
+    private Disposition endRefusedSession(String sessionId, SessionRecord latest, Instant now,
+            RuntimeException failure, String reason, @Nullable String liveRefreshToken) {
+        // A switch expression, not a statement: javac rejects it the moment the binding adds a further result.
+        return switch (sessionBinding.destroyIfCurrent(latest)) {
+            case DESTROYED -> recordSessionEnd(sessionId, latest, now, failure, reason, liveRefreshToken);
+            case SUPERSEDED -> superseded(sessionId, "refusal");
+            case GONE -> foundSessionGone(sessionId, "refusal");
+        };
+    }
+
+    /**
+     * The disposition of a refresh whose persist, or whose refusal's destruction, found the session
+     * already gone: a logout, a back-channel logout, a login callback that replaced the session in the
+     * same browser, an expiry sweep or an eviction ended it while the exchange was in flight (server
+     * mode).
+     * <p>
+     * This refresh did not end the session — whatever destroyed it did — so it ends nothing either.
+     * Nothing is written, so the session stays terminated; nothing is destroyed, nothing is marked ended
+     * and no {@code ApiSheriff-111} is recorded, because the session's end belongs to whatever ended it
+     * and is not recorded a second time here. The session's back-off entry is dropped, because the
+     * session is gone. The request is answered {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION}, so the
+     * caller sends no clearing cookie: when the destruction was a login callback that replaced the
+     * session, a clearing response from this refresh could reach the browser after the callback's own
+     * response and delete the replacement session's new cookie. A request presenting the cookie of a
+     * session that is really gone is answered by the ordinary no-session path, so a genuine logout that
+     * raced a refresh still leaves the browser unauthenticated.
+     * <p>
+     * Nothing is revoked. The refresh lost a race to a session destruction, and a login callback's
+     * replacement session may share the identity provider's user session, which a grant-level revocation
+     * could end. The live refresh token the refresh names — the one the exchange returned at the persist,
+     * or the one a refusal names — is abandoned and lapses under the provider's refresh-token lifetime;
+     * it is never sent to the browser and no copy is held.
+     *
+     * @param sessionId the session whose back-off entry is dropped
+     * @param step      which step found the session gone — {@code persist} or {@code refusal} — named in
+     *                  the {@code DEBUG} line only
+     */
+    private Disposition foundSessionGone(String sessionId, String step) {
+        retryNotBefore.remove(sessionId);
+        // Neither the token nor the session id: the line says only which disposition was taken.
+        LOGGER.debug("Refresh %s found the session already ended — nothing written, destroyed, marked or revoked",
+                step);
+        return Disposition.of(RefreshOutcome.noSession());
     }
 
     private RefreshOutcome backOff(String sessionId, SessionRecord latest, RuntimeException refreshFailure,
@@ -696,30 +870,40 @@ public final class TokenRefreshCoordinator {
      * The synchronous, disposition-defining half of a session end: the back-off entry is dropped, the
      * session destroyed, the presented refresh token marked ended until the session's absolute lifetime,
      * and {@code ApiSheriff-111} recorded. The live refresh token is only handed back; the single-flight
-     * leader revokes it after the outcome has been published to the coalesced waiters.
+     * leader revokes it after the outcome has been published to the coalesced waiters. The destruction
+     * here is unconditional — a persist failure takes it; a refused exchange ends its session through
+     * {@link #endRefusedSession} instead, which destroys only the record it read. A persist that found the
+     * session gone ends nothing and does not come here: see {@link #foundSessionGone}.
      * <p>
      * The presented refresh token is {@code latest.refreshToken()}: {@link #redeem} is only reached after
      * both legs confirmed it is present.
-     * <p>
-     * A session the binding already reported gone takes the same steps: its {@code destroy} is then a
-     * no-op, which the seam documents, and nothing here writes a session.
      *
-     * @param failure the exception that ended the session, recorded with {@code ApiSheriff-111};
-     *                {@code null} when a termination overtook the refresh and no exception occurred
+     * @param failure          the exception that ended the session, recorded with {@code ApiSheriff-111}
+     * @param liveRefreshToken the refresh token to revoke once the outcome is published — the one the
+     *                         exchange returned, absent when the provider returned none
      */
     private Disposition endSession(String sessionId, SessionRecord latest, Instant now,
-            @Nullable RuntimeException failure, String reason, @Nullable String liveRefreshToken) {
+            RuntimeException failure, String reason, @Nullable String liveRefreshToken) {
+        sessionBinding.destroy(latest);
+        return recordSessionEnd(sessionId, latest, now, failure, reason, liveRefreshToken);
+    }
+
+    /**
+     * The half of a session end that follows its destruction: the back-off entry is dropped, the
+     * presented refresh token marked ended until the session's absolute lifetime, {@code ApiSheriff-111}
+     * recorded with the exception that ended the session, and the live refresh token handed back for
+     * revocation. {@link #endSession} reaches it once the session has been destroyed after a persist
+     * failure; {@link #endRefusedSession} only once the binding destroyed the record the refusal read. A
+     * refresh whose persist or refusal finds the session gone, or superseded, does not.
+     */
+    private Disposition recordSessionEnd(String sessionId, SessionRecord latest, Instant now,
+            RuntimeException failure, String reason, @Nullable String liveRefreshToken) {
         String presentedRefreshToken = Objects.requireNonNull(latest.refreshToken(),
                 "a session-ending disposition requires the presented refresh token");
         retryNotBefore.remove(sessionId);
-        sessionBinding.destroy(latest);
         endedRefreshTokens.markEnded(presentedRefreshToken, latest.expiresAt(), now);
         // Bounded, non-sensitive reason only — never the presented refresh token or session id.
-        if (failure == null) {
-            LOGGER.warn(BffLogMessages.WARN.SESSION_REFRESH_FAILED, reason);
-        } else {
-            LOGGER.warn(failure, BffLogMessages.WARN.SESSION_REFRESH_FAILED, reason);
-        }
+        LOGGER.warn(failure, BffLogMessages.WARN.SESSION_REFRESH_FAILED, reason);
         return new Disposition(RefreshOutcome.failed(), liveRefreshToken);
     }
 
@@ -878,9 +1062,9 @@ public final class TokenRefreshCoordinator {
     }
 
     /**
-     * The outcome to publish and, for a session that ended after a
-     * redemption, the one refresh token still live at the identity provider, revoked only after the
-     * outcome has been published. {@link #toString()} never renders the token.
+     * The outcome to publish and, for a session the refresh itself ended after a redemption, the one
+     * refresh token still live at the identity provider, revoked only after the outcome has been
+     * published. {@link #toString()} never renders the token.
      */
     private record Disposition(RefreshOutcome outcome, @Nullable String liveRefreshToken) {
 
@@ -1008,11 +1192,20 @@ public final class TokenRefreshCoordinator {
             /** The session was destroyed; the caller treats the request as unauthenticated. */
             FAILED,
             /**
-             * The leader resolved no session from this request's {@code Cookie} header when it resolved
-             * it again under the single-flight exclusion. Nothing was destroyed, marked or revoked: the
-             * session may be alive under a cookie value re-issued meanwhile (server mode), or may have
-             * reached a deadline. The caller treats the request as unauthenticated and must
-             * <strong>not</strong> clear the browser's cookie.
+             * This request holds no session to mediate from, and nothing was destroyed or marked. Either
+             * the leader resolved no session from this request's {@code Cookie} header when it resolved
+             * it again under the single-flight exclusion — the session may be alive under a cookie value
+             * re-issued meanwhile (server mode), or may have reached a deadline — or the leader's persist
+             * was superseded: a widening or a step-up replaced the session's record while the refresh was
+             * in flight (server mode), the rotated session was not written, and the refresh token the
+             * exchange returned is abandoned without revocation — or the leader's persist found the
+             * session already ended by a logout, a back-channel logout, a login callback, an expiry sweep
+             * or an eviction (server mode), so nothing was written and that token is abandoned the same
+             * way — or a refusal that would have ended the session found its record replaced, or the
+             * session already ended, the same ways, and destroyed and revoked nothing. The caller treats
+             * the request as unauthenticated and must <strong>not</strong> clear the browser's cookie on
+             * the strength of it: a login callback may just have given the browser a replacement session's
+             * cookie.
              */
             NO_SESSION,
             /**
@@ -1023,7 +1216,10 @@ public final class TokenRefreshCoordinator {
              * coalesced with did not obtain the set. The session is kept, no back-off is recorded and
              * nothing is logged at {@code WARN}; the caller never relays the carried
              * session short of its needed scopes. An outright {@code invalid_scope} refusal is not reported
-             * here — it arrives classified {@code PRE_REDEMPTION} (TokenSheriff#763). Produced by
+             * here: {@code RefreshFlow.classify} reports it as the engine's own {@code SCOPE_REFUSED} kind,
+             * and the gateway deliberately gives it the pre-redemption disposition — session kept, bounded
+             * back-off, {@code ApiSheriff-127}, outcome {@link #DEFERRED} or {@link #UNAVAILABLE} — because
+             * the provider issued no grant and the same request would be refused again. Produced by
              * {@link TokenRefreshCoordinator#refreshForScopes}, and received by a near-expiry
              * {@link TokenRefreshCoordinator#refresh} only when it coalesced with such a scope refresh.
              */
@@ -1102,8 +1298,9 @@ public final class TokenRefreshCoordinator {
 
         /**
          * The outcome of a refresh whose leader resolved no session from the request's own
-         * {@code Cookie} header. It carries no session and no cookie, and — unlike
-         * {@link #failed()} — says that nothing was destroyed.
+         * {@code Cookie} header, whose persist or refusal was superseded by a concurrent widening or step-up, or
+         * whose persist or refusal found the session already ended. It carries no session and no cookie, and — unlike
+         * {@link #failed()} — says that this refresh destroyed nothing.
          *
          * @return the no-session outcome
          */

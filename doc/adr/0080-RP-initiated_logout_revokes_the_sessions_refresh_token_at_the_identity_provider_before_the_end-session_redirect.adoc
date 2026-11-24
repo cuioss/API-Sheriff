@@ -119,7 +119,19 @@ revocation is harmless: RFC 7009, section 2.2 answers a token that is already in
 A refresh in flight at logout is a separate case. In the server-session BFF, a rotation the store
 took before the destruction is in the record the destruction returns, so the logout revokes it. A
 rotation that completes after the destruction finds the session terminated. The refresh coordinator
-then revokes the rotated token (ADR-0046).
+then abandons the rotated token without revoking it (ADR-0046): the refresh lost a race to a session
+destruction, and the coordinator cannot tell a logout from a login callback that replaced the session
+with one that may share the identity provider's user session, which a revocation could end.
+
+That abandonment leaves a residual risk. The logout revoked the refresh token of the record it
+destroyed, or the resolved record's when the session was already gone at the destruction. The
+residual arises when the logout destroys the session before the refresh persists: the destroyed
+record still holds the presented token the rotation has spent, and the rotated successor is never
+stored, so it cannot be revoked. Whether the provider also invalidates the
+rotated successor is the provider's decision, as RFC 7009 allows but does not require (see the
+previous list). The successor is held by nobody: it is never sent to the browser and no copy is kept.
+It can stay valid at the identity provider until the provider's refresh-token lifetime ends. That is
+the same accepted residual as a refresh whose record a widening superseded (ADR-0046).
 
 === The latency bound
 

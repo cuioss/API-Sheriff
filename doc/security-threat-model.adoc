@@ -3166,13 +3166,15 @@ checking no issuer at all; the extension's metrics collector is kept, because it
 gateway's own validator. The shipped artifact leaves the extension's own issuer namespace empty in
 every profile, so it builds no second validator and makes no second set of key fetches
 (link:adr/0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]).
-The library's loader status is not truthful after a failed first fetch -- an HTTP loader whose first fetch
-failed never reports `OK`, even once a background refresh has installed keys, and its issuer cache
-re-admits an issuer only on `OK`. A gateway that booted before its identity provider answered
-therefore reported ready while it could validate no token, and retried the fetch only after a whole
-refresh interval. The gateway now installs its own loader for every issuer through the library's
-public loader seam. The wrapper records the outcome of each load attempt itself and reports `OK`
-exactly when a key set is loaded, which also repairs the library's re-admission path. Readiness is
+Since token-sheriff 0.9.9 the library's loader status is truthful: an HTTP loader reports `OK` only
+while a usable key set is installed, a loader whose first fetch failed recovers by its own background
+refresh, and its issuer cache admits an issuer only while its loader reports `OK`. The gateway installs
+its own loader for every issuer through the library's public loader seam, and that wrapper reports the
+library loader's current status unchanged, so the issuer cache sees exactly what the library sees. What
+the wrapper adds is what the library still does not do: a non-fetching record of whether a key set is
+loaded, which readiness reads; a fast, bounded first-load retry, because the library's own recovery
+waits a whole refresh interval; and the bounded unknown-key-id refresh of <<gw-07-jwks-refresh,GW-07>>.
+Readiness is
 `DOWN` while any configured issuer has no key set, with a non-disclosing payload -- a fixed `jwks`
 status token and the bounded counts `issuers` / `issuers_loaded`, never an issuer name, URL or host --
 so an orchestrator holds traffic back from an instance that would reject every bearer token. A BFF
@@ -3183,8 +3185,22 @@ A failed load is retried after 1 s, doubling per attempt and capped at 30 s (nev
 interval), driven by a scheduler only: neither bearer requests nor the readiness probe can trigger a
 fetch, and at most one attempt is in flight per issuer, so the retry cannot be turned into a fetch
 storm. Each scheduled retry logs `WARN ApiSheriff-129` and a recovery logs `INFO ApiSheriff-18`,
-both carrying the issuer's configured name only. The upstream defect -- no `UNDEFINED` to `OK`
-transition -- is reported to the library rather than depended on.
+both carrying the issuer's configured name only.
+
+*A key set that stays stale can be made to stop validating -- opt-in, at an availability cost.* By
+default the library keeps serving a loaded key set indefinitely while every background refresh fails,
+so a gateway cut off from its identity provider keeps accepting tokens signed with keys the provider
+may since have revoked. `jwks.max_staleness_seconds` (`60`-`604800`, `source: http` only, omitted =
+off) bounds that: once the time since the last successful load exceeds it, the next refresh cycle that
+installs no keys moves the library loader off `OK` (the library logs `JWKS_KEYS_STALE`), keeping the
+keys. The wrapper reports that status as it is, so the library's issuer cache rejects the issuer's
+tokens fail-closed until a refresh installs usable keys again and re-admits it, and readiness reads
+the issuer as not loaded -- `DOWN` with `jwks: unavailable`, the issuer counted out of
+`issuers_loaded`, the payload still disclosing no issuer, URL or host. The cost is availability, and it
+is the operator's to choose: in a single-issuer deployment a stale-degraded issuer takes the gateway
+out of rotation exactly when no issuer can validate, and an identity-provider outage longer than the
+bound turns into a gateway outage. A bound of at least three refresh intervals keeps one failed refresh
+from degrading the issuer.
 
 *Status:* COVERED (validation lib, fail-closed, SSRF-guarded with the `jwks.url` host exempted as
 recorded under <<gw-05>>; key-set availability owned by the gateway's loader wrapper and readiness
@@ -3195,7 +3211,11 @@ configured endpoint; a flood of unknown-`kid` tokens does not cause unbounded ou
 fetches; rotation across overlapping keys keeps validation working. Readiness is `DOWN` while an
 issuer has no key set and names no issuer, URL or host; a status read issues no fetch; a failed
 first fetch is retried on the bounded backoff and the key set arrives well inside the refresh
-interval (`RetryingJwksLoaderTest`, `SheriffMetricsTest`); against the native image, a gateway whose
+interval; the wrapper reports a library loader degraded past `jwks.max_staleness_seconds` as not
+`OK` and reads it not loaded, readiness then reports `DOWN` with `jwks: unavailable` while the same
+issuer without degradation stays `UP` (`RetryingJwksLoaderTest`, `SheriffMetricsTest`), and a token is
+rejected after the bound has passed only when the key is declared (`TokenValidatorProducerTest`);
+against the native image, a gateway whose
 identity provider appears only after boot reports `DOWN`, turns `UP` within a minute of the provider
 appearing, and then accepts that provider's token (`JwksLateIdpReadinessIT`). The egress allowance
 is proven in both directions against the native image: an explicit list naming another host keeps
@@ -3225,11 +3245,34 @@ link:configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[th
 before the provider processed the grant keeps the session with a fixed back-off; a redeemed
 response the gateway refused, or a rotated session it could not persist, ends the session and
 revokes best-effort the one live refresh token it can name -- which is none when the response was
-refused for not being bound to the proof key (<<bff-14>>). In server mode one more case ends the
-same way without being a failure of the refresh: a logout or a back-channel logout destroyed the
-session while its refresh was in flight. The rotated session is then not written back
-(<<bff-09>>), the request is answered as session-ended, the refresh token the exchange returned is
-revoked best-effort, and `ApiSheriff-111` records `session-terminated`. The gateway's own part in the
+refused for not being bound to the proof key (<<bff-14>>). In server mode a credential-rejected or a
+redeemed refusal ends only the session it read: when a widening or a step-up replaced the session's
+record while the exchange was in flight, or a logout, a back-channel logout, a login callback, an
+expiry sweep or an eviction already ended the session, the refusal ends nothing -- nothing is
+destroyed or revoked, the request is answered as "no session", and `ApiSheriff-111` is not logged
+for it -- because the refusal lost a race, and a grant-level revocation could end a replacement or
+widened session that shares the identity provider's user session. In server mode one more case ends
+nothing in the same way without being a failure of the refresh: a logout, a back-channel logout, a
+login callback that replaced the session, an expiry sweep or an eviction destroyed it while its
+refresh was in flight. The rotated session is then not written back (<<bff-09>>), and the refresh
+ends nothing itself: the request is answered as "no session", without a clearing cookie, and
+`ApiSheriff-111` is not logged for it. A clearing cookie would be harmful here: a login callback in the
+same browser sets a cookie for its replacement session, and a clearing response from the overtaken
+refresh could arrive after it and delete that cookie. A genuine logout still leaves the browser
+unauthenticated, because the next request presents the cookie of a session that is gone and resolves
+none. The refresh token the exchange returned is abandoned, not revoked: the
+refresh lost a race to the destruction, and a login callback's replacement session may share the
+identity provider's user session, which a grant-level revocation could end. *Residual risk
+(accepted):* on a genuine logout the RP-initiated leg revokes the refresh token of the record it
+destroys, or the resolved record's when the session was already gone at the destruction. This
+residual arises when the logout destroys the session before the refresh persists: the destroyed
+record still holds the presented token the rotation has spent, and the rotated successor is never
+stored, so it cannot be revoked. A back-channel logout comes from a provider that has ended its own
+session. Whether the provider also invalidates the rotated successor is provider policy (RFC 7009 allows it but does not require it). The abandoned successor is held by nobody -- it
+never reaches the browser and no copy is kept -- but it can stay valid at the provider until the
+provider's refresh-token lifetime ends, the same residual as a refresh superseded by a widening
+(<<bff-17>>). Revocation on the refresh path
+is therefore confined to the two dispositions in which the refresh itself ends the session. The gateway's own part in the
 concurrency half is `TokenRefreshCoordinator`'s single-flight *per session, per instance*: concurrent
 requests on one session share one redemption, so one instance never presents the same token twice
 and never forks the family itself.
@@ -3317,17 +3360,20 @@ leave the gateway session usable.
 *A termination wins over an in-flight write (server mode).* Two writers update a session that
 already exists: the token refresh, on both of its legs (<<bff-08>>), and the widening callback
 (<<bff-17>>). Each resolves the session, calls the identity provider and writes the result back. A
-logout or a validated back-channel logout can destroy the session between that resolve and that
+logout, a validated back-channel logout, a login callback that replaces the session, the expiry sweep
+or an eviction can destroy it between that resolve and that
 write, and an unconditional write would then store the session again, holding newly issued tokens,
 after it was ended. The `SessionBinding` seam therefore has one creating write, used by the login,
 and one updating write that never creates
 (link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
 In server mode the store checks for the session and replaces its record as one atomic step, under
 the lock every destroy operation takes, so a destruction either precedes the check -- and nothing is
-written -- or follows the replacement and removes it. A write that finds the session gone is
-answered as the session having ended: the refresh returns its session-ended outcome to the request
-and to every request coalesced with it, revokes best-effort the refresh token the exchange returned,
-and records `ApiSheriff-111` with `session-terminated`; the widening callback answers `403` with no
+written -- or follows the replacement and removes it. A write that finds the session gone ends
+nothing itself, because whatever destroyed the session ended it: the refresh returns its
+"no session" outcome to the request and to every request coalesced with it, sends no clearing cookie
+-- one could delete the cookie a login callback has just set for a replacement session -- records no
+`ApiSheriff-111`, and abandons the refresh token the exchange returned without revoking it
+(<<bff-08>>); the widening callback answers `403` with no
 `Location` and no `Set-Cookie`, stores nothing, and records `ApiSheriff-131` with
 `session-terminated`. The tokens of a refused widening grant are dropped unstored and are not
 revoked, as with the callback's other refusals.
@@ -3439,6 +3485,17 @@ RP-initiated logout and nothing else:
   grant's other tokens is the identity provider's decision, not the gateway's.
 * *Anything on the back-channel path.* The receiver destroys the sessions a logout token names and
   revokes nothing: the identity provider initiated that logout and has already ended its own session.
+* *The rotated token of a refresh the logout overtook.* A server-mode refresh in flight when a
+  logout, a back-channel logout or a login callback destroys its session ends nothing itself, is
+  answered as "no session" without a clearing cookie, and abandons the refresh token its exchange
+  returned without revoking it
+  (<<bff-08>>), because after a login callback a revocation could end the replacement session at the
+  provider. The RP-initiated leg revokes the refresh token of the record it destroys, or the resolved
+  record's when the session was already gone at the destruction. This residual arises when the logout
+  destroys the session before the refresh persists: the destroyed record still holds the presented
+  token the rotation has spent, and the rotated successor is never stored, so it cannot be revoked.
+  Whether the provider also invalidates the rotated successor is provider policy. The successor is held by nobody but can stay valid until the provider's refresh-token
+  lifetime ends -- an accepted residual.
 * *Nothing at all, where no request can be sent.* A session that holds no refresh token -- with
   `oidc.session.refresh.enabled=false`, or when the provider granted none -- and a provider that
   publishes no `revocation_endpoint` get no revocation request. The missing endpoint is recorded at
@@ -3478,8 +3535,10 @@ ways between a widening callback's resolve and its write ends in `403` with no `
 `Set-Cookie`, stays unresolvable and is recorded as `session-terminated`, while the same callback
 merges when nothing destroys the session (`CallbackEndpointTest`); a session destroyed in each of
 those ways during the provider exchange, on the near-expiry leg and on the scope-driven leg, is not
-written back, the request and a coalesced waiter are answered as session-ended, and the rotated
-refresh token is handed to revocation (`TokenRefreshCoordinatorTest`). The cookie-mode residual is
+written back, the request and a coalesced waiter are answered as no session (no clearing
+`Set-Cookie`), and nothing is handed to revocation -- the refresh lost a race to the destruction and abandons its rotated refresh
+token -- while the same stub against a binding whose persist fails revokes the rotated token exactly
+once (`TokenRefreshCoordinatorTest`). The cookie-mode residual is
 pinned rather than hidden: the stateless update re-seals after every destroy form
 (`CookieSessionBindingTest`, `TokenRefreshCoordinatorTest`). A logout token typed other than
 `logout+jwt`, without `exp` or at or past it, or without `jti` is refused, and an untyped one with
@@ -3843,11 +3902,12 @@ link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_t
   only requested scopes (endpoint scopes configured as *optional*, not *default*, client scopes), by
   a widening requesting only a route's boot-declared set united with what was already granted, and
   by `token_relay: false` for origins that need no token at all.
-* *An `invalid_scope` refresh answer is not told apart from an outage (accepted).* The engine
-  surfaces that answer without the OAuth error code, so the scope-driven refresh disposes it as a
-  pre-redemption failure: the session is kept and its next refresh waits out the back-off. The
-  request is still never relayed short of a scope, because the stage compares again and widens or
-  refuses.
+* *An `invalid_scope` refresh answer arms the back-off (accepted, deliberate).* The engine tells
+  that answer apart (`RefreshFlow.classify` reports it as `SCOPE_REFUSED`), and the scope-driven
+  refresh deliberately disposes it as a pre-redemption failure: the identity provider issued no
+  grant and would refuse the same request again, so the session is kept (`ApiSheriff-127`) and its
+  next refresh waits out the back-off instead of hammering the provider. The request is still never
+  relayed short of a scope, because the stage compares again and widens or refuses.
 * *RFC 9470 step-up leg.* An RFC 9470 step-up re-drive still requests the static `oidc.scopes`
   (recorded in ADR-0048); the session-side lookup that re-drive uses is currently unwired. This is
   the `acr` leg, not the `oidc.step_up.path` scope widening of <<bff-17>>.
@@ -4035,19 +4095,35 @@ authorization request at all.
   session holds no refresh token, transparent refresh is off, or the near-expiry refresh had just
   re-bound the cookie -- the widening is merged once, the merge sets `S` to what was granted, and
   the following round is the refused one. A navigation therefore ends in the `403` after at most two
-  rounds. An outright `invalid_scope` answer to the refresh is different: it is not told apart from
-  an outage (<<bff-15>>), proves nothing about the scope and leaves `S` unchanged, so the refresh is
-  retried once per back-off window rather than once per request.
+  rounds. An outright `invalid_scope` answer to the refresh is different: the engine classifies it as its
+  own `SCOPE_REFUSED` kind, and the gateway deliberately disposes it as pre-redemption, the way it
+  disposes an outage (<<bff-15>>). The identity provider processed no grant, so the answer leaves
+  `S` unchanged, and the refresh is retried once per back-off window rather than once per request.
 
 *Status:* COVERED, with three accepted residuals.
 
 * *A cross-site navigation can start a widening.* The link makes the browser ask for more scopes for
   the user's session. It cannot choose them or the landing origin, as above.
-* *A widening merge and a concurrent refresh race.* Both resolve the session and then persist it,
-  and the last writer wins. Either result is an identity-provider-fresh token set of the same
-  identity; the loss is one abandoned refresh token. This race between the two writers is unchanged
-  by the updating write above: that write settles a writer against a *termination*, in server mode,
-  and says nothing about two writers.
+* *A widening merge and a concurrent refresh race.* Both resolve the session and then persist it.
+  In server mode the refresh's write names the record it resolved as its basis, and the store
+  compares and replaces in one atomic step: a refresh that persists after a widening landed is
+  *superseded* and writes nothing, so the widened scopes, the widening grant's refresh token, its
+  `acr` and its `auth_time` stay, and the refresh token the refresh obtained is abandoned, not
+  revoked: the widening's grant shares its client session at the identity provider, and a
+  grant-level revocation (RFC 7009) could end the session the gateway keeps. Keycloak answers a
+  refresh-token revocation by detaching the revoking client from the user session the token belongs
+  to, which `BffLogoutIT` pins against a live realm; that the kept session's next refresh would then
+  fail is reasoning from that detachment, not asserted by a test. A widening that
+  persists after the refresh replaces the refreshed record with its own grant; the loss is again the
+  refresh's rotated refresh token, abandoned and not revoked. Either way the abandoned token never
+  reaches the browser, no copy is held, and it lapses under the identity provider's refresh-token
+  lifetime. A refresh that lost its race to a session destruction instead -- a logout, a back-channel
+  logout or a login callback that replaced the session -- abandons its rotated token on the same
+  ground (<<bff-08>>): that the session the token belonged to has ended does not make a revocation
+  safe, because a session that replaced it may share the identity provider's user session. In cookie mode neither
+  write can observe the other, and whichever cookie the browser stores last wins: a refresh that
+  lands last hands back the session as it stood before the widening, which the next request widens
+  again. Either result is an identity-provider-fresh token set of the same identity.
 * *The interactive re-drive is asserted at unit level only.* In the integration suite the browser
   that just logged in holds a live SSO session, so the silent attempt always succeeds there.
 
@@ -4556,6 +4632,9 @@ prefixed cookie without `Secure`, so the browser kept it. Duende BFF GHSA-vvg7-p
   the binding cookie, `state`, the code exchange and the subject -- destroys the session the
   request's own cookie resolves, whoever it belongs to, and binds the new session afterwards. In
   server mode the earlier session is gone from the store and its cookie value resolves nothing. A
+  refresh of the earlier session still in flight is not written back and abandons its rotated
+  refresh token unrevoked, so it cannot end, at the identity provider, a new login that reused the
+  provider's user session (<<bff-08>>). A
   callback that is refused touches no session, and a widening keeps the session it widens.
 * *One subject holds a bounded number of server-mode sessions.* The store ends the oldest session
   of a subject -- the one created first, whatever its last access -- before it stores a login that
@@ -4905,7 +4984,7 @@ outstanding hardening work (next section).
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) with the JWKS allowance derived from the `jwks.url` host unless an authoritative explicit list is declared (accepted SSRF trade-off, certificate trust unchanged); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / ADR-0011 / token-sheriff `EgressPolicy` | COVERED
 | <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) + ADR-0045 (`oidc_verify_hostname` / `oidc_tls_profile` bound and behaviour-tested on the BFF back-channel; collision refused at boot) + `EgressTlsPostureArchTest` (explicit posture on the mapped egress TLS clients) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; connection cap (`quarkus.http.limits.max-connections`); admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
-| <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when its key ids include one that neither the loaded set nor a replaced one still inside its grace period held when the window was claimed, and the loaded set has not moved since (an equal, shrunk or empty set, one that only brings back the replaced set's keys, and one fetched while the loaded set moved, discarded); the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED (an invented key id can bring forward the end of an older replaced key set's grace period on a real key-set change, at most once per issuer per window, accepted)
+| <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when its key ids include one that neither the loaded set nor a replaced one still inside its grace period held when the window was claimed, and the loaded set has not moved since (an equal, shrunk or empty set, one that only brings back the replaced set's keys, and one fetched while the loaded set moved, discarded); the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; the opt-in `jwks.max_staleness_seconds` (`60`-`604800`, omitted = off) bounds how long a loaded key set stays usable while refreshes fail, a stale-degraded issuer rejected fail-closed and read not loaded by readiness (see <<bff-07>>); all four keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED (an invented key id can bring forward the end of an older replaced key set's grace period on a real key-set change, at most once per issuer per window, accepted)
 | <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard; the abortive close is pinned for the early answer and the client abort, not for the request-body idle timeout or deadline)
 | <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neutral to the breaker, neither a failure nor a success, and never retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; until its upstream answers, a gRPC call whose next complete request message does not arrive within 10 s ends as the client's `INBOUND_BODY_ABORTED` (`client-idle`) and one whose client still holds its request stream open 25 s after its attempt handed the body over, never later than 29 s after the attempt started, ends as the client's `REQUEST_BODY_TIMEOUT`, rendered `DEADLINE_EXCEEDED`, both neutral to the breaker; a wait for an upstream connection is bounded at 10 s behind a wait queue bounded by `admission_cap`, a 5 s dial timeout and a 4 s TLS-handshake timeout, so a dispatched gRPC call has at least 19 s left before its cap when its attempt obtains its connection, and hands its body over in the callback that receives that connection, without a further wait; an attempt the full queue refuses ends unsent as the gateway's `UPSTREAM_POOL_SATURATED` (`503`), neutral to the breaker, and one whose wait reaches the 10 s ends unsent as the upstream's `UPSTREAM_TIMEOUT` (`504`, gRPC `DEADLINE_EXCEEDED`), counted by the breaker and never retried; a client that leaves ends its dispatch at once, neutral to the breaker, its queued wait keeping its slot until it is handed a connection, reset unsent, or the 10 s passes; every client-ended outcome is neutral to the gateway's own breaker (`UpstreamCircuitBreaker`), so it neither dilutes the closed window nor closes a half-open breaker; the guard's 30 s timeout is reached only as the upstream's, in two ways: by an upstream holding a complete, half-closed request, or by an upstream that stops taking data mid-request and takes no more within the 30 s -- while that backpressure pauses the request stream the message bound is not counted, and the pre-response deadline keeps counting but ends the call only once the upstream takes data again, then as the upstream's `UPSTREAM_TIMEOUT` (`UpstreamStalledRequest`), counted by the breaker, only when the upstream had held the stream paused without a break for at least the fixed 10 s stall threshold, and as the client's `REQUEST_BODY_TIMEOUT` after a shorter, flow-control pause -- so a client out-sending a healthy upstream cannot open its breaker; one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `GrpcDispatchStage`, `EgressClients`, `UpstreamCircuitBreaker`, `UpstreamGuards`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
 | <<gw-07-sni-front>> | SNI front listener: a connection without a complete ClientHello closed 10 s after accept; at most 1024 undecided connections, one beyond the cap closed at accept (pre-route buffers bounded at about 96 MiB); at most 256 of them per source -- an IPv4 address, the /64 prefix of an IPv6 address -- one beyond its source's share closed at accept; the dial window inside the cap, a routed connection keeping its slots until the backend dial settles, bounded by the resolver's name lookup (with the Quarkus resolver defaults in effect, at most 5 s x 4 queries x (search domains + 1)) plus a fixed 10 s connect timeout; at most 128 connections dialing one passthrough backend, one beyond that dial budget closed at the route decision undialed; every refusal counted on `sheriff_front_connections_refused_total{reason}` (`cap` / `source_share` / `dial_budget`) and logged as `WARN ApiSheriff-146` at most once per 60 s per reason; a per-connection incremental ClientHello parse; both relay legs closed after the derived relay idle timeout -- the longest of `quarkus.http.idle-timeout`, the gRPC stream-idle bound and the longest WebSocket idle timeout, plus 60 s; no gateway configuration key sets any of the front's bounds | Gateway (`SniFrontListener`, `ClientHelloSniParser`, `PassthroughRelay`, `TlsEdgeProducer`) | COVERED (no integration test exercises the cap, the dial budget or the relay idle timeout)
@@ -4925,7 +5004,7 @@ outstanding hardening work (next section).
 | <<bff-04>> | `nonce` validated + single-use | Engine `IdTokenValidationBridge` + gateway pending-authorization record | COVERED
 | <<bff-05>> | Single-IdP; `iss` verification | Design + engine `IssValidator` | ELIMINATED
 | <<bff-06>> | Alg pinning; aud/iss/exp; psychic-sig guard | Validation lib (fail-closed, in-library) + ADR-0001 | COVERED
-| <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch (the `jwks.url` host exempted, derived or declared -- see <<gw-05>>); readiness `DOWN` per issuer without a key set; bounded fast retry | Validation lib (`EgressPolicy`) + gateway (`TokenValidatorProducer` egress allowance, `RetryingJwksLoader`, `GatewayReadinessCheck`) | COVERED
+| <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch (the `jwks.url` host exempted, derived or declared -- see <<gw-05>>); readiness `DOWN` per issuer without a key set, a stale-degraded issuer (`jwks.max_staleness_seconds`, opt-in) counted not loaded; the library's truthful loader status reported unchanged; bounded fast retry | Validation lib (`EgressPolicy`, loader status, `maxStaleness`) + gateway (`TokenValidatorProducer` egress allowance, `RetryingJwksLoader`, `GatewayReadinessCheck`) | COVERED
 | <<bff-08>> | RT reuse detection by IdP strict rotation; per-kind refresh-failure dispositions; per-session single-flight | IdP (strict rotation, shipped in the integration and compose-sample realms) + engine `RefreshFlow.classify` + gateway `TokenRefreshCoordinator` -- ADR-0046 | COVERED (server: replay unreachable, IdP revocation via refresh) / COVERED (cookie: replay rejected by the IdP; duplicate-refresh residual accepted)
 | <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks including `typ`, `exp`, `jti` and single use (gateway); RP-initiated logout acts only on a top-level document navigation from a trusted origin (no speculative-load marker, which is a `Sec-Purpose` of any value or, with `Sec-Purpose` absent, a `prefetch` value, in any case, of the legacy `Purpose` or `X-Moz` header; `Sec-Fetch-Mode` `navigate` and `Sec-Fetch-Dest` `document` when present; and a trusted `Origin`, else `Sec-Fetch-Site` `same-origin`) judged by the session CSRF defence before any session lookup, otherwise a `no-store`, framing-forbidden confirmation page whose form `POST`s back; the gateway session ended before the provider redirect is built, and without it where none can be built; RP-initiated logout revokes the session's refresh token (RFC 7009) after the local destruction, a failure latched as `ApiSheriff-147`; in server mode a termination is not undone by an in-flight refresh or widening write | Engine (RP-initiated, `RevocationClient`) + gateway (back-channel receiver, `LogoutTokenValidator`, `LogoutTokenReplayGuard`, `LogoutEndpoint`, `CsrfDefence.provesTrustedDocumentNavigation`, `RpInitiatedLogout`, `BffRuntimeProducer.revokeOnLogout`, `SessionBinding` updating write over the conditional `SessionStore` write) -- ADR-0018, ADR-0080 | COVERED (server; not revoked: the access token, anything on the back-channel path, and any token at a provider without a `revocation_endpoint`; a logout link on another trusted origin lands on the confirmation page, accepted) / PARTIAL-accepted (cookie: a response in flight can outlast the logout)
 | <<bff-10>> | Tokens never in browser; `__Host-` cookie, with a non-`__Host-` `session.cookie_name` refused at boot; fixation; `token_relay: false` keeps the token from the origin, `Authorization` re-admission refused at boot | Engine `TokenStore` SPI + gateway session cookie + configuration validator | COVERED

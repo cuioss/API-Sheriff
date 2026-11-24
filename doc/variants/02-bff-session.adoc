@@ -197,9 +197,20 @@ attached. Same-origin deployments need neither.
   `404` there) and logs no such warning. This path revokes no token: the IdP initiated the logout and has already ended its own session.
   What the IdP must send is in link:../user/bff-session.adoc#backchannel-logout[the operator guide].
 * *Logout wins over in-flight work.* A refresh or scope widening running when the session is
-  destroyed does not write it back: the refresh is answered as session-ended and revokes the refresh
-  token it just obtained (`ApiSheriff-111`, `session-terminated`); the widening callback answers
-  `403` (`ApiSheriff-131`)
+  destroyed -- by a logout, a back-channel logout, a login callback that replaced it, the expiry
+  sweep or an eviction -- does not write it back. The refresh ends nothing itself: it is answered as
+  *no session*, without a clearing cookie and with nothing logged above `DEBUG`, because a clearing
+  cookie could reach the browser after a login callback's own response and delete the replacement
+  session's new cookie; the browser's next request finds no session and is answered as
+  unauthenticated. The refresh abandons the refresh token it just obtained without revoking it,
+  because a session that replaced the destroyed one may share the IdP's user session and a
+  revocation could end it. That
+  leaves a residual risk: RP-initiated logout revokes the refresh token of the session it found,
+  which the refresh had already spent, and a back-channel logout comes from an IdP that has ended its
+  own session; whether the IdP also invalidates the newly obtained token is its own policy (RFC 7009
+  allows it but does not require it). The abandoned token is held by nobody, but it can stay valid at
+  the IdP until its refresh-token lifetime ends -- the same accepted residual as a superseded refresh
+  (see <<_transparent_token_refresh>>). The widening callback answers `403` (`ApiSheriff-131`)
   (link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018]).
 
 [[_transparent_token_refresh]]
@@ -207,9 +218,22 @@ attached. Same-origin deployments need neither.
 
 Near expiry, the gateway refreshes the access token with rotation during a normal request, asking
 for the session's active scope set. A refused refresh keeps the session when the IdP never processed
-the grant, and ends it when the IdP rejected the refresh token or the gateway refused the response.
+the grant, and ends it when the IdP rejected the refresh token or the gateway refused the response --
+unless a widening or a step-up replaced the session's record, or something else already ended the
+session, while the exchange was in flight; then the refusal ends nothing and the request is answered
+as *no session*, without a clearing cookie.
 How a request left without a token is answered is set by `oidc.session.refresh.on_failure` (see
 link:../configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[the per-kind table]).
+
+*A widening wins over an in-flight refresh.* The refresh writes the rotated session only while the
+stored record is still the one it read, compared and replaced in one atomic step in the store
+(`replaceIfCurrent`). When a scope widening or a step-up replaced the record in between, the refresh
+is _superseded_: it writes nothing, so the widened scopes, the widening grant's refresh token, its
+`acr` and its `auth_time` stay; the session is kept; the request is answered as *no session*, without
+a clearing cookie; and the refresh token the refresh just obtained is abandoned, not revoked,
+because revoking it could end the client session the widened grant shares at the identity
+provider. Nothing is logged above `DEBUG`
+(link:../adr/0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
 
 *Refresh-token reuse detection is the IdP's job.* The gateway keeps no token family; in this variant
 the refresh token never leaves the store. A token stolen elsewhere is caught only by *strict rotation

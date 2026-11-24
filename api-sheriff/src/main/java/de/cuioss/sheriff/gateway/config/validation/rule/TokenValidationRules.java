@@ -21,7 +21,6 @@ import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.rende
 import java.util.List;
 import java.util.function.Function;
 
-
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
@@ -191,12 +190,18 @@ public class TokenValidationRules {
      * list of {@code doc/configuration/validation-rules.adoc} is bound to by a contract test, so a key
      * added here or a range changed here fails that test until the documentation moves with it.
      * <p>
-     * {@link #REFRESH_INTERVAL} and {@link #KEY_ROTATION_GRACE_PERIOD} are handed to the token library;
-     * both ranges were checked against the value checks of token-sheriff 0.9.6's
-     * {@code HttpJwksLoaderConfig} builder, which admits a refresh interval of zero or more and any
-     * non-negative grace period and declares no upper bound, so every value admitted here is a value the
-     * library accepts. {@link #UNKNOWN_KID_REFRESH_WINDOW} is gateway-owned; its lower bound is what bounds
-     * the cost of a flood of tokens naming arbitrary key ids: at most one JWKS fetch per issuer per window.
+     * {@link #REFRESH_INTERVAL}, {@link #KEY_ROTATION_GRACE_PERIOD} and {@link #MAX_STALENESS} are handed
+     * to the token library; their ranges were checked against the value checks of token-sheriff 0.9.9's
+     * {@code HttpJwksLoaderConfig} builder, which admits a refresh interval of zero or more, any
+     * non-negative grace period and any positive maximum staleness, and declares no upper bound for any
+     * of them, so every value admitted here is a value the library accepts. The builder's one combination
+     * refusal — a maximum staleness together with a refresh interval of zero — is unreachable here,
+     * because {@link #REFRESH_INTERVAL} admits no zero and an omitted interval keeps the library's
+     * default of 600 seconds. No cross-key rule binds {@link #MAX_STALENESS} to the refresh interval:
+     * staleness is evaluated once per refresh cycle, so a bound below the effective interval behaves like
+     * one equal to it and only fails closed sooner. {@link #UNKNOWN_KID_REFRESH_WINDOW} is gateway-owned;
+     * its lower bound is what bounds the cost of a flood of tokens naming arbitrary key ids: at most one
+     * JWKS fetch per issuer per window.
      * <p>
      * The constants are immutable, so the type is safe for concurrent use.
      *
@@ -213,7 +218,13 @@ public class TokenValidationRules {
 
         /** {@code unknown_kid_refresh_window_seconds}: the minimum spacing of refreshes an unknown key id triggers. */
         UNKNOWN_KID_REFRESH_WINDOW("unknown_kid_refresh_window_seconds", 5, 3_600,
-                IssuerConfig.Jwks::unknownKidRefreshWindowSeconds);
+                IssuerConfig.Jwks::unknownKidRefreshWindowSeconds),
+
+        /**
+         * {@code max_staleness_seconds}: how long a loaded key set stays usable while every background
+         * refresh fails; omitted switches the bound off.
+         */
+        MAX_STALENESS("max_staleness_seconds", 60, 604_800, IssuerConfig.Jwks::maxStalenessSeconds);
 
         private final String key;
         private final int minimum;

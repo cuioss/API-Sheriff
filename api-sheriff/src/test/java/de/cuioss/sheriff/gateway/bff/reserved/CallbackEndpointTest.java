@@ -35,7 +35,6 @@ import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
@@ -296,8 +295,8 @@ class CallbackEndpointTest {
         }
 
         @Override
-        public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
-            return delegate.persist(updated, now);
+        public PersistResult persist(SessionRecord basis, SessionRecord updated, Instant now) {
+            return delegate.persist(basis, updated, now);
         }
 
         @Override
@@ -313,6 +312,11 @@ class CallbackEndpointTest {
         @Override
         public Optional<SessionRecord> destroy(SessionRecord session) {
             return delegate.destroy(session);
+        }
+
+        @Override
+        public DestroyResult destroyIfCurrent(SessionRecord basis) {
+            return delegate.destroyIfCurrent(basis);
         }
 
         @Override

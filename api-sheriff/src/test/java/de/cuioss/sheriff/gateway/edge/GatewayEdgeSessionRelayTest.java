@@ -33,7 +33,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
@@ -44,6 +43,7 @@ import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
+import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
@@ -287,9 +287,11 @@ class GatewayEdgeSessionRelayTest {
             Session session = login();
             RelayClient relay = openRelay(SESSION_WS, session.cookie());
 
-            boolean replaced = store.replaceIfPresent(session.sessionRecord());
+            SessionStore.ReplaceOutcome replaced = store.replaceIfCurrent(session.sessionRecord(),
+                    session.sessionRecord());
 
-            assertTrue(replaced, "precondition: the store replaced the record of the live session");
+            assertEquals(SessionStore.ReplaceOutcome.REPLACED, replaced,
+                    "precondition: the store replaced the record of the live session");
             assertStillRelaying(relay, 1);
         }
 

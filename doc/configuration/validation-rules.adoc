@@ -284,6 +284,11 @@ bare-reference check has read the document.
 * A declared `token_validation.issuers[].jwks.unknown_kid_refresh_window_seconds` outside `5`-`3600`
   fails the boot at its own pointer, with the same message shape.
 
+* A declared `token_validation.issuers[].jwks.max_staleness_seconds` outside `60`-`604800` fails the
+  boot at its own pointer, with the same message shape. No rule relates it to
+  `refresh_interval_seconds`: staleness is checked once per refresh cycle, so a bound below the
+  refresh interval behaves like one equal to it and only fails closed sooner.
+
 * Each of those keys declared on a `source: file` issuer fails the boot at its own pointer,
   whatever value it holds: a file source is read once and never re-fetched, so the key would parse
   and never act. Every violation of every issuer is reported in one pass (see

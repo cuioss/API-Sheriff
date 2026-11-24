@@ -32,7 +32,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
-
+import de.cuioss.sheriff.gateway.bff.session.SessionStore.DestroyOutcome;
+import de.cuioss.sheriff.gateway.bff.session.SessionStore.ReplaceOutcome;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -52,10 +53,18 @@ import org.junit.jupiter.params.provider.ValueSource;
  * live sessions still refuses fail-closed. Both directions are asserted, because reclamation that
  * quietly stopped refusing would turn the DoS guard off rather than make it accurate.
  * <p>
- * The {@code ConditionalReplace} cases cover the write a refresh or a widening makes:
- * {@code replaceIfPresent} replaces a stored record and never creates one, so a session destroyed by
- * id, by {@code sid} or by {@code sub} is not written back. Each refusal is paired with the
- * replacement that succeeds on a stored record, so a method that refused everything would fail too.
+ * The {@code ConditionalReplace} cases cover the write a refresh makes: {@code replaceIfCurrent}
+ * replaces a stored record only while it is still the caller's basis and never creates one, so a
+ * session destroyed by id, by {@code sid} or by {@code sub} is not written back ({@code ABSENT}) and a
+ * record another updating write replaced since the caller read it is not overwritten
+ * ({@code SUPERSEDED}). Each refusal is paired with the replacement that succeeds on a stored record
+ * that is still the basis, so a method that refused everything would fail too, and a re-issue of the
+ * handle alone or a recorded access is shown not to supersede.
+ * <p>
+ * The {@code ConditionalDestroy} cases cover the destruction a refused refresh makes:
+ * {@code destroyIfCurrent} removes a stored record only while it is still the caller's basis, keeps a
+ * record a widening re-issued since ({@code SUPERSEDED}) and reports a session already gone
+ * ({@code ABSENT}).
  * <p>
  * A session is resolved by its cookie handle, never by its session id: every case creates a session
  * under a handle that differs from the id. The {@code HandleReissue} cases cover the re-issuing write
@@ -161,7 +170,8 @@ class InMemorySessionStoreTest {
             SessionRecord created = session("s1", "sub1", "sid1", FUTURE);
             create(store, created, T0);
             SessionRecord rotated = withRefreshToken(created, "refresh-rotated");
-            assertTrue(store.replaceIfPresent(rotated), "precondition: a refresh rotated the stored record");
+            assertEquals(ReplaceOutcome.REPLACED, store.replaceIfCurrent(created, rotated),
+                    "precondition: a refresh rotated the stored record");
 
             Optional<SessionRecord> destroyed = store.destroyById("s1");
 
@@ -551,13 +561,15 @@ class InMemorySessionStoreTest {
         @DisplayName("Should resolve the replaced active scope set after a replacement")
         void shouldReplaceActiveScopesOnReplacement() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
-            create(store, SessionRecord.builder().sessionId("s1").accessToken("at").idToken("it").sub("sub1")
-                    .expiresAt(FUTURE).activeScopes(Set.of("openid", "orders:read")).build(), T0);
+            SessionRecord created = SessionRecord.builder().sessionId("s1").accessToken("at").idToken("it")
+                    .sub("sub1").expiresAt(FUTURE).activeScopes(Set.of("openid", "orders:read")).build();
+            create(store, created, T0);
 
-            boolean replaced = store.replaceIfPresent(SessionRecord.builder().sessionId("s1").accessToken("at2")
-                    .idToken("it").sub("sub1").expiresAt(FUTURE).activeScopes(Set.of("openid")).build());
+            ReplaceOutcome replaced = store.replaceIfCurrent(created, SessionRecord.builder().sessionId("s1")
+                    .accessToken("at2").idToken("it").sub("sub1").expiresAt(FUTURE).activeScopes(Set.of("openid"))
+                    .build());
 
-            assertTrue(replaced, "the session is stored, so the refresh's write replaces it");
+            assertEquals(ReplaceOutcome.REPLACED, replaced, "the session is stored, so the refresh's write replaces it");
             assertEquals(Set.of("openid"), resolve(store, "s1", T0).orElseThrow().activeScopes(),
                     "a refresh persisted through a replacement carries the narrowed set to the next request");
         }
@@ -572,11 +584,11 @@ class InMemorySessionStoreTest {
                     .expiresAt(FUTURE).activeScopes(granted).grantedScopes(granted).build(), T0);
             SessionRecord created = resolve(store, "s1", T0).orElseThrow();
 
-            boolean replaced = store.replaceIfPresent(SessionRecord.builder().sessionId("s1").accessToken("at2")
-                    .idToken("it").sub("sub1").expiresAt(FUTURE).activeScopes(widened).grantedScopes(widened)
-                    .build());
+            ReplaceOutcome replaced = store.replaceIfCurrent(created, SessionRecord.builder().sessionId("s1")
+                    .accessToken("at2").idToken("it").sub("sub1").expiresAt(FUTURE).activeScopes(widened)
+                    .grantedScopes(widened).build());
 
-            assertTrue(replaced, "the session is stored, so the widening's write replaces it");
+            assertEquals(ReplaceOutcome.REPLACED, replaced, "the session is stored, so the replacement is written");
             assertEquals(granted, created.grantedScopes());
             assertEquals(widened, resolve(store, "s1", T0).orElseThrow().grantedScopes(),
                     "a widening persisted through a replacement carries the widened S to the next request");
@@ -584,24 +596,28 @@ class InMemorySessionStoreTest {
     }
 
     /**
-     * The conditional write: {@code replaceIfPresent} is how a refresh and a widening update a session
-     * that already exists. It never creates, which is what keeps a destroyed session destroyed.
+     * The conditional write: {@code replaceIfCurrent} is how a refresh updates a session that already
+     * exists. It never creates, which is what keeps a destroyed session destroyed, and it writes only
+     * over the record its caller read, which is what keeps a widening that landed meanwhile in place.
      */
     @Nested
-    @DisplayName("Conditional replace (the write of a refresh or a widening)")
+    @DisplayName("Conditional replace (the write of a refresh)")
     class ConditionalReplace {
+
+        /** The record every case of this group stores first and names as the caller's basis. */
+        private static final SessionRecord STORED = session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE);
 
         @Test
         @DisplayName("Should replace a stored record in place and report the replacement")
         void shouldReplaceStoredRecord() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
-            create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+            create(store, STORED, T0);
             SessionRecord replacement = SessionRecord.builder().sessionId(SESSION_ID).accessToken("rotated-access")
                     .idToken("rotated-id").sub(OLD_SUB).sid(OLD_SID).expiresAt(FUTURE).build();
 
-            boolean replaced = store.replaceIfPresent(replacement);
+            ReplaceOutcome replaced = store.replaceIfCurrent(STORED, replacement);
 
-            assertTrue(replaced, "a stored id is replaced");
+            assertEquals(ReplaceOutcome.REPLACED, replaced, "a stored id holding the basis is replaced");
             assertEquals(1, store.size(), "the replacement took the stored record's place, adding no entry");
             assertEquals(replacement, resolve(store, SESSION_ID, T0).orElseThrow(),
                     "the next resolve sees the replacement");
@@ -612,9 +628,9 @@ class InMemorySessionStoreTest {
         void shouldRefuseAbsentId() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
 
-            boolean replaced = store.replaceIfPresent(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE));
+            ReplaceOutcome replaced = store.replaceIfCurrent(STORED, STORED);
 
-            assertFalse(replaced, "nothing is stored under the id, so nothing is replaced");
+            assertEquals(ReplaceOutcome.ABSENT, replaced, "nothing is stored under the id, so nothing is replaced");
             assertEquals(0, store.size(), "the conditional write never creates");
             assertTrue(resolve(store, SESSION_ID, T0).isEmpty(), "no session resolves afterwards");
             assertEquals(0, store.destroyBySid(OLD_SID), "the refused record was not indexed by sid");
@@ -625,11 +641,11 @@ class InMemorySessionStoreTest {
         @DisplayName("Should find a replacement carrying another sid and sub under the new keys only")
         void shouldReindexWhenSidAndSubChange() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
-            create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+            create(store, STORED, T0);
 
-            boolean replaced = store.replaceIfPresent(session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE));
+            ReplaceOutcome replaced = store.replaceIfCurrent(STORED, session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE));
 
-            assertTrue(replaced);
+            assertEquals(ReplaceOutcome.REPLACED, replaced);
             assertEquals(0, store.destroyBySid(OLD_SID), "the previous sid no longer resolves to the session");
             assertEquals(0, store.destroyBySub(OLD_SUB), "the previous sub no longer resolves to the session");
             assertTrue(resolve(store, SESSION_ID, T0).isPresent(),
@@ -642,8 +658,10 @@ class InMemorySessionStoreTest {
         @DisplayName("Should destroy a replaced session through its new sub")
         void shouldDestroyReplacedSessionByNewSub() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
-            create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
-            store.replaceIfPresent(session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE));
+            create(store, STORED, T0);
+            assertEquals(ReplaceOutcome.REPLACED,
+                    store.replaceIfCurrent(STORED, session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE)),
+                    "precondition: the replacement carrying the new sub was written");
 
             int destroyed = store.destroyBySub(NEW_SUB);
 
@@ -665,12 +683,12 @@ class InMemorySessionStoreTest {
         @DisplayName("Should not write a destroyed session back, however it was destroyed")
         void shouldNotRecreateDestroyedSession(String label, Consumer<InMemorySessionStore> destruction) {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
-            create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+            create(store, STORED, T0);
             destruction.accept(store);
 
-            boolean replaced = store.replaceIfPresent(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE));
+            ReplaceOutcome replaced = store.replaceIfCurrent(STORED, STORED);
 
-            assertFalse(replaced, () -> "after " + label + " there is no record to replace");
+            assertEquals(ReplaceOutcome.ABSENT, replaced, () -> "after " + label + " there is no record to replace");
             assertEquals(0, store.size(), () -> label + " must not be undone by a write that was in flight");
             assertTrue(resolve(store, SESSION_ID, T0).isEmpty(), () -> "the session stays gone after " + label);
         }
@@ -679,12 +697,13 @@ class InMemorySessionStoreTest {
         @DisplayName("Should replace at the max-session bound without sweeping and without refusing")
         void shouldReplaceAtTheBound() {
             InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
-            create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
+            create(store, STORED, T0);
             create(store, session("expired", "sub2", null, T0.plusSeconds(5)), T0);
 
-            boolean replaced = store.replaceIfPresent(session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE));
+            ReplaceOutcome replaced = store.replaceIfCurrent(STORED, session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE));
 
-            assertTrue(replaced, "a replacement consumes no capacity, so the bound does not refuse it");
+            assertEquals(ReplaceOutcome.REPLACED, replaced,
+                    "a replacement consumes no capacity, so the bound does not refuse it");
             assertEquals(2, store.size(),
                     "the expired neighbour still holds its slot — a replacement never triggers the sweep");
         }
@@ -694,11 +713,12 @@ class InMemorySessionStoreTest {
         void shouldReplaceLapsedRecordWithoutRevivingIt() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             Instant expiry = T0.plusSeconds(5);
-            create(store, session(SESSION_ID, OLD_SUB, OLD_SID, expiry), T0);
+            SessionRecord lapsing = session(SESSION_ID, OLD_SUB, OLD_SID, expiry);
+            create(store, lapsing, T0);
 
-            boolean replaced = store.replaceIfPresent(session(SESSION_ID, OLD_SUB, OLD_SID, expiry));
+            ReplaceOutcome replaced = store.replaceIfCurrent(lapsing, lapsing);
 
-            assertTrue(replaced, "the check is on presence, not on liveness");
+            assertEquals(ReplaceOutcome.REPLACED, replaced, "the check is not on liveness");
             assertTrue(resolve(store, SESSION_ID, T0.plusSeconds(10)).isEmpty(),
                     "the absolute TTL is still enforced on resolve against the expiry the replacement carries");
         }
@@ -708,7 +728,196 @@ class InMemorySessionStoreTest {
         void shouldRejectNullReplacement() {
             InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
 
-            assertThrows(NullPointerException.class, () -> store.replaceIfPresent(null));
+            assertThrows(NullPointerException.class, () -> store.replaceIfCurrent(STORED, null));
+        }
+
+        @Test
+        @DisplayName("Should reject a null basis")
+        void shouldRejectNullBasis() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+
+            assertThrows(NullPointerException.class, () -> store.replaceIfCurrent(null, STORED));
+        }
+
+        @Test
+        @DisplayName("Should report SUPERSEDED and keep the widened record and its handle when a re-issue replaced the basis")
+        void shouldNotOverwriteAReissuedRecord() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+            create(store, STORED, T0);
+            SessionRecord widened = withRefreshToken(STORED, "refresh-widened");
+            assertTrue(store.replaceAndReissueHandle(widened, REISSUED_HANDLE),
+                    "precondition: a widening replaced the record after the refresh read it");
+
+            ReplaceOutcome replaced = store.replaceIfCurrent(STORED, withRefreshToken(STORED, "refresh-rotated"));
+
+            assertAll("a refresh computed from the record before the widening",
+                    () -> assertEquals(ReplaceOutcome.SUPERSEDED, replaced,
+                            "a record is stored under the id, but it is no longer the basis"),
+                    () -> assertEquals(widened, store.resolve(REISSUED_HANDLE, T0).orElseThrow(),
+                            "nothing was written: the widened record stays under its re-issued handle"),
+                    () -> assertTrue(store.resolve(handleOf(SESSION_ID), T0).isEmpty(),
+                            "and the previous handle is not put back"),
+                    () -> assertEquals(1, store.size(), "the session lives on as one entry"));
+        }
+
+        @Test
+        @DisplayName("Should report SUPERSEDED when another replacement wrote over the basis first")
+        void shouldNotOverwriteALaterReplacement() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+            create(store, STORED, T0);
+            SessionRecord first = withRefreshToken(STORED, "refresh-first");
+            assertEquals(ReplaceOutcome.REPLACED, store.replaceIfCurrent(STORED, first),
+                    "precondition: one writer replaced the record");
+
+            ReplaceOutcome second = store.replaceIfCurrent(STORED, withRefreshToken(STORED, "refresh-second"));
+
+            assertEquals(ReplaceOutcome.SUPERSEDED, second, "the second writer's basis is no longer stored");
+            assertEquals(first, resolve(store, SESSION_ID, T0).orElseThrow(), "the first replacement stays");
+        }
+
+        @Test
+        @DisplayName("Should compare every record component, so a basis differing in one token is superseded")
+        void shouldCompareEveryComponent() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+            create(store, STORED, T0);
+            SessionRecord staleBasis = withRefreshToken(STORED, "refresh-of-another-snapshot");
+
+            ReplaceOutcome replaced = store.replaceIfCurrent(staleBasis, withRefreshToken(STORED, "refresh-rotated"));
+
+            assertEquals(ReplaceOutcome.SUPERSEDED, replaced, "a basis that is not the stored record does not match");
+            assertEquals(STORED, resolve(store, SESSION_ID, T0).orElseThrow(), "the stored record is unchanged");
+        }
+
+        @Test
+        @DisplayName("Should replace when a re-issue changed only the handle, keeping the re-issued handle")
+        void shouldReplaceAfterHandleOnlyReissue() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+            create(store, STORED, T0);
+            assertTrue(store.replaceAndReissueHandle(STORED, REISSUED_HANDLE),
+                    "precondition: a re-issue swapped the handle and stored an equal record");
+            SessionRecord rotated = withRefreshToken(STORED, "refresh-rotated");
+
+            ReplaceOutcome replaced = store.replaceIfCurrent(STORED, rotated);
+
+            assertEquals(ReplaceOutcome.REPLACED, replaced,
+                    "the handle is store-side state, not a record component, so the basis is still current");
+            assertEquals(rotated, store.resolve(REISSUED_HANDLE, T0).orElseThrow(),
+                    "the replacement is held under the re-issued handle");
+        }
+
+        @Test
+        @DisplayName("Should replace when only an access was recorded since the caller read the record")
+        void shouldReplaceAfterRecordedAccess() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+            create(store, STORED, T0);
+            store.recordAccess(SESSION_ID, T0.plusSeconds(30));
+
+            ReplaceOutcome replaced = store.replaceIfCurrent(STORED, withRefreshToken(STORED, "refresh-rotated"));
+
+            assertEquals(ReplaceOutcome.REPLACED, replaced,
+                    "the last access is store-side state, so recording one does not supersede the basis");
+        }
+    }
+
+    /**
+     * The conditional destruction: {@code destroyIfCurrent} is how a refused refresh ends a session. It
+     * removes the stored record only while it is still the caller's basis, so a widening that replaced
+     * the record meanwhile is not destroyed, and it reports a session that is already gone.
+     */
+    @Nested
+    @DisplayName("Conditional destroy (the destruction of a refused refresh)")
+    class ConditionalDestroy {
+
+        /** The record every case of this group stores first and names as the caller's basis. */
+        private static final SessionRecord STORED = session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE);
+
+        @Test
+        @DisplayName("Should remove the stored record, its handle and its index entries when it is still the basis")
+        void shouldDestroyCurrentRecord() {
+            List<String> ended = new ArrayList<>();
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, ended::add);
+            create(store, STORED, T0);
+
+            DestroyOutcome destroyed = store.destroyIfCurrent(STORED);
+
+            assertAll("the record the caller read is the stored one",
+                    () -> assertEquals(DestroyOutcome.DESTROYED, destroyed),
+                    () -> assertEquals(0, store.size(), "the session is removed"),
+                    () -> assertTrue(resolve(store, SESSION_ID, T0).isEmpty(), "its handle resolves nothing"),
+                    () -> assertEquals(0, store.destroyBySid(OLD_SID), "the sid index was cleaned with it"),
+                    () -> assertEquals(0, store.destroyBySub(OLD_SUB), "the sub index was cleaned with it"),
+                    () -> assertEquals(List.of(SESSION_ID), ended, "the end is reported once"));
+            SessionRecord other = session("other", "other-sub", null, FUTURE);
+            assertDoesNotThrow(() -> store.create(other, handleOf(SESSION_ID), T0),
+                    "the destruction left no handle behind, so another session may take the same value");
+            assertEquals("other", store.resolve(handleOf(SESSION_ID), T0).orElseThrow().sessionId(),
+                    "the removed handle now resolves the session created under it");
+        }
+
+        @Test
+        @DisplayName("Should keep the widened record and its handle and report SUPERSEDED when a re-issue replaced the basis")
+        void shouldKeepReissuedRecord() {
+            List<String> ended = new ArrayList<>();
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, ended::add);
+            create(store, STORED, T0);
+            SessionRecord widened = withRefreshToken(STORED, "refresh-widened");
+            assertTrue(store.replaceAndReissueHandle(widened, REISSUED_HANDLE),
+                    "precondition: a widening replaced the record after the refresh read it");
+
+            DestroyOutcome destroyed = store.destroyIfCurrent(STORED);
+
+            assertAll("a destruction computed from the record before the widening",
+                    () -> assertEquals(DestroyOutcome.SUPERSEDED, destroyed,
+                            "a record is stored under the id, but it is no longer the basis"),
+                    () -> assertEquals(widened, store.resolve(REISSUED_HANDLE, T0).orElseThrow(),
+                            "nothing was removed: the widened record stays under its re-issued handle"),
+                    () -> assertEquals(1, store.size(), "the session lives on as one entry"),
+                    () -> assertEquals(List.of(), ended, "no session ended"));
+        }
+
+        @ParameterizedTest(name = "{0} followed by the conditional destroy reports the session absent")
+        @MethodSource(DESTRUCTIONS)
+        @DisplayName("Should report ABSENT and change nothing when the session is already gone, however it was destroyed")
+        void shouldReportAbsentSession(String label, Consumer<InMemorySessionStore> destruction) {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+            create(store, STORED, T0);
+            destruction.accept(store);
+
+            DestroyOutcome destroyed = store.destroyIfCurrent(STORED);
+
+            assertEquals(DestroyOutcome.ABSENT, destroyed, () -> "after " + label + " there is no record to remove");
+            assertEquals(0, store.size(), () -> "the store stays empty after " + label);
+        }
+
+        @Test
+        @DisplayName("Should destroy when a re-issue changed only the handle, removing the re-issued handle too")
+        void shouldDestroyAfterHandleOnlyReissue() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+            create(store, STORED, T0);
+            assertTrue(store.replaceAndReissueHandle(STORED, REISSUED_HANDLE),
+                    "precondition: a re-issue swapped the handle and stored an equal record");
+            SessionRecord equalBasis = session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE);
+            assertNotSame(STORED, equalBasis, "precondition: the basis is a separately built record");
+            assertEquals(STORED, equalBasis, "precondition: the basis carries the stored record's components");
+
+            DestroyOutcome destroyed = store.destroyIfCurrent(equalBasis);
+
+            assertEquals(DestroyOutcome.DESTROYED, destroyed,
+                    "the handle is store-side state, not a record component, so the basis is still current");
+            assertTrue(store.resolve(REISSUED_HANDLE, T0).isEmpty(), "the re-issued handle went with the session");
+            SessionRecord other = session("other", "other-sub", null, FUTURE);
+            assertDoesNotThrow(() -> store.create(other, REISSUED_HANDLE, T0),
+                    "the destruction left no re-issued handle behind, so another session may take the same value");
+            assertEquals("other", store.resolve(REISSUED_HANDLE, T0).orElseThrow().sessionId(),
+                    "the removed re-issued handle now resolves the session created under it");
+        }
+
+        @Test
+        @DisplayName("Should reject a null basis")
+        void shouldRejectNullBasis() {
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
+
+            assertThrows(NullPointerException.class, () -> store.destroyIfCurrent(null));
         }
     }
 
@@ -835,9 +1044,10 @@ class InMemorySessionStoreTest {
             SessionRecord rotated = SessionRecord.builder().sessionId(SESSION_ID).accessToken("rotated-access")
                     .idToken("rotated-id").sub(OLD_SUB).sid(OLD_SID).expiresAt(FUTURE).build();
 
-            boolean replaced = store.replaceIfPresent(rotated);
+            ReplaceOutcome replaced = store.replaceIfCurrent(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), rotated);
 
-            assertTrue(replaced, "a refresh in flight across the re-issue still finds the session by its id");
+            assertEquals(ReplaceOutcome.REPLACED, replaced,
+                    "a refresh in flight across a re-issue that left the record as it read it still finds the session by its id");
             assertEquals(rotated, store.resolve(REISSUED_HANDLE, T0).orElseThrow(),
                     "the re-issued handle resolves the record the later replacement stored");
             assertTrue(store.resolve(handleOf(SESSION_ID), T0).isEmpty(),
@@ -1007,7 +1217,8 @@ class InMemorySessionStoreTest {
             create(store, session("s1", "sub1", null, FUTURE), T0);
             SessionRecord rotated = SessionRecord.builder().sessionId("s1").accessToken("rotated-access")
                     .refreshToken("rotated-refresh").idToken("rotated-id").sub("sub1").expiresAt(FUTURE).build();
-            store.replaceIfPresent(rotated);
+            assertEquals(ReplaceOutcome.REPLACED, store.replaceIfCurrent(session("s1", "sub1", null, FUTURE), rotated),
+                    "precondition: a refresh replaced the created record");
 
             store.recordAccess("s1", T0.plusSeconds(60));
 
@@ -1058,7 +1269,7 @@ class InMemorySessionStoreTest {
             InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", null, FUTURE), T0);
 
-            store.replaceIfPresent(session("s1", "sub1", null, FUTURE));
+            store.replaceIfCurrent(session("s1", "sub1", null, FUTURE), session("s1", "sub1", null, FUTURE));
             store.replaceAndReissueHandle(session("s1", "sub1", null, FUTURE), REISSUED_HANDLE);
 
             assertTrue(store.resolve(REISSUED_HANDLE, T0.plus(IDLE_TIMEOUT).minusSeconds(1)).isPresent());
@@ -1151,7 +1362,8 @@ class InMemorySessionStoreTest {
             InMemorySessionStore store = bounded(16, 2);
             create(store, session("s1", SUB, null, FUTURE), T0);
             create(store, session("s2", SUB, null, FUTURE), T0.plusSeconds(1));
-            assertTrue(store.replaceIfPresent(session("s1", SUB, null, FUTURE)));
+            assertEquals(ReplaceOutcome.REPLACED,
+                    store.replaceIfCurrent(session("s1", SUB, null, FUTURE), session("s1", SUB, null, FUTURE)));
             assertTrue(store.replaceAndReissueHandle(session("s1", SUB, null, FUTURE), REISSUED_HANDLE));
 
             create(store, session("s3", SUB, null, FUTURE), T0.plusSeconds(2));
@@ -1395,7 +1607,7 @@ class InMemorySessionStoreTest {
             reporting(16, NO_IDLE_EFFECT, 1);
             create(store, session("s1", "sub1", "sid1", FUTURE), T0);
 
-            store.replaceIfPresent(session("s1", "sub1", "sid1", FUTURE));
+            store.replaceIfCurrent(session("s1", "sub1", "sid1", FUTURE), session("s1", "sub1", "sid1", FUTURE));
             store.replaceAndReissueHandle(session("s1", "sub1", "sid1", FUTURE), REISSUED_HANDLE);
             store.create(session("s1", "sub1", "sid1", FUTURE), REISSUED_HANDLE, T0.plusSeconds(1));
             store.recordAccess("s1", T0.plusSeconds(2));

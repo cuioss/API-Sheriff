@@ -60,17 +60,20 @@ import org.jspecify.annotations.Nullable;
  *         <li>{@link RefreshResult.Mediate mediate} — emits any {@code Set-Cookie} the seam returns, so
  *             a binding that re-binds on refresh reaches the browser on the same response, and
  *             continues with the session;</li>
- *         <li>{@link RefreshResult.SessionEnded session ended} — the seam destroyed the session, or
- *             found it already gone and did not write it back, so the stage clears the browser's copy
- *             and then applies the refresh-failure response;</li>
+ *         <li>{@link RefreshResult.SessionEnded session ended} — the seam itself ended the session, so the
+ *             stage clears the browser's copy and then applies the refresh-failure response;</li>
  *         <li>{@link RefreshResult.RequestFailed request failed} — the session is still live but this
  *             request has no valid token to mediate, so the stage applies the refresh-failure response
  *             <em>without</em> clearing the cookie: the next request can still use the session.</li>
- *         <li>{@link RefreshResult.NoSession no session for this request} — the seam could not resolve a
- *             session from this request's {@code Cookie} header a second time. Nothing was destroyed,
- *             and the session may well be alive under a cookie value a step-up re-issued meanwhile, so
- *             the stage applies the refresh-failure response <em>without</em> a clearing cookie: a
- *             clearing cookie here would delete the cookie the browser has just been given.</li>
+ *         <li>{@link RefreshResult.NoSession no session for this request} — the seam ended nothing: it
+ *             could not resolve a session from this request's {@code Cookie} header a second time, a
+ *             concurrent widening or step-up superseded its write, or — in server mode — something else
+ *             (a logout, a back-channel logout, a login callback, an expiry sweep or an eviction) had
+ *             already ended the session. The session may well be alive under a cookie value a step-up
+ *             re-issued meanwhile, or a login callback may have given the browser a replacement
+ *             session's cookie, so the stage applies the refresh-failure response <em>without</em> a
+ *             clearing cookie: a clearing cookie here could delete the cookie the browser has just been
+ *             given.</li>
  *       </ul>
  *       The refresh-failure response is the {@link OnFailure} policy
  *       ({@code oidc.session.refresh.on_failure}): {@link OnFailure#REAUTHENTICATE} re-drives the same
@@ -282,9 +285,9 @@ public final class SessionAuthenticationStage {
                 // retry the refresh once the back-off has elapsed.
                 challengeRefreshFailure(request, route, now);
             case RefreshResult.NoSession() ->
-                // The seam resolved no session from this request's cookie and destroyed nothing. The
-                // browser may already hold a re-issued cookie for the same, living session, so no
-                // clearing cookie is sent: it would delete that new cookie.
+                // The seam ended nothing. The browser may already hold a re-issued cookie for the same,
+                // living session, or a login callback's cookie for a replacement session, so no clearing
+                // cookie is sent: it could delete that new cookie.
                 challengeRefreshFailure(request, route, now);
         }
     }
@@ -401,12 +404,13 @@ public final class SessionAuthenticationStage {
     }
 
     /**
-     * Answers a request whose session a refresh seam reported ended. Either the seam destroyed it — the
+     * Answers a request whose session a refresh seam reported ended. The seam itself ended it: the
      * identity provider rejected the refresh token (including a replayed one under strict rotation),
-     * the gateway refused a redeemed response, or the binding could not hold the rotated session — or
-     * the seam found it already gone: it expired, or, in server mode, a logout terminated it while the
-     * refresh was in flight and the seam did not write it back. Mediating the pre-refresh token would
-     * keep serving an ended session, so the
+     * the gateway refused a redeemed response, the binding could not hold the rotated session, or the
+     * request presented a refresh token whose session the seam had already ended (a retained or replayed
+     * cookie). A session something else ended while the refresh was in flight is not reported here but as
+     * no session, which clears nothing. Mediating the pre-refresh token would keep serving an ended
+     * session, so the
      * clearing cookies drop the browser's stale copies first — every cookie the binding sets, which in
      * cookie mode is the session cookie and its activity cookie. On the reauthenticate navigation
      * branch the login challenge adds its own binding cookie for a DIFFERENT cookie name, so all of them
@@ -514,10 +518,12 @@ public final class SessionAuthenticationStage {
          * @return {@link RefreshResult.Mediate mediate} carrying the session to mediate from — the
          *         same one, or a refreshed copy carrying the rotated token material — plus any
          *         {@code Set-Cookie} the re-bind produced; {@link RefreshResult.SessionEnded session
-         *         ended} when the seam destroyed the session or found it already gone at its write;
+         *         ended} when the seam itself ended the session;
          *         {@link RefreshResult.RequestFailed request failed} when the session is kept but this
-         *         request has no valid token; or {@link RefreshResult.NoSession no session} when
-         *         {@code cookieHeader} resolved no session a second time and nothing was destroyed
+         *         request has no valid token; or {@link RefreshResult.NoSession no session} when the seam
+         *         ended nothing — {@code cookieHeader} resolved no session a second time, a concurrent
+         *         widening or step-up superseded its write, or the session was already ended by something
+         *         else
          */
         RefreshResult refreshIfNeeded(SessionRecord session, @Nullable String cookieHeader, Instant now);
     }
@@ -552,10 +558,12 @@ public final class SessionAuthenticationStage {
          * @return {@link RefreshResult.Mediate mediate} carrying the session that was kept — refreshed
          *         and carrying the set, or unchanged or narrower when the set was not obtained — plus
          *         any {@code Set-Cookie} the re-bind produced; {@link RefreshResult.SessionEnded session
-         *         ended} when the seam destroyed the session or found it already gone at its write;
+         *         ended} when the seam itself ended the session;
          *         {@link RefreshResult.RequestFailed request failed} when the session is kept but this
-         *         request has no valid token; or {@link RefreshResult.NoSession no session} when
-         *         {@code cookieHeader} resolved no session a second time and nothing was destroyed
+         *         request has no valid token; or {@link RefreshResult.NoSession no session} when the seam
+         *         ended nothing — {@code cookieHeader} resolved no session a second time, a concurrent
+         *         widening or step-up superseded its write, or the session was already ended by something
+         *         else
          */
         RefreshResult refreshForScopes(SessionRecord session, @Nullable String cookieHeader,
                 Set<String> requestedScopes, Instant now);
@@ -579,8 +587,7 @@ public final class SessionAuthenticationStage {
         }
 
         /**
-         * @return the result for a session that has ended — the seam destroyed it, or found it already
-         *         gone
+         * @return the result for a session the seam itself ended
          */
         static RefreshResult sessionEnded() {
             return new SessionEnded();
@@ -594,8 +601,7 @@ public final class SessionAuthenticationStage {
         }
 
         /**
-         * @return the result for a request whose {@code Cookie} header resolved no session when the seam
-         *         resolved it again, with nothing destroyed
+         * @return the result for a request left without a session by a seam that ended nothing
          */
         static RefreshResult noSession() {
             return new NoSession();
@@ -619,7 +625,7 @@ public final class SessionAuthenticationStage {
         }
 
         /**
-         * The session was destroyed: clear the browser's session cookie, then apply the
+         * The seam itself ended the session: clear the browser's session cookie, then apply the
          * {@link OnFailure} policy.
          *
          * @author API Sheriff Team
@@ -639,16 +645,19 @@ public final class SessionAuthenticationStage {
         }
 
         /**
-         * The request's {@code Cookie} header resolved no session when the seam resolved it again, and
-         * the seam destroyed nothing: apply the {@link OnFailure} policy <strong>without</strong> a
-         * clearing cookie.
+         * The request has no session to mediate from and the seam ended nothing: its {@code Cookie}
+         * header resolved no session when the seam resolved it again, a concurrent widening or step-up
+         * superseded the seam's write, or — in server mode — something else had already ended the
+         * session while the refresh was in flight. Apply the {@link OnFailure} policy
+         * <strong>without</strong> a clearing cookie.
          * <p>
          * It is deliberately not {@link SessionEnded}. In server mode a step-up or a scope widening
          * re-issues the cookie value while the session lives on, so a request still in flight with the
-         * previous value resolves nothing although nothing ended; a clearing cookie on its answer would
-         * delete the cookie the browser was just given. A session that really expired between the
-         * stage's resolve and the seam's needs no clearing cookie either — the stage sends none for a
-         * request that resolves no session in the first place.
+         * previous value resolves nothing although nothing ended; and a login callback in the same
+         * browser replaces the session and sets a new cookie. A clearing cookie on this answer could
+         * reach the browser after either response and delete the cookie the browser was just given. A
+         * session that really ended — expired, logged out — needs no clearing cookie either: the stage
+         * sends none for a request that resolves no session in the first place.
          *
          * @author API Sheriff Team
          * @since 1.0

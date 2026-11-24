@@ -26,7 +26,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver.BackchannelResult;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -504,12 +503,17 @@ class BackchannelLogoutReceiverTest {
         }
 
         @Override
-        public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
+        public PersistResult persist(SessionRecord basis, SessionRecord updated, Instant now) {
             throw new UnsupportedOperationException("the back-channel path never persists a session");
         }
 
         @Override
         public Optional<SessionRecord> destroy(SessionRecord session) {
+            throw new UnsupportedOperationException("the back-channel path destroys by sid/sub only");
+        }
+
+        @Override
+        public DestroyResult destroyIfCurrent(SessionRecord basis) {
             throw new UnsupportedOperationException("the back-channel path destroys by sid/sub only");
         }
 

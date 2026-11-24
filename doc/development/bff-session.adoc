@@ -106,18 +106,72 @@ not the container, because a bearer-only gateway must not have one.
   that consumes capacity and the only one that applies the two bounds.
 
 | `persist`
-| `replaceIfPresent`
-| `TokenRefreshCoordinator`, on both refresh legs. Replaces the record and keeps the handle.
+| `replaceIfCurrent`
+| `TokenRefreshCoordinator`, on both refresh legs. Replaces the record only while it is still the
+  record the refresh resolved (the _basis_), and keeps the handle.
 
 | `persistReissuingCookie`
 | `replaceAndReissueHandle`
 | `CallbackEndpoint.completeWidening`. Replaces the record and swaps the handle.
 |===
 
-Neither updating write stores anything when the session identity is no longer held. Both return an
-empty result then, and the caller must treat the session as ended and must not hand out the new
-tokens. A new caller that updates a session picks one of the two by one question: does the
-privilege of the session change? If it does, re-issue.
+Neither updating write stores anything when the session identity is no longer held: `persist`
+answers `Gone` and `persistReissuingCookie` an empty result, and the caller must treat the session
+as ended and must not hand out the new tokens. On `Gone` the refresh did not end the session --
+a logout, a back-channel logout, a login callback, an expiry sweep or an eviction did -- so
+`TokenRefreshCoordinator` ends nothing either: it answers the request `NO_SESSION`, marks nothing
+ended, records no `ApiSheriff-111` and sends no clearing cookie, because a clearing response from
+this refresh could reach the browser after a login callback's own response and delete the
+replacement session's new cookie. A request carrying the cookie of a session that is really gone is
+then answered by the ordinary no-session path. The refresh abandons the refresh token its exchange
+returned without revoking it: it lost a race to that destruction, and a session that replaced the
+destroyed one may share the identity provider's user session (ADR-0046). Only a refresh that itself
+ends the session -- a persist failure, or a refused redeemed response that destroyed the record it
+read -- revokes.
+`persist` has a third answer, `Superseded`: the
+session is still held, but its record is no longer the basis the caller passed -- a widening or a
+step-up replaced it after the refresh resolved it. Nothing is written then either, and the caller
+must not end the session; `TokenRefreshCoordinator` answers the request `NO_SESSION` and abandons
+the refresh token its own exchange returned without revoking it, because a grant-level revocation
+could end the client session the widened grant shares (ADR-0046). Of the two updating writes only
+`persist` compares against a basis -- `destroyIfCurrent`, below, is the one destruction that does
+too: when a refresh and a widening overlap, the refresh gives way. A new caller that updates a session picks one of the two
+by one question: does the privilege of the session change? If it does, re-issue.
+
+=== Two destructions
+
+[cols="1,1,3", options="header"]
+|===
+| `SessionBinding` | `InMemorySessionStore` | Used by
+
+| `destroy`
+| `destroyById`
+| `LogoutEndpoint`, and `TokenRefreshCoordinator` when a persist failed, and when the presented
+  refresh token is already marked ended, which only the cookie mode marks. A persist that found the
+  session gone destroys nothing.
+  Removes the session whatever record it holds and hands back the record it removed.
+
+| `destroyIfCurrent`
+| `destroyIfCurrent`
+| `TokenRefreshCoordinator`, when a refresh is refused as `CREDENTIAL_REJECTED` or `REDEEMED`.
+  Removes the session only while its record is still the basis the refresh resolved.
+|===
+
+A refused refresh decided to end the session on the record it resolved, but a widening or a step-up
+writes through `persistReissuingCookie` without passing the coordinator's single-flight, so it can
+replace the record while the exchange is in flight. A destruction by identity would then remove the
+record the widening just wrote and log the user out. `destroyIfCurrent` therefore has three answers,
+in the style of `persist`: `DESTROYED`, `GONE` and `SUPERSEDED`. On `SUPERSEDED` nothing is destroyed,
+and `TokenRefreshCoordinator` answers the request `NO_SESSION`, marks nothing ended and revokes
+nothing, for the reason the superseded persist gives (ADR-0046). On `GONE` -- a logout, a
+back-channel logout, a login callback that replaced the session, an expiry sweep or an eviction
+ended it while the exchange was in flight -- the refusal ended nothing either: `TokenRefreshCoordinator`
+answers the request `NO_SESSION`, marks nothing ended, records no `ApiSheriff-111` and revokes
+nothing, because the refusal lost a race to a destruction exactly as a persist that answers `Gone`
+does, and a session that replaced the destroyed one may share the identity provider's user session.
+Only on `DESTROYED` does the refusal end the session, and only then does a `REDEEMED` refusal revoke
+its live refresh token. The cookie-mode binding holds no record to compare, ignores the basis and
+always answers `DESTROYED`.
 
 === The handle beside the record
 
@@ -126,7 +180,9 @@ per session -- the record, its current handle and its last-access instant -- and
 handle to session identity. The handle is store-side state and not a component of the record. That
 matters for one interleaving: a refresh that resolved the session before a re-issue and replaces
 the record after it writes the record only, so it leaves the re-issued handle in place and cannot
-put the previous one back.
+put the previous one back. Because the handle is not a component, a re-issue that left the record
+as it was does not supersede the refresh's basis; a re-issue that carried a widened record does, and
+the refresh then writes nothing.
 
 Three rules follow for code that touches sessions:
 
@@ -143,10 +199,15 @@ Three rules follow for code that touches sessions:
 === Why every operation is one monitor-guarded method
 
 Every public method of `InMemorySessionStore` runs under the instance monitor, and no operation is
-split across two calls. The updating writes are the reason: "is the session still there" and "write
-it" must be one step under the lock `destroyById`, `destroyBySid` and `destroyBySub` take, or a
-logout between the two would be undone. Keep it that way when you add an operation: a
-check-then-act across two store calls reopens that window. Three consequences:
+split across two calls. The updating writes are the reason: "is the session still there" -- and, for
+`replaceIfCurrent`, "is it still the record I read" -- and "write it" must be one step under the lock
+every removal path takes -- the four destroy methods (`destroyById`, `destroyBySid`, `destroyBySub`
+and `destroyIfCurrent`), the lazy eviction in `resolve`, the sweep and the per-subject eviction --
+and the other updating write takes too, or a logout or an eviction between the two would be undone
+and a widening between them overwritten. `destroyIfCurrent` follows the same
+rule for a destruction: "is it still the record I read" and "remove it" are one step, or a widening
+between them would be destroyed. Keep it that way when you add an
+operation: a check-then-act across two store calls reopens that window. Three consequences:
 
 * `recordAccess` writes the last-access instant alone, never the record, so it cannot overwrite
   token material a concurrent refresh has just stored.
@@ -168,7 +229,7 @@ sweep runs without the binding.
 
 === What ends with a session
 
-Every path on which the store *ends* a session -- the three destroy methods, the lazy eviction in
+Every path on which the store *ends* a session -- the four destroy methods, the lazy eviction in
 `resolve`, the sweep and the per-subject eviction -- reports the session identity to the
 `SessionEndListener`. `SessionRelayRegistry` is that listener: it closes the WebSocket relays
 tracked under the identity. A write that replaces the record or re-issues the handle goes through

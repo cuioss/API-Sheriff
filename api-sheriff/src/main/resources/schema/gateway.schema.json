@@ -491,6 +491,10 @@
                   "unknown_kid_refresh_window_seconds": {
                     "type": "integer",
                     "description": "Per-issuer window, in seconds, within which a token naming a key id the gateway does not hold triggers at most one JWKS fetch. Applies to 'source: http' only. Omitted resolves to 30. Admitted range: 5 to 3600. Declared on a 'source: file' issuer it is REFUSED AT BOOT, because a file source is never re-fetched and the key would never act. The range is stated here in prose only: the configuration validator is the sole enforcing authority and names the issuer at boot, which is why no minimum or maximum keyword is declared."
+                  },
+                  "max_staleness_seconds": {
+                    "type": "integer",
+                    "description": "Opt-in bound, in seconds, on how long the issuer's loaded key set stays usable while every background JWKS refresh fails. Applies to 'source: http' only. Omitted switches the bound off: the token library's default, which keeps serving the loaded keys indefinitely while refreshes fail. Admitted range: 60 to 604800 (one minute to seven days). Staleness is checked once per refresh cycle, after a cycle that installed no keys, so the issuer degrades at the first failed cycle after the bound has passed: a bound below refresh_interval_seconds behaves like one equal to it and only fails closed sooner. Choose at least three refresh intervals, so a single failed refresh does not degrade the issuer. A degraded issuer keeps its keys but its tokens are rejected and readiness reports it not loaded (jwks: unavailable) until a refresh installs usable keys again; in a single-issuer deployment that takes the gateway out of rotation. Declared on a 'source: file' issuer it is REFUSED AT BOOT, because a file source is never refreshed and the key would never act. The range is stated here in prose only: the configuration validator is the sole enforcing authority and names the issuer at boot, which is why no minimum or maximum keyword is declared."
                   }
                 }
               }

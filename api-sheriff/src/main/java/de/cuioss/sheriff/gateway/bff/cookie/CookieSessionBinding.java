@@ -26,7 +26,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec.CookieSizeBudgetExceededException;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
@@ -74,6 +73,14 @@ import org.jspecify.annotations.Nullable;
  * logout response, the browser again holds a cookie this gateway resolves as a session, until the
  * session's absolute deadline. This is a limit of the stateless mode, not of this method, and the
  * server-mode binding does not share it.
+ * <p>
+ * <strong>Nor can it observe a concurrent widening.</strong> {@link #persist} is handed the record the
+ * refresh was computed from, but this binding holds no record to compare it against, so it ignores it
+ * and never reports the update superseded. A refresh and a widening of one session that overlap each
+ * return a sealed {@code Set-Cookie}, and whichever of the two the browser stores last is the session
+ * it presents next: a refresh that lands after a widening can hand back the session as it stood before
+ * the widening. That is the stated residual of the stateless mode; the server-mode binding, which
+ * compares in the store, does not share it.
  * <p>
  * <strong>No IdP-driven destruction.</strong> A stateless gateway holds no index and cannot reach
  * another browser's cookie, so {@link #idpDestruction()} reports
@@ -254,11 +261,15 @@ public final class CookieSessionBinding implements SessionBinding {
      * minting a new nonce here would change the derived {@link SessionRecord#sessionId()} mid-session
      * and break the refresh coordinator's single-flight coalescing.
      * <p>
-     * <strong>Never reports the session gone.</strong> This binding holds no server-side state, so it
-     * cannot tell whether the browser logged out since the caller resolved the session: the result is
-     * always present. The re-sealed cookie it returns is one this gateway resolves as a session until
-     * the absolute deadline, even when a logout response has already cleared the browser's previous
-     * one (see the class documentation).
+     * <strong>Always reports the update written; {@code basis} is ignored.</strong> This binding holds
+     * no server-side state, so it cannot tell whether the browser logged out since the caller resolved
+     * the session, and it holds no record to compare {@code basis} against, so it cannot tell whether a
+     * widening re-sealed the session meanwhile either: the result is always
+     * {@link PersistResult.Written}, never gone and never superseded. The re-sealed cookie it returns is
+     * one this gateway resolves as a session until the absolute deadline, even when a logout response
+     * has already cleared the browser's previous one, and a refresh and a widening that overlap each
+     * hand the browser a cookie, so whichever the browser stores last is the session it presents next —
+     * the stated residual of this mode (see the class documentation).
      * <p>
      * <strong>Logged at {@code DEBUG} only.</strong> A re-seal is not a new session: it is reached
      * from every refresh and, through {@link #persistReissuingCookie}, from every step-up and
@@ -268,30 +279,19 @@ public final class CookieSessionBinding implements SessionBinding {
      * <p>
      * Thread-safe: the method reads only its arguments and the immutable collaborators.
      *
+     * @param basis   the session the caller resolved; there is nothing here to compare it against, so
+     *                it is not read
      * @param updated the session carrying the new token material
      * @param now     the reference instant, used only for the cookie's remaining {@code Max-Age}
-     * @return the re-sealed session and its single {@code Set-Cookie}; never empty
+     * @return {@link PersistResult.Written} carrying the re-sealed session and its single
+     *         {@code Set-Cookie}; never another result
      * @throws IllegalStateException when the record carries no session nonce, or the sealed value
      *         exceeds the cookie size budget
      */
     @Override
-    public Optional<BoundSession> persist(SessionRecord updated, Instant now) {
-        Objects.requireNonNull(updated, "updated");
-        Objects.requireNonNull(now, "now");
-        Instant loginInstant = updated.expiresAt().minus(codec.sessionTtl());
-        // Fail loud rather than mint a replacement: a cookie-mode record always carries the nonce
-        // sealed at login, so an absent one means a caller reconstructed the record and dropped it —
-        // silently re-minting would change the session's identity mid-flight.
-        String sessionNonce = updated.sessionNonce();
-        if (sessionNonce == null) {
-            throw new IllegalStateException(
-                    "cookie-mode session record carries no sessionNonce — cannot re-seal without changing "
-                            + "the derived session identity");
-        }
-        SealedSessionPayload payload = payloadOf(updated, loginInstant, sessionNonce);
-        String sealedValue = sealValue(payload);
-        LOGGER.debug("Cookie-mode session re-sealed (%s bytes)", sealedValue.length());
-        return Optional.of(toBoundSession(payload, sealedValue, now));
+    public PersistResult persist(SessionRecord basis, SessionRecord updated, Instant now) {
+        Objects.requireNonNull(basis, "basis");
+        return PersistResult.written(reseal(updated, now));
     }
 
     /**
@@ -310,7 +310,30 @@ public final class CookieSessionBinding implements SessionBinding {
      */
     @Override
     public Optional<BoundSession> persistReissuingCookie(SessionRecord updated, Instant now) {
-        return persist(updated, now);
+        return Optional.of(reseal(updated, now));
+    }
+
+    /**
+     * The one re-seal both updating writes share: the login instant re-derived from the absolute
+     * deadline, the nonce carried verbatim, and a {@code DEBUG} line carrying the sealed-value length.
+     */
+    private BoundSession reseal(SessionRecord updated, Instant now) {
+        Objects.requireNonNull(updated, "updated");
+        Objects.requireNonNull(now, "now");
+        Instant loginInstant = updated.expiresAt().minus(codec.sessionTtl());
+        // Fail loud rather than mint a replacement: a cookie-mode record always carries the nonce
+        // sealed at login, so an absent one means a caller reconstructed the record and dropped it —
+        // silently re-minting would change the session's identity mid-flight.
+        String sessionNonce = updated.sessionNonce();
+        if (sessionNonce == null) {
+            throw new IllegalStateException(
+                    "cookie-mode session record carries no sessionNonce — cannot re-seal without changing "
+                            + "the derived session identity");
+        }
+        SealedSessionPayload payload = payloadOf(updated, loginInstant, sessionNonce);
+        String sealedValue = sealValue(payload);
+        LOGGER.debug("Cookie-mode session re-sealed (%s bytes)", sealedValue.length());
+        return toBoundSession(payload, sealedValue, now);
     }
 
     /**
@@ -363,6 +386,25 @@ public final class CookieSessionBinding implements SessionBinding {
         // An expired-by-Max-Age cookie the browser keeps anyway is still refused by resolve()'s
         // server-side TTL check.
         return Optional.of(session);
+    }
+
+    /**
+     * Destroys nothing locally, ignores {@code basis} and reports the destruction done.
+     * <p>
+     * This binding holds no record to compare {@code basis} against, so it can observe neither a logout
+     * nor a concurrent widening and never reports the session gone or superseded — the same residual as
+     * {@link #persist}. A refused refresh and an overlapping widening each answer the browser, and
+     * whichever cookie the browser stores last is the session it presents next.
+     * <p>
+     * Thread-safe: the method reads only its argument.
+     *
+     * @param basis the session as the caller resolved it
+     * @return {@link DestroyResult#DESTROYED}, always
+     */
+    @Override
+    public DestroyResult destroyIfCurrent(SessionRecord basis) {
+        destroy(basis);
+        return DestroyResult.DESTROYED;
     }
 
     @Override

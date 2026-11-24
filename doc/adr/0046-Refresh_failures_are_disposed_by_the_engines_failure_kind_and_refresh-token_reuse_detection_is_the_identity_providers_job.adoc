@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A refused BFF token refresh is disposed by what the identity provider did to the presented refresh token, as the engine classifies the exchange, through a default-free switch over the failure kind — PRE_REDEMPTION keeps the session with a fixed five-second back-off and revokes nothing, CREDENTIAL_REJECTED ends it, REDEEMED ends it and revokes the one live refresh token the gateway can name, a persist failure ends it and revokes the rotated token, and in the server-session BFF a session terminated while its refresh was in flight is not written back and its rotated token is revoked — while oidc.session.refresh.on_failure decides only how the failing request is answered; refresh-token reuse detection is not built in the gateway or the engine, because a confidential client only sees the tokens it presents and a stateless instance cannot share a token family, so the control is strict refresh-token rotation at the identity provider, shipped on in the integration and compose-sample realms and pinned against Keycloak's observed verdict (successor grant revoked, user session survives), with the residual that without it neither side detects reuse and the cost that a cross-instance duplicate refresh ends the session.
+// summary: A refused BFF token refresh is disposed by what the identity provider did to the presented refresh token, as the engine classifies the exchange, through a default-free switch over the failure kind — PRE_REDEMPTION keeps the session with a fixed five-second back-off and revokes nothing, CREDENTIAL_REJECTED ends it, REDEEMED ends it and revokes the one live refresh token the gateway can name — in the server-session BFF both only while the store still holds the record the refresh read, a refusal whose record a widening replaced or whose session is already gone destroying and revoking nothing — a persist failure ends it and revokes the rotated token, and in the server-session BFF a refresh that lost a race abandons its rotated token unrevoked — a session terminated while its refresh was in flight (a logout, a back-channel logout, a login callback that replaced it, an expiry sweep or an eviction) is not written back and the refresh ends nothing itself, answering no session without a clearing cookie, and a refresh whose session a widening replaced meanwhile is superseded, writes nothing and keeps the session — because a grant-level revocation could end a replacement or widened session that shares the identity provider's user session — while oidc.session.refresh.on_failure decides only how the failing request is answered; refresh-token reuse detection is not built in the gateway or the engine, because a confidential client only sees the tokens it presents and a stateless instance cannot share a token family, so the control is strict refresh-token rotation at the identity provider, shipped on in the integration and compose-sample realms and pinned against Keycloak's observed verdict (successor grant revoked, user session survives), with the residual that without it neither side detects reuse and the cost that a cross-instance duplicate refresh ends the session.
 // tags: bff, oidc, refresh-token, session, reuse-detection, token-rotation, failure-classification, fail-closed, identity-provider, revocation, operator-control
 // affects: api-sheriff, integration-tests, deployment
 // supersedes:
@@ -31,7 +31,7 @@ Accepted
 A BFF session holds a refresh token. When the mediated access token nears expiry, the gateway redeems it
 through the confidential-client engine. It persists the rotated tokens through the `SessionBinding` seam of
 link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018].
-That redemption can fail in five ways, and what the gateway may safely do depends on what the identity provider did
+That redemption can fail in six ways, and what the gateway may safely do depends on what the identity provider did
 with the presented token:
 
 * *The identity provider never processed the grant:* a connection or DNS failure, a `5xx`, or a `4xx` it did not
@@ -43,8 +43,13 @@ with the presented token:
   successor may now be live that no session holds.
 * *The redemption succeeded, but the rotated session could not be persisted.* The presented token is spent and the
   returned one is orphaned.
-* *The redemption succeeded, but the session was terminated meanwhile.* A logout or a back-channel logout destroyed the
-  session while the exchange was in flight. Writing the rotated session would bring a logged-out session back.
+* *The redemption succeeded, but the session was terminated meanwhile.* A logout, a back-channel logout, a login callback
+  that replaced the session, an expiry sweep or an eviction destroyed it while the exchange was in flight. Writing the
+  rotated session would bring a terminated session back, and clearing the browser's cookie could delete the cookie a login
+  callback has just set for the replacement session.
+* *The redemption succeeded, but the session moved on meanwhile.* A widening or a step-up replaced the session's record
+  while the exchange was in flight. The rotated session was computed from the earlier record, so writing it would overwrite
+  the later grant's scopes, refresh token, `acr` and `auth_time`.
 
 A second question sits beside the first. RFC 9700 §4.14 asks for refresh-token rotation with reuse detection: a replayed,
 already-rotated token revokes the grant. That detection must live somewhere. A confidential client only sees the refresh
@@ -74,15 +79,17 @@ engine therefore fails compilation rather than inheriting a disposition.
 | `ApiSheriff-127`
 
 | `CREDENTIAL_REJECTED`
-| Ended.
+| Ended. In the server-session BFF only while the store still holds the record the refresh read; when a widening replaced
+  the record or the session is already gone, nothing is destroyed and the request is answered as *no session* (see below).
 | Nothing. Nothing was redeemed.
-| `ApiSheriff-111` `credential-rejected`
+| `ApiSheriff-111` `credential-rejected`; `DEBUG` only when the record was replaced or the session already gone
 
 | `REDEEMED`
-| Ended.
+| Ended. In the server-session BFF only while the store still holds the record the refresh read; when a widening replaced
+  the record or the session is already gone, nothing is destroyed and the request is answered as *no session* (see below).
 | The one live refresh token the gateway can name: the successor when rotated, the presented token when not rotated, none when
-  rotation is unknown.
-| `ApiSheriff-111` `redeemed-response-refused`
+  rotation is unknown. Nothing when the record was replaced or the session already gone.
+| `ApiSheriff-111` `redeemed-response-refused`; `DEBUG` only when the record was replaced or the session already gone
 
 | Persist failure
 | Ended.
@@ -90,38 +97,112 @@ engine therefore fails compilation rather than inheriting a disposition.
 | `ApiSheriff-111` `persist-failure`
 
 | Session terminated at the persist (server-session BFF)
-| Stays ended. A logout or a back-channel logout destroyed it while the refresh was in flight. The gateway does not write the
-  rotated session.
-| The refresh token the exchange returned.
-| `ApiSheriff-111` `session-terminated`
+| Stays ended. A logout, a back-channel logout, a login callback that replaced it, an expiry sweep or an eviction destroyed
+  it while the refresh was in flight. The gateway does not write the rotated session, ends nothing itself, and the request
+  is answered as *no session*, without a clearing cookie.
+| None. The refresh token the exchange returned is abandoned, not revoked: a replacement session may share the identity
+  provider's user session, and revoking it could end that session.
+| `DEBUG` only
+
+| Superseded at the persist (server-session BFF)
+| Kept, as the widening or step-up that replaced its record left it. The gateway does not write the rotated session, and the
+  request is answered as *no session*.
+| None. The refresh token the exchange returned is abandoned, not revoked: revoking it could end the client session the
+  widened grant shares.
+| `DEBUG` only
 |===
 
-The engine classifies neither of the last two rows: in both, the exchange succeeded. They differ in what the `SessionBinding`
+The engine classifies none of the last three rows: in each, the exchange succeeded. They differ in what the `SessionBinding`
 seam answered when the gateway wrote the rotated session:
 
 * A *persist failure* is the binding raising an error. It could not hold a session that was still there, for example a sealed
   session cookie past its size budget. This is a fault to investigate, and the record carries the causing exception.
-* *Session terminated at the persist* is the binding reporting the session gone. The seam's updating write never creates a
-  session (ADR-0018), so the gateway does not write back a session a logout destroyed. A logout overtook a refresh, and the
-  record carries no exception.
+* *Session terminated at the persist* is the binding answering *gone*. The seam's updating write never creates a
+  session (ADR-0018), so the gateway does not write back a session a logout destroyed. A termination overtook a refresh:
+  this refresh did not end the session, whatever destroyed it did, so the refresh ends nothing either. Nothing is marked
+  ended and no `ApiSheriff-111` is recorded, because whatever ended the session owns that end; a `DEBUG` line carrying
+  neither token nor session id records the disposition. The request is answered as *no session*, so the stage sends no
+  clearing cookie. A clearing cookie here would be harmful: a login callback in the same browser destroys the session it
+  presents and sets a cookie for its replacement, and a clearing response from the overtaken refresh can reach the browser
+  after the callback's own response and delete that new cookie. A genuine logout that raced the refresh still leaves the
+  browser unauthenticated: the next request presents the cookie of a session that is really gone, which resolves no session
+  and is answered like any unauthenticated request. The refresh lost a race to a session destruction, so it abandons its
+  rotated refresh token rather than revoking it. That the session the token belonged to has ended does not make a revocation
+  safe. A login
+  callback in the same browser destroys the session it presents and replaces it with a new one, and that new login may reuse
+  the identity provider's user session through silent single sign-on; a grant-level revocation of the rotated token could then
+  end, at the identity provider, the session that replaced it. The abandonment leaves a residual risk on a genuine logout
+  as well. RP-initiated logout revokes the refresh token of the record it destroys, or the resolved record's when the
+  session was already gone at the destruction
+  (link:0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]).
+  This residual arises when the logout destroys the session before the refresh persists: the destroyed record still holds
+  the presented token the rotation has spent, and the rotated successor is never stored, so it cannot be revoked. A
+  back-channel logout comes from an identity provider that has ended its own
+  session. Whether either also invalidates the rotated successor is the identity provider's policy: RFC 7009 lets it revoke
+  the other tokens of the grant but does not require it. The abandoned token never reaches the browser and no copy is held,
+  so it is held by nobody, but it can stay valid at the identity provider until its refresh-token lifetime ends. That is the
+  same accepted residual as the superseded row below.
+* *Superseded at the persist* is the binding answering *superseded*. The refresh passes the record it resolved as the basis
+  of its write, and the binding writes only while the stored record is still that basis, comparing and replacing in one
+  atomic step under the store's lock (`SessionStore.replaceIfCurrent`). A widening overtook a refresh: the session lives on under the cookie value the widening re-issued, so
+  nothing is destroyed, nothing is marked ended and no `ApiSheriff-111` is recorded. The rotated refresh token is live at the
+  identity provider and held nowhere, yet it is abandoned rather than revoked. The widening is an authorization-code flow for
+  the same client on the identity provider's own session, so the refresh token it stored belongs to the same grant and client
+  session as the rotated one. RFC 7009 lets the authorization server revoke the whole grant on a revocation, and Keycloak
+  answers a refresh-token revocation by detaching the revoking client from the user session the token belongs to — the
+  `BffLogoutIT` integration suite pins that detachment against a live realm. Revoking the rotated token could therefore end,
+  at the identity provider, the very session this row keeps. That its next refresh would then fail as credential-rejected is
+  reasoning from the pinned detachment, not something a test asserts. The rotated token never reaches the
+  browser and no copy is held, so it lapses under the identity provider's refresh-token lifetime. That is already the fate of
+  the rotated token when the two writes land in the other order: a refresh persists first, the widening then replaces the
+  record, and the refresh token it stored is dropped without revocation.
 
-Only a binding that holds server-side state can report the second, so that row applies to the server-session BFF. A stateless
-binding cannot observe a logout and re-seals the rotated session.
+*A refusal ends only the session it read.* A widening or a step-up replaces the record through the binding's re-issuing write,
+which does not pass the coordinator's single-flight, so it can land while a refused exchange is in flight. The
+`CREDENTIAL_REJECTED` and `REDEEMED` rows therefore destroy the session through the binding's conditional destruction
+(`SessionBinding.destroyIfCurrent`): the binding removes the record only while it is still the one the refresh resolved,
+comparing and removing in one atomic step under the store's lock (`SessionStore.destroyIfCurrent`). When the record was
+replaced, nothing is destroyed, nothing is marked ended, nothing is revoked and no `ApiSheriff-111` is recorded; the request is
+answered as *no session*, exactly as on the superseded row. A destruction by identity would otherwise remove the record the
+widening just wrote and log the user out. Nothing is revoked for the reason the superseded row gives: the replacing write may
+share the identity provider's user session, and a grant-level revocation could end it. When the store still holds the record
+the refresh read, the two rows are unchanged.
 
-Both refresh legs share all five rows: the near-expiry refresh and the scope-driven one of
+When the session is already gone — a logout, a back-channel logout, a login callback that replaced the session, an expiry
+sweep or an eviction ended it while the exchange was in flight — the binding answers *gone*, and the refusal ends nothing
+either. It lost a race to a session destruction exactly as a refresh whose persist finds the session gone, so it takes the
+same disposition as the terminated row: nothing is destroyed, nothing is marked ended, nothing is revoked and no
+`ApiSheriff-111` is recorded, because whatever ended the session owns that end. The request is answered as *no session*, without a clearing cookie, and a `DEBUG` line
+carrying neither token nor session id records the disposition. A `REDEEMED` refusal therefore abandons the live refresh token
+it names rather than revoking it: a login callback's replacement session may share the identity provider's user session, and
+a grant-level revocation could end it. The token is held by nobody and lapses under the identity provider's refresh-token
+lifetime — the accepted residual of the terminated row.
+
+Only a binding that holds server-side state can answer *gone* or *superseded*, so those two rows, and the conditional destruction
+of a refusal, apply to the server-session BFF. A stateless binding cannot observe a logout or a concurrent widening and re-seals the rotated session; when a refresh and
+a widening overlap there, whichever cookie the browser stores last wins.
+
+Both refresh legs share all six rows: the near-expiry refresh and the scope-driven one of
 link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057].
 A request coalesced on the session's single-flight receives the leader's outcome in each.
 
 Revocation goes through the engine's RFC 7009 `RevocationClient`, built from the same back-channel client configuration the
 refresh uses. It is best-effort. The gateway records a failed revocation at `DEBUG`, and it never changes the disposition,
-because destroying the local session is what ends the session. Every session-ending disposition clears the session cookie on
-the response.
+because destroying the local session is what ends the session. Every disposition in which the refresh itself ends the session
+clears the session cookie on the response; a refresh that found its session gone or superseded ends nothing and clears
+nothing.
 
-The revocation runs after the disposition:
+On every row that revokes, the revocation runs after the disposition:
 
 . The gateway destroys the session and records `ApiSheriff-111` synchronously.
 . It publishes the session-ended outcome to the failing request and to every request coalesced on the single-flight.
 . Only then does it dispatch the revocation, off the request path, on the virtual-thread executor.
+
+Only the `REDEEMED` and persist-failure rows revoke: in both, the refresh itself ends the session. The terminated and
+superseded rows revoke nothing, so this ordering does not apply to them. On both the gateway destroys nothing, records nothing
+above `DEBUG` and publishes the *no session* outcome to the request and every coalesced one. A `REDEEMED` refusal whose
+record was superseded, or whose session was already gone, takes that same path: it destroys and revokes nothing, so the
+ordering does not apply to it either.
 
 A slow or hanging revocation endpoint therefore delays the revocation and nothing else. A fixed limit bounds concurrent
 revocations. When the limit is saturated the gateway skips the revocation and records it at `DEBUG`, and it swallows a refused
@@ -151,8 +232,10 @@ serialises untracked refreshes to one in flight, only until the saturating windo
 
 The coordinator's outcome reaches `SessionAuthenticationStage` as a sealed result with four members: *mediate*, *session ended*
 (clear the cookie, then respond), *request failed* (respond and keep the cookie, because the session is live) and *no session*
-(respond and keep the cookie). The last one means the refresh leader resolved no session from this request's own cookie. The
-coordinator destroyed nothing, and the browser may already hold a cookie a step-up has just re-issued. The stage answers all three
+(respond and keep the cookie). The last one means the refresh leader resolved no session from this request's own cookie, that
+its persist or its refusal was superseded by a widening or a step-up, or that its persist or its refusal found the session
+already gone. The coordinator destroyed nothing, and the browser may already hold a cookie a step-up or a widening has just
+re-issued, or one a login callback has just set for a replacement session. The stage answers all three
 failure members through the effective `on_failure` value:
 
 * `reauthenticate`, the default also when the key is omitted, re-drives the login negotiation for navigations and answers `401`
@@ -246,7 +329,14 @@ provider holds the refresh-token lineage, so it owns reuse detection.
 === Properties of the design
 
 * An outage no longer logs every user out: sessions survive pre-redemption failures and retry on a bounded schedule.
-* The gateway revokes a spent-but-orphaned refresh token where it can name it.
+* The gateway revokes a spent-but-orphaned refresh token where it can name it and the refresh itself ended the session: a
+  refused redeemed response that destroyed the record it read, and a persist failure. It does not revoke the live token of a
+  refresh that lost a race — one superseded by a widening, whose grant the kept session still shares, or one whose session a
+  logout, a back-channel logout, a login callback, an expiry sweep or an eviction destroyed, whose replacement may share the
+  identity provider's user session, whether the refresh found the session gone at its persist or at its refusal. Such a token
+  lapses under the identity provider's refresh-token lifetime.
+* A refresh that lost a race ends nothing and clears no cookie, so it cannot delete the cookie of a session that replaced
+  the one it read.
 * `on_failure: reject` exists, and a misspelling gets a boot refusal.
 * Reuse detection works for both BFF variants, across stateless instances, with no gateway-side state. A cookie-based replay, the one case reachable
   through the gateway, is rejected end to end.
@@ -280,6 +370,7 @@ provider holds the refresh-token lineage, so it owns reuse detection.
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the `SessionBinding` seam that persists and destroys the rotated session
 * link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]: the back-channel client configuration the refresh and the revocation are built from
 * link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]: the scope-driven refresh leg
+* link:0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]: the logout leg that revokes the session's own refresh token; whether that also invalidates the successor a terminated refresh abandons is the identity provider's policy
 * link:../configuration/authentication-and-oidc.adoc#_refresh_failure_dispositions[Configuration reference]: the per-kind table and `session.refresh.on_failure`
 * link:../security-threat-model.adoc[Security threat model]: BFF-08, refresh-token rotation and reuse detection
 * link:../variants/03-bff-cookie.adoc[Variant 3]: the concurrent-refresh race

@@ -28,7 +28,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
 
-
 import de.cuioss.tools.logging.CuiLogger;
 
 /**
@@ -44,13 +43,17 @@ import de.cuioss.tools.logging.CuiLogger;
  * {@link #removeInternal} seam, so a removed session never leaves a handle behind.
  * <p>
  * <strong>Three writes.</strong> {@link #create} stores a new session and is the login's write.
- * {@link #replaceIfPresent} updates a session that already exists — the write a refresh makes — and
- * keeps the handle the store holds for it. {@link #replaceAndReissueHandle} updates it and swaps the
- * handle — the write a step-up or a widening makes. Neither updating write stores anything when the id
- * is not held, so a write that was in flight while the session was destroyed does not bring it back.
- * In each of them the presence check and the write run under the same monitor as
- * {@link #destroyById}, {@link #destroyBySid} and {@link #destroyBySub}, so no destruction can take
- * effect between them.
+ * {@link #replaceIfCurrent} updates a session that already exists — the write a refresh makes — only
+ * while the stored record is still the one the caller read, and keeps the handle the store holds for
+ * it. {@link #replaceAndReissueHandle} updates it and swaps the handle — the write a step-up or a
+ * widening makes. Neither updating write stores anything when the id is not held, so a write that was
+ * in flight while the session was destroyed does not bring it back, and {@link #replaceIfCurrent}
+ * stores nothing either when a widening replaced the record since its caller read it. In each of them
+ * the check and the write run under the same monitor as every path that removes a session — the four
+ * destroy methods ({@link #destroyById}, {@link #destroyBySid}, {@link #destroyBySub} and
+ * {@link #destroyIfCurrent}), the lazy eviction in {@link #resolve}, the sweep ({@link #sweepExpired})
+ * and the per-subject eviction of a {@link #create} — and as the other updating write, so no
+ * destruction, no eviction and no other write can take effect between them.
  * <p>
  * <strong>The handle is store-side state, not a component of the record.</strong> A refresh that
  * resolved the session before a re-issue and replaces the record after it writes the record only: the
@@ -82,8 +85,9 @@ import de.cuioss.tools.logging.CuiLogger;
  * session takes, so a subject at its own bound is never refused by a full store. Only a creation
  * applies the bound; an updating write never ends another session.
  * <p>
- * <strong>Ended sessions are reported.</strong> Every path on which a session <em>ends</em> — the three
- * destroy methods, the lazy eviction in {@link #resolve}, the sweep, and the per-subject eviction —
+ * <strong>Ended sessions are reported.</strong> Every path on which a session <em>ends</em> — the four
+ * destroy methods ({@link #destroyById}, {@link #destroyBySid}, {@link #destroyBySub} and
+ * {@link #destroyIfCurrent}), the lazy eviction in {@link #resolve}, the sweep, and the per-subject eviction —
  * reports the session's identity to the {@link SessionEndListener}, so that whatever was opened with
  * the session can be closed with it. A write that replaces a session's record or re-issues its cookie
  * handle reports nothing: the session lives on. The listener is called only after the monitor has been
@@ -228,27 +232,32 @@ public final class InMemorySessionStore implements SessionStore {
     }
 
     @Override
-    public synchronized boolean replaceIfPresent(SessionRecord session) {
-        Objects.requireNonNull(session, SESSION_PARAMETER);
-        // The presence check and the replacement share this monitor with every destroy method, so a
-        // logout or a back-channel logout either ran before the check — and nothing is written — or
-        // runs after the replacement and removes it. There is no window in which a destroyed session
-        // is written back.
-        HeldSession held = byId.get(session.sessionId());
+    public synchronized ReplaceOutcome replaceIfCurrent(SessionRecord basis, SessionRecord replacement) {
+        Objects.requireNonNull(basis, "basis");
+        Objects.requireNonNull(replacement, "replacement");
+        // The comparison and the replacement share this monitor with every destroy method and with
+        // replaceAndReissueHandle, so a logout, a back-channel logout or a widening either ran before
+        // the comparison — and nothing is written — or runs after the replacement. There is no window
+        // in which a destroyed session is written back or a widening is overwritten.
+        HeldSession held = byId.get(replacement.sessionId());
         if (held == null) {
-            return false;
+            return ReplaceOutcome.ABSENT;
+        }
+        if (!held.session.equals(basis)) {
+            // Another updating write replaced the record the caller computed its replacement from.
+            return ReplaceOutcome.SUPERSEDED;
         }
         // The handle is the one held NOW, read under the monitor: a re-issue that ran since the caller
         // resolved the session stays in force.
-        store(session, held.cookieHandle, held.lastAccess, held.creationOrder);
-        return true;
+        store(replacement, held.cookieHandle, held.lastAccess, held.creationOrder);
+        return ReplaceOutcome.REPLACED;
     }
 
     @Override
     public synchronized boolean replaceAndReissueHandle(SessionRecord session, String newCookieHandle) {
         Objects.requireNonNull(session, SESSION_PARAMETER);
         Objects.requireNonNull(newCookieHandle, "newCookieHandle");
-        // One atomic step with every destroy method, exactly as replaceIfPresent: a session destroyed
+        // One atomic step with every destroy method, exactly as replaceIfCurrent: a session destroyed
         // before the check is not written back and its new handle is never registered.
         HeldSession held = byId.get(session.sessionId());
         if (held == null) {
@@ -333,7 +342,7 @@ public final class InMemorySessionStore implements SessionStore {
      * <p>
      * The record is read and removed under the instance monitor every write takes, so it is exactly
      * the one the last write stored: the record {@link #create} stored, for a session never updated
-     * since, otherwise the one the last {@link #replaceIfPresent} or {@link #replaceAndReissueHandle}
+     * since, otherwise the one the last {@link #replaceIfCurrent} or {@link #replaceAndReissueHandle}
      * stored. The end of the session is reported to the {@link SessionEndListener} after the monitor
      * has been left.
      */
@@ -347,6 +356,31 @@ public final class InMemorySessionStore implements SessionStore {
             }
             endInternal(sessionId);
             return Optional.of(held.session);
+        });
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * The comparison and the removal run under the instance monitor every write takes, so a widening's
+     * {@link #replaceAndReissueHandle} either ran before the comparison — and nothing is removed — or
+     * runs after the removal and finds the session gone. The end of the session is reported to the
+     * {@link SessionEndListener} after the monitor has been left; a refused destruction reports nothing.
+     */
+    @Override
+    public DestroyOutcome destroyIfCurrent(SessionRecord basis) {
+        Objects.requireNonNull(basis, "basis");
+        return announcingEnds(() -> {
+            HeldSession held = byId.get(basis.sessionId());
+            if (held == null) {
+                return DestroyOutcome.ABSENT;
+            }
+            if (!held.session.equals(basis)) {
+                // Another updating write replaced the record the caller decided the destruction on.
+                return DestroyOutcome.SUPERSEDED;
+            }
+            endInternal(basis.sessionId());
+            return DestroyOutcome.DESTROYED;
         });
     }
 
