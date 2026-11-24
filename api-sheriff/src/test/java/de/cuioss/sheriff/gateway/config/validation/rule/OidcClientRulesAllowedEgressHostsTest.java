@@ -147,7 +147,8 @@ class OidcClientRulesAllowedEgressHostsTest {
      */
     static Stream<Arguments> engineRefusedEntries() {
         return Stream.of(
-                Arguments.of("a control character", "keycloak\u0007", "must not contain control characters", "keycloak"),
+                Arguments.of("a control character", "keycloak" + (char) 0x07, "must not contain control characters",
+                        "keycloak"),
                 Arguments.of("inner whitespace", "key cloak", "must not contain whitespace", "keycloak"),
                 Arguments.of("a non-ASCII character", "kéycloak", "must contain ASCII characters only", "keycloak"),
                 Arguments.of("a URL", "https://keycloak", "must be a bare host, not a URL", "keycloak"),

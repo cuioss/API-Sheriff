@@ -41,8 +41,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for the {@link TokenValidationRules} rule the {@link ConfigValidator} runs that refuses an unusable
- * {@code token_validation.issuers[].jwks.allowed_egress_hosts} entry: a blank or whitespace-only entry
- * and a {@code host:port} entry of an {@code http}-sourced issuer.
+ * {@code token_validation.issuers[].jwks.allowed_egress_hosts} entry of an {@code http}-sourced issuer:
+ * a blank or whitespace-only entry, a {@code host:port} entry, and every other entry the egress guard's
+ * shape check refuses.
  * <p>
  * Every case drives the full default validator, so a rule dropped from its registration fails here as
  * surely as a rule whose body is removed. Errors are filtered to the allowlist pointers, because the
@@ -164,7 +165,7 @@ class TokenValidationRulesJwksEgressTest {
 
         static Stream<Arguments> refusedEntries() {
             return Stream.of(
-                    Arguments.of("a control character", "keycloak\u0007", "must not contain control characters",
+                    Arguments.of("a control character", "keycloak" + (char) 0x07, "must not contain control characters",
                             "keycloak"),
                     Arguments.of("inner whitespace", "key cloak", "must not contain whitespace", "keycloak"),
                     Arguments.of("a non-ASCII character", "kéycloak", "must contain ASCII characters only",
