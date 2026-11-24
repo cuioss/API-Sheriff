@@ -3181,6 +3181,15 @@ so an orchestrator holds traffic back from an instance that would reject every b
 deployment adds the fixed tokens `oidc=<mode>` and `oidc_discovery` (`not-attempted`, `resolved` or
 `failed`); they never change the verdict, and the payload still discloses no issuer, URL or cause
 (link:adr/0079-The_oidc_discovery_readiness_datum_reports_provider-metadata_resolution_and_never_changes_the_verdict.adoc[ADR-0079]).
+Since token-sheriff 0.9.10 that datum is read from the engine's `CachingDiscoveryResolver`, through
+which every BFF leg resolves the provider metadata. A resolved document is served for one hour and then
+refreshed through the full engine discovery checks, so a changed provider endpoint is picked up without
+a restart; a refused document never replaces the cached one. While refreshes fail the stale document is
+served for a 24-hour grace period, after which login and refresh fail closed; a failed refresh is retried
+no sooner than 30 seconds later, so an outage is not hit by every request. The values are fixed, not
+configuration keys
+(link:adr/0084-A_refreshed_ID_token_that_fails_the_OIDC_refresh-result_checks_ends_the_session.adoc[ADR-0084]).
+Before 0.9.10 the first resolved document was kept for the process lifetime and never failed closed.
 A failed load is retried after 1 s, doubling per attempt and capped at 30 s (never above the refresh
 interval), driven by a scheduler only: neither bearer requests nor the readiness probe can trigger a
 fetch, and at most one attempt is in flight per issuer, so the retry cannot be turned into a fetch
@@ -3272,10 +3281,29 @@ session. Whether the provider also invalidates the rotated successor is provider
 never reaches the browser and no copy is kept -- but it can stay valid at the provider until the
 provider's refresh-token lifetime ends, the same residual as a refresh superseded by a widening
 (<<bff-17>>). Revocation on the refresh path
-is therefore confined to the two dispositions in which the refresh itself ends the session. The gateway's own part in the
+is therefore confined to the three dispositions in which the refresh itself ends the session. The gateway's own part in the
 concurrency half is `TokenRefreshCoordinator`'s single-flight *per session, per instance*: concurrent
 requests on one session share one redemption, so one instance never presents the same token twice
 and never forks the family itself.
+
+*Control -- a refresh cannot rotate another identity into the session (closed gap, token-sheriff
+0.9.10).* Until 0.9.10 the gateway persisted whatever a processed refresh returned: the engine's
+refresh flow validates the refreshed access token but leaves the refreshed ID token, and whose session
+the refresh belongs to, to its caller. A refresh response could therefore rotate an ID token of a
+foreign issuer or a foreign subject into the session, which would carry that identity from then on.
+`TokenRefreshCoordinator` now runs the engine's `RefreshResultVerifier` (OIDC Core 12.2) on every
+processed refresh before anything of it is built or persisted, bound to the session's subject: the
+refreshed ID token is validated through the gateway's ID-token pipeline, refused when its `iss` or
+`sub` differs from the refreshed access token's, and the refreshed access token is refused unless it
+names the session's subject. A refusal, or any other failure of the verification, ends the session
+like a persist failure -- destroyed, presented token marked ended, returned refresh token revoked
+best-effort -- and records `WARN ApiSheriff-153` followed by `ApiSheriff-111`
+(`refresh-result-refused`), neither carrying an exception, token, subject, issuer or claim value. A
+response without an ID token keeps the session's previous one
+(link:adr/0084-A_refreshed_ID_token_that_fails_the_OIDC_refresh-result_checks_ends_the_session.adoc[ADR-0084]).
+*Residual (accepted):* the subject binding fails closed on a refreshed access token without `sub`, so
+an identity provider configured to omit `sub` from access tokens ends every session at its first
+refresh.
 
 *Observed Keycloak behaviour (the pinned Keycloak image, `integration-tests/docker-compose.yml`,
 pinned by `BffRefreshReuseIT`).* On a detected replay
@@ -3328,7 +3356,9 @@ detection signal rotation exists to provide -- an operator decision, never a gat
 `credential-rejected` record; Keycloak's successor revocation and surviving user session are pinned;
 a targeted IdP revocation ends exactly one server-mode session while its sibling keeps refreshing;
 concurrent refreshes on one session within an instance make one redemption; cookie mode never
-exposes the refresh token to the browser.
+exposes the refresh token to the browser. A refresh response whose ID token names a foreign subject or
+a foreign issuer ends the session, persists nothing and revokes the returned refresh token, and the
+assertion goes red when the verifier call is removed (`TokenRefreshCoordinatorTest`).
 
 [#bff-09]
 === BFF-09 -- Logout (back-channel token validation, logout CSRF, RP-initiated open redirect, fixation)

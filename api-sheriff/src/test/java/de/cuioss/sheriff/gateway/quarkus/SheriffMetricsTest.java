@@ -19,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.annotation.Annotation;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -39,8 +41,6 @@ import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus.KeySetState;
-import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus;
-import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus.State;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
@@ -52,6 +52,9 @@ import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics.InboundBodyAbortDisposition;
+import de.cuioss.sheriff.gateway.testsupport.StubDiscovery;
+import de.cuioss.sheriff.token.client.discovery.CachingDiscoveryResolver;
+import de.cuioss.sheriff.token.client.discovery.DiscoveryCacheStatus.State;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.enterprise.inject.Instance;
@@ -74,7 +77,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * the bounded {@code session_fallback} authentication-branch counter),
  * and {@link GatewayReadinessCheck} reflects configuration, JWKS status, and — for an active BFF
  * runtime in {@code server} or {@code cookie} mode — an {@code oidc=<mode>} datum beside an
- * {@code oidc_discovery} datum read from the non-fetching {@link DiscoveryStatus}, which is reported
+ * {@code oidc_discovery} datum read from the non-fetching status of the engine
+ * {@link CachingDiscoveryResolver}, which is reported
  * but never changes the UP/DOWN verdict.
  */
 class SheriffMetricsTest {
@@ -840,10 +844,12 @@ class SheriffMetricsTest {
         @Test
         @DisplayName("a session mode whose runtime is inactive carries neither the oidc nor the oidc_discovery datum")
         void inactiveRuntimeCarriesNoDiscoveryDatum() {
-            // The producer hands out the inert view when it builds no runtime (no redirect_uri, say), so the
-            // probe reads applicability off the view rather than off the bare presence of a mode.
-            GatewayConfig config = configWith(null, null, bffMode(OidcConfig.Session.MODE_SERVER));
-            GatewayReadinessCheck check = notApplicableCheck(config, DiscoveryStatus.inert());
+            // The producer builds no runtime without a redirect_uri, and the probe shares its activation
+            // predicate rather than reading the bare presence of a mode — so the resolver is never resolved.
+            OidcConfig withoutRedirect = OidcConfig.builder()
+                    .session(OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_SERVER).build()).build();
+            GatewayConfig config = configWith(null, null, withoutRedirect);
+            GatewayReadinessCheck check = notApplicableCheck(config, FakeInstance.mustNotResolve());
 
             Map<String, Object> data = check.call().getData().orElseThrow();
 
@@ -852,16 +858,15 @@ class SheriffMetricsTest {
         }
 
         @Test
-        @DisplayName("the probe only reads the discovery view and never triggers the fetch")
+        @DisplayName("the probe only reads the discovery resolver's status and never triggers the fetch")
         void probeNeverTriggersTheFetch() {
-            DiscoveryStatus status = DiscoveryStatus.tracking();
             AtomicInteger fetches = new AtomicInteger();
-            status.recording(() -> {
+            CachingDiscoveryResolver resolver = StubDiscovery.caching(() -> {
                 fetches.incrementAndGet();
-                return "provider-metadata";
-            });
+                return StubDiscovery.metadata();
+            }, Duration.ofHours(1), Duration.ZERO, InstantSource.fixed(Instant.EPOCH));
             GatewayConfig config = configWith(null, null, bffMode(OidcConfig.Session.MODE_SERVER));
-            GatewayReadinessCheck check = notApplicableCheck(config, status);
+            GatewayReadinessCheck check = notApplicableCheck(config, FakeInstance.resolving(resolver));
 
             for (int poll = 0; poll < 5; poll++) {
                 check.call();
@@ -1023,6 +1028,19 @@ class SheriffMetricsTest {
          *         list — and turns {@code discoveryNeverChangesTheVerdict} red at the
          *         {@code discovery(State)} precondition until that helper can drive it
          */
+        /** The pinned datum text per engine state: exactly the three tokens ADR-0079 defines. */
+        private static final Map<State, String> DATUM_TOKENS = Map.of(State.NOT_ATTEMPTED, "not-attempted",
+                State.RESOLVED, "resolved", State.FAILED, "failed");
+
+        @Test
+        @DisplayName("oidc_discovery keeps exactly the three ADR-0079 tokens, one per engine state")
+        void discoveryDatumTextIsPinned() {
+            assertEquals(Set.of(State.values()), DATUM_TOKENS.keySet(), "every engine state has a pinned token");
+            for (State state : State.values()) {
+                assertEquals(DATUM_TOKENS.get(state), GatewayReadinessCheck.discoveryToken(state));
+            }
+        }
+
         static Stream<Arguments> modeAndDiscoveryState() {
             return Stream.of(OidcConfig.Session.MODE_SERVER, OidcConfig.Session.MODE_COOKIE)
                     .flatMap(mode -> Arrays.stream(State.values()).map(state -> Arguments.of(mode, state)));
@@ -1046,7 +1064,8 @@ class SheriffMetricsTest {
                     () -> assertEquals(HealthCheckResponse.Status.UP, response.getStatus(),
                             "the provider-metadata datum never flips readiness"),
                     () -> assertEquals(mode, data.get("oidc")),
-                    () -> assertEquals(discoveryState.token(), data.get("oidc_discovery")),
+                    () -> assertEquals(DATUM_TOKENS.get(discoveryState), data.get("oidc_discovery"),
+                            "the datum text is pinned per engine state (ADR-0079)"),
                     () -> assertEquals(BFF_VALIDATING_UP_KEYS, data.keySet(),
                             "the payload carries exactly these data, nothing retired"));
         }
@@ -1107,12 +1126,12 @@ class SheriffMetricsTest {
 
         /** A probe without an active BFF runtime whose validator resolves and whose key-set view is {@code keySets}. */
         private GatewayReadinessCheck checkWith(GatewayConfig config, IssuerKeySetStatus keySets) {
-            return checkWith(config, keySets, DiscoveryStatus.inert());
+            return checkWith(config, keySets, FakeInstance.mustNotResolve());
         }
 
-        /** A probe whose validator resolves, whose key-set view is {@code keySets} and whose discovery view is {@code discovery}. */
+        /** A probe whose validator resolves, whose key-set view is {@code keySets} and whose discovery resolver is {@code discovery}. */
         private GatewayReadinessCheck checkWith(GatewayConfig config, IssuerKeySetStatus keySets,
-                DiscoveryStatus discovery) {
+                Instance<CachingDiscoveryResolver> discovery) {
             return new GatewayReadinessCheck(config, FakeInstance.resolving(null), FakeInstance.resolving(keySets),
                     discovery);
         }
@@ -1122,58 +1141,45 @@ class SheriffMetricsTest {
          * key-set view must stay unresolved.
          */
         private GatewayReadinessCheck failingCheck(GatewayConfig config, RuntimeException failure) {
-            return failingCheck(config, failure, DiscoveryStatus.inert());
+            return failingCheck(config, failure, FakeInstance.mustNotResolve());
         }
 
         /** A probe whose validator resolution throws {@code failure}; the key-set view must stay unresolved. */
         private GatewayReadinessCheck failingCheck(GatewayConfig config, RuntimeException failure,
-                DiscoveryStatus discovery) {
+                Instance<CachingDiscoveryResolver> discovery) {
             return new GatewayReadinessCheck(config, FakeInstance.failing(failure), FakeInstance.mustNotResolve(),
                     discovery);
         }
 
         /**
          * A probe for a gateway without {@code token_validation} and without an active BFF runtime:
-         * neither the validator nor the key-set view may be resolved on that leg.
+         * neither the validator, nor the key-set view, nor the discovery resolver may be resolved.
          */
         private GatewayReadinessCheck notApplicableCheck(GatewayConfig config) {
-            return notApplicableCheck(config, DiscoveryStatus.inert());
+            return notApplicableCheck(config, FakeInstance.mustNotResolve());
         }
 
         /**
-         * A probe for a gateway without {@code token_validation} whose discovery view is
+         * A probe for a gateway without {@code token_validation} whose discovery resolver is
          * {@code discovery}: neither the validator nor the key-set view may be resolved on that leg.
          */
-        private GatewayReadinessCheck notApplicableCheck(GatewayConfig config, DiscoveryStatus discovery) {
+        private GatewayReadinessCheck notApplicableCheck(GatewayConfig config,
+                Instance<CachingDiscoveryResolver> discovery) {
             return new GatewayReadinessCheck(config, FakeInstance.mustNotResolve(), FakeInstance.mustNotResolve(),
                     discovery);
         }
 
         /**
-         * @return the tracking view of an active BFF runtime, driven through real attempts of a recorded
-         *         fetch into {@code state}
+         * @return the engine caching resolver of an active BFF runtime, driven through real refreshes into
+         *         {@code state}
          */
-        private DiscoveryStatus discovery(State state) {
-            DiscoveryStatus status = DiscoveryStatus.tracking();
-            switch (state) {
-                case NOT_ATTEMPTED -> {
-                    // no attempt
-                }
-                case RESOLVED -> status.recording(() -> "provider-metadata").get();
-                case FAILED -> {
-                    var failingAttempt = status.recording(() -> {
-                        throw new IllegalStateException("discovery refused");
-                    });
-                    assertThrows(IllegalStateException.class, failingAttempt::get);
-                }
-            }
-            assertEquals(state, status.state(), "precondition: the view reached the state under test");
-            return status;
+        private Instance<CachingDiscoveryResolver> discovery(State state) {
+            return FakeInstance.resolving(StubDiscovery.inState(state));
         }
 
         private OidcConfig bffMode(String mode) {
             OidcConfig.Session session = OidcConfig.Session.builder().mode(mode).build();
-            return OidcConfig.builder().session(session).build();
+            return OidcConfig.builder().session(session).redirectUri("https://gateway.example.com/callback").build();
         }
 
         private GatewayConfig configWith(@Nullable Metadata metadata,

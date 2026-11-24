@@ -29,7 +29,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
-
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.http.forwarded.ForwardedResolverConfig;
 import de.cuioss.http.security.config.SecurityConfiguration;
@@ -62,11 +61,14 @@ import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
+import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
 import de.cuioss.sheriff.token.client.token.RotationResult;
+import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
+import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -114,6 +116,13 @@ class SessionScopeTruthfulnessFlowTest {
 
     private static final String LIVE_REFRESH_TOKEN = "live-refresh-token";
     private static final String ROTATED_ACCESS_TOKEN = "rotated-access-token";
+
+    /**
+     * The engine ID-token bridge the coordinator verifies a refreshed ID token through. The rotations here
+     * carry no ID token, so it is never asked to validate one; the coordinator requires it.
+     */
+    private static final IdTokenValidationBridge ID_TOKEN_VALIDATION = new IdTokenValidationBridge(
+            TokenValidator.builder().issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build());
 
     private static final String NAVIGATION_ACCEPT = "text/html,application/xhtml+xml";
     private static final String API_ACCEPT = "application/json";
@@ -251,7 +260,7 @@ class SessionScopeTruthfulnessFlowTest {
                     refreshGrants.incrementAndGet();
                     return rotation(refreshGrantScope);
                 },
-                binding, refreshToken -> {
+                ID_TOKEN_VALIDATION, binding, refreshToken -> {
                 }, Runnable::run, EndedRefreshTokens.inert());
         return new SessionAuthenticationStage(binding,
                 BffRuntimeProducer.nearExpiryRefresh(coordinator),
@@ -332,13 +341,15 @@ class SessionScopeTruthfulnessFlowTest {
     /**
      * The refresh response of an identity provider that grants {@code scope}. The scope delta is the
      * engine's own classification of the response; the coordinator decides on the granted scope alone,
-     * so one fixed value serves every test here.
+     * so one fixed value serves every test here. The response carries no ID token, so the session keeps
+     * the one it has, and its access token names the session's subject, which the coordinator's
+     * refresh-result verification requires; that verification is {@code TokenRefreshCoordinatorTest}'s.
      */
     private static RotationResult rotation(String scope) {
         Map<String, ClaimValue> claims = new HashMap<>();
         claims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
         return new RotationResult(new AccessTokenContent(claims, ROTATED_ACCESS_TOKEN), "rotated-refresh-token",
-                "rotated-id-token", 300L, true, scope, RotationResult.ScopeDelta.EQUAL);
+                null, 300L, true, scope, RotationResult.ScopeDelta.EQUAL);
     }
 
     /** The validated tokens of an authorization grant whose access token carries {@code scope}. */

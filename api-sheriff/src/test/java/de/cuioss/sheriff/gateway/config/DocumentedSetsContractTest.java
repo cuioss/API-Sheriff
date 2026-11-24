@@ -50,12 +50,13 @@ import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SchemaRegistryConfig;
 import com.networknt.schema.SpecificationVersion;
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
-import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus;
 import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules.JwksRefreshKey;
+import de.cuioss.sheriff.gateway.quarkus.GatewayReadinessCheck;
 import de.cuioss.sheriff.gateway.testsupport.RepositoryRoot;
+import de.cuioss.sheriff.token.client.discovery.DiscoveryCacheStatus;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -78,7 +79,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * boot-validation list of
  * {@code doc/configuration.adoc} names the JWKS refresh keys and the range each admits, carried by
  * {@link JwksRefreshKey}, and three documents restate the {@code oidc_discovery} readiness tokens
- * carried by {@link DiscoveryStatus.State#token()}: the value table of {@code doc/configuration.adoc},
+ * carried by {@link GatewayReadinessCheck#discoveryToken}: the value table of {@code doc/configuration.adoc},
  * the parenthesised list of {@code doc/security-threat-model.adoc} and the readiness prose of
  * {@code doc/architecture/observability-and-errors.adoc}. A restated list has no mechanical tie to its source, so
  * adding a mapping, a mode or a posture leaves every restatement silently stale — the documentation
@@ -829,7 +830,7 @@ class DocumentedSetsContractTest {
     }
 
     @Test
-    @DisplayName("doc/configuration.adoc's oidc_discovery table has exactly one row per DiscoveryStatus.State token")
+    @DisplayName("doc/configuration.adoc's oidc_discovery table has exactly one row per readiness discovery token")
     void configurationAdocTabulatesTheDiscoveryTokens() throws Exception {
         // Arrange
         String document = readConfiguration();
@@ -842,7 +843,7 @@ class DocumentedSetsContractTest {
     }
 
     @Test
-    @DisplayName("doc/security-threat-model.adoc lists exactly the DiscoveryStatus.State tokens for oidc_discovery")
+    @DisplayName("doc/security-threat-model.adoc lists exactly the readiness discovery tokens for oidc_discovery")
     void threatModelListsTheDiscoveryTokens() throws Exception {
         // Arrange
         String document = read(THREAT_MODEL_ADOC);
@@ -857,7 +858,7 @@ class DocumentedSetsContractTest {
     }
 
     @Test
-    @DisplayName("doc/architecture/observability-and-errors.adoc names exactly the DiscoveryStatus.State tokens for oidc_discovery")
+    @DisplayName("doc/architecture/observability-and-errors.adoc names exactly the readiness discovery tokens for oidc_discovery")
     void architectureAdocNamesTheDiscoveryTokens() throws Exception {
         // Arrange
         String document = read(ARCHITECTURE_ADOC);
@@ -876,7 +877,7 @@ class DocumentedSetsContractTest {
     void removedDiscoveryRowIsDetectedAgainstTheStateTokens() throws Exception {
         // Arrange — the negative control: the shipped document with the row of one state deleted
         String document = readConfiguration();
-        String removedToken = DiscoveryStatus.State.FAILED.token();
+        String removedToken = GatewayReadinessCheck.discoveryToken(DiscoveryCacheStatus.State.FAILED);
         String removedRow = "\n" + modeDefinitionRow(removedToken) + "\n";
         assertTrue(document.contains(removedRow), CONFIGURATION_ADOC + " carries no definition row for '"
                 + removedToken + "', so the negative control has nothing to remove");
@@ -890,7 +891,7 @@ class DocumentedSetsContractTest {
         // Assert — the precondition first: the shipped document matches, so the mismatch below is caused
         // by the removal alone
         assertEquals(discoveryTokens(), sorted(shipped.tokens()),
-                "the negative control needs the shipped table and DiscoveryStatus.State to agree before"
+                "the negative control needs the shipped table and the readiness discovery tokens to agree before"
                         + " removing a row; they already disagree, which the table guard reports in detail");
         assertNotEquals(discoveryTokens(), sorted(documented.tokens()),
                 "removing the '" + removedToken + "' row left the extracted token set unchanged, so the table"
@@ -2554,7 +2555,8 @@ class DocumentedSetsContractTest {
 
     /**
      * Asserts that a documented {@code oidc_discovery} token list names exactly the tokens
-     * {@link DiscoveryStatus.State} publishes, each once.
+     * {@link GatewayReadinessCheck#discoveryToken} maps the engine's {@link DiscoveryCacheStatus.State}
+     * to, each once.
      *
      * @param documented the extracted tokens
      * @param document   the document label used in every failure message
@@ -2564,24 +2566,24 @@ class DocumentedSetsContractTest {
                 + " tokens — the guard would pass vacuously");
         assertEquals(discoveryTokens(), sorted(documented.tokens()),
                 document + " enumerates the oidc_discovery readiness tokens, which are authoritatively"
-                        + " defined by DiscoveryStatus.State#token(), and has drifted from them. An operator"
-                        + " alerting on a token the gateway never reports would never be paged");
-        assertEquals(DiscoveryStatus.State.values().length, documented.rawCount(),
-                document + " lists a different number of oidc_discovery tokens than DiscoveryStatus.State"
+                        + " defined by GatewayReadinessCheck#discoveryToken, and has drifted from them. An"
+                        + " operator alerting on a token the gateway never reports would never be paged");
+        assertEquals(DiscoveryCacheStatus.State.values().length, documented.rawCount(),
+                document + " lists a different number of oidc_discovery tokens than DiscoveryCacheStatus.State"
                         + " declares. The count is taken over the raw entries rather than over the"
                         + " de-duplicated set, so a token listed twice fails here even though the set"
                         + " equality above still holds");
     }
 
     /**
-     * The readiness tokens {@link DiscoveryStatus.State} publishes, sorted for comparison.
+     * The readiness tokens the probe publishes for the engine's discovery states, sorted for comparison.
      *
-     * @return every state's {@link DiscoveryStatus.State#token()}
+     * @return every state's {@link GatewayReadinessCheck#discoveryToken} token
      */
     private static Set<String> discoveryTokens() {
         Set<String> tokens = new TreeSet<>();
-        for (DiscoveryStatus.State state : DiscoveryStatus.State.values()) {
-            tokens.add(state.token());
+        for (DiscoveryCacheStatus.State state : DiscoveryCacheStatus.State.values()) {
+            tokens.add(GatewayReadinessCheck.discoveryToken(state));
         }
         return tokens;
     }

@@ -69,6 +69,7 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -109,7 +110,6 @@ import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
-import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus;
 import de.cuioss.sheriff.gateway.bff.runtime.ForwardedTrust;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.bff.runtime.PendingQuotaKeys;
@@ -141,10 +141,13 @@ import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
+import de.cuioss.sheriff.gateway.testsupport.StubDiscovery;
 import de.cuioss.sheriff.gateway.testsupport.StubIdentityProvider;
 import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
+import de.cuioss.sheriff.token.client.discovery.CachingDiscoveryResolver;
+import de.cuioss.sheriff.token.client.discovery.DiscoveryCacheStatus;
 import de.cuioss.sheriff.token.client.discovery.DiscoveryResolver;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.dpop.DpopProofGenerator;
@@ -156,6 +159,7 @@ import de.cuioss.sheriff.token.client.flow.RefreshFlow;
 import de.cuioss.sheriff.token.client.flow.StepUpChallengeParser.StepUpChallenge;
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
 import de.cuioss.sheriff.token.client.lifecycle.RevocationClient;
+import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
@@ -203,9 +207,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * stage are wired) only when a global {@code oidc} block with {@code session.mode=server} and a
  * {@code redirect_uri} is configured, and inert (bearer-only) otherwise. Assembly resolves no OIDC
  * discovery (that is deferred to first engine use), so the producer builds a working runtime without
- * a live IdP, and the {@link DiscoveryStatus} it publishes for readiness stays {@code not-attempted}
- * until an engine use asks for the provider metadata. The requests a produced runtime sends on its back-channel — discovery, the pushed
- * authorization request, the code exchange, the refresh grant and revocation — are asserted against
+ * a live IdP, and the {@link CachingDiscoveryResolver} it publishes for readiness reports
+ * {@code not-attempted} until an engine use asks for the provider metadata. The requests a produced
+ * runtime sends on its back-channel — discovery, the pushed authorization request, the code exchange, the refresh grant and revocation — are asserted against
  * {@link StubIdentityProvider}; the round-trips that need a real grant are covered by the Keycloak
  * integration tests.
  */
@@ -250,6 +254,13 @@ class BffRuntimeProducerTest {
     private static final IssuerConfig TEST_ISSUER = TestTokenGenerators.accessTokens().next().getIssuerConfig();
 
     private static final TokenValidator TOKEN_VALIDATOR = TokenValidator.builder().issuerConfig(TEST_ISSUER).build();
+
+    /**
+     * The engine ID-token bridge the directly built refresh coordinators verify a refreshed ID token
+     * through, over the class's one validator as the producer binds it. The seam rotations carry no ID
+     * token, so the bridge is never asked to validate one; it is present because the coordinator requires it.
+     */
+    private static final IdTokenValidationBridge ID_TOKEN_VALIDATION = new IdTokenValidationBridge(TOKEN_VALIDATOR);
 
     /**
      * The seam the back-channel logout receiver is bound to. Built over the SAME issuer as the
@@ -892,51 +903,50 @@ class BffRuntimeProducerTest {
     }
 
     /**
-     * The {@link DiscoveryStatus} the producer publishes for readiness: an active runtime in either
-     * session mode gets the tracking view, which runtime assembly leaves {@code not-attempted} because
-     * boot never resolves the provider metadata; a gateway without an active runtime gets the inert
-     * view. The transitions to {@code resolved} and {@code failed} need an engine use and are driven
-     * against the stub identity provider in {@code StubIdentityProviderRuntime}.
+     * The engine {@link CachingDiscoveryResolver} the producer publishes for readiness: an active
+     * runtime in either session mode gets the one resolver its engine legs resolve through, which
+     * runtime assembly leaves {@code NOT_ATTEMPTED} because boot never resolves the provider metadata;
+     * a gateway without an active runtime has none. The cache's fixed time to live and grace period are
+     * pinned against the real engine cache. The transitions driven by an engine use against a live
+     * provider are exercised against the stub identity provider in {@code StubIdentityProviderRuntime}.
      */
     @Nested
-    @DisplayName("Discovery status — the non-fetching provider-metadata view the producer publishes")
-    class DiscoveryStatusPublication {
+    @DisplayName("Discovery resolver — the cached provider metadata the producer publishes")
+    class DiscoveryResolverPublication {
 
         @Test
-        @DisplayName("runtime assembly leaves the view not-attempted in server and cookie mode")
-        void assemblyLeavesTheViewNotAttempted() {
+        @DisplayName("runtime assembly leaves the resolver not-attempted in server and cookie mode")
+        void assemblyLeavesTheResolverNotAttempted() {
             assertAll("boot does not depend on the identity provider",
                     Stream.of(serverModeOidc(), cookieModeOidc()).map(oidc -> (Executable) () -> {
                         BffRuntimeProducer producer = producer(oidc);
 
                         BffRuntime runtime = producer.bffRuntime();
-                        DiscoveryStatus status = producer.discoveryStatus();
+                        CachingDiscoveryResolver resolver = producer.discoveryResolver();
 
-                        assertAll("the view of a freshly assembled runtime for " + oidc.session(),
+                        assertAll("the resolver of a freshly assembled runtime for " + oidc.session(),
                                 () -> assertTrue(runtime.isActive(), "precondition: the runtime is active"),
-                                () -> assertTrue(status.isApplicable(), "an active runtime gets the tracking view"),
-                                () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, status.state(),
-                                        "assembly resolves no provider metadata"));
+                                () -> assertSame(resolver, producer.discoveryResolver(),
+                                        "the runtime and readiness share one resolver"),
+                                () -> assertEquals(DiscoveryCacheStatus.State.NOT_ATTEMPTED,
+                                        resolver.status().state(), "assembly resolves no provider metadata"));
                     }));
         }
 
         @Test
-        @DisplayName("a bearer-only gateway gets the inert view")
-        void bearerOnlyGetsTheInertView() {
+        @DisplayName("a bearer-only gateway has no discovery resolver")
+        void bearerOnlyHasNoResolver() {
             RecordingProducer producer = new RecordingProducer(GatewayConfig.builder().version(1).build(),
                     TOKEN_VALIDATOR, LOGOUT_TOKEN_VERIFIER);
 
-            DiscoveryStatus status = producer.discoveryStatus();
-
             assertAll("no oidc block, no BFF runtime, no discovery datum",
                     () -> assertFalse(producer.bffRuntime().isActive(), "precondition: the runtime is inert"),
-                    () -> assertFalse(status.isApplicable()),
-                    () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, status.state()));
+                    () -> assertThrows(IllegalStateException.class, producer::discoveryResolver));
         }
 
         @Test
-        @DisplayName("a session mode without a redirect_uri builds no runtime and gets the inert view")
-        void inactiveModeGetsTheInertView() {
+        @DisplayName("a session mode without a redirect_uri builds no runtime and has no discovery resolver")
+        void inactiveModeHasNoResolver() {
             OidcConfig withoutRedirect = OidcConfig.builder()
                     .issuer(ISSUER)
                     .clientId("gateway-client")
@@ -946,12 +956,74 @@ class BffRuntimeProducerTest {
                     .build();
             BffRuntimeProducer producer = producer(withoutRedirect);
 
-            DiscoveryStatus status = producer.discoveryStatus();
-
-            assertAll("the view follows the activation predicate, not the mere presence of a mode",
+            assertAll("the resolver follows the activation predicate, not the mere presence of a mode",
                     () -> assertFalse(producer.bffRuntime().isActive(), "precondition: the runtime is inert"),
-                    () -> assertFalse(status.isApplicable(),
-                            "an inactive runtime never resolves metadata, so it reports no discovery datum"));
+                    () -> assertFalse(BffRuntimeProducer.isBffMode(withoutRedirect),
+                            "readiness shares the predicate and reports no discovery datum"),
+                    () -> assertThrows(IllegalStateException.class, producer::discoveryResolver));
+        }
+
+        @Test
+        @DisplayName("the discovery cache values are the fixed operator decision: TTL 1 h, grace 24 h, retry 30 s")
+        void discoveryCacheValuesArePinned() {
+            assertAll("ADR-0084",
+                    () -> assertEquals(Duration.ofHours(1), BffRuntimeProducer.DISCOVERY_TTL),
+                    () -> assertEquals(Duration.ofHours(24), BffRuntimeProducer.DISCOVERY_GRACE_PERIOD),
+                    () -> assertEquals(Duration.ofSeconds(30), BffRuntimeProducer.DISCOVERY_MIN_REFRESH_INTERVAL));
+        }
+
+        @Test
+        @DisplayName("cached metadata is served within the TTL and re-resolved after it")
+        void cachedMetadataIsReResolvedAfterTheTtl() {
+            AtomicInteger fetches = new AtomicInteger();
+            AtomicReference<Instant> now = new AtomicReference<>(Instant.parse("2026-11-24T10:00:00Z"));
+            CachingDiscoveryResolver resolver = StubDiscovery.caching(() -> {
+                fetches.incrementAndGet();
+                return StubDiscovery.metadata();
+            }, BffRuntimeProducer.DISCOVERY_TTL, BffRuntimeProducer.DISCOVERY_GRACE_PERIOD, now::get);
+            Instant resolvedAt = now.get();
+
+            resolver.resolve();
+            now.set(resolvedAt.plus(BffRuntimeProducer.DISCOVERY_TTL).minusSeconds(1));
+            resolver.resolve();
+            int withinTtl = fetches.get();
+            now.set(resolvedAt.plus(BffRuntimeProducer.DISCOVERY_TTL).plusSeconds(1));
+            resolver.resolve();
+
+            assertAll("the TTL governs the refresh",
+                    () -> assertEquals(1, withinTtl, "a fresh document is served from the cache"),
+                    () -> assertEquals(2, fetches.get(), "a stale document is re-resolved on the next use"));
+        }
+
+        @Test
+        @DisplayName("a resolution failure inside the grace period serves the last metadata, past it fails closed")
+        void failureInsideGraceServesLastMetadata() {
+            AtomicBoolean failing = new AtomicBoolean();
+            AtomicReference<Instant> now = new AtomicReference<>(Instant.parse("2026-11-24T10:00:00Z"));
+            ProviderMetadata first = StubDiscovery.metadata();
+            CachingDiscoveryResolver resolver = StubDiscovery.caching(() -> {
+                if (failing.get()) {
+                    throw new IllegalStateException("discovery refused");
+                }
+                return first;
+            }, BffRuntimeProducer.DISCOVERY_TTL, BffRuntimeProducer.DISCOVERY_GRACE_PERIOD, now::get);
+            Instant resolvedAt = now.get();
+            resolver.resolve();
+
+            failing.set(true);
+            now.set(resolvedAt.plus(BffRuntimeProducer.DISCOVERY_TTL).plusSeconds(1));
+            ProviderMetadata servedInGrace = resolver.resolve();
+            DiscoveryCacheStatus.State stateInGrace = resolver.status().state();
+            now.set(resolvedAt.plus(BffRuntimeProducer.DISCOVERY_TTL).plus(BffRuntimeProducer.DISCOVERY_GRACE_PERIOD)
+                    .plusSeconds(1));
+
+            assertAll("the grace period bounds the stale document",
+                    () -> assertEquals(first.tokenEndpoint, servedInGrace.tokenEndpoint,
+                            "the last document is served while refreshes fail — the failing fetch supplies none"),
+                    () -> assertEquals(DiscoveryCacheStatus.State.FAILED, stateInGrace,
+                            "readiness reports the failed refresh"),
+                    () -> assertThrows(RuntimeException.class, resolver::resolve,
+                            "past TTL plus grace the resolution fails closed"));
         }
     }
 
@@ -1704,7 +1776,7 @@ class BffRuntimeProducerTest {
                     (refreshToken, _) -> {
                         throw new CredentialRejectedException("Token endpoint rejected the credential with HTTP 400");
                     },
-                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
+                    ID_TOKEN_VALIDATION, binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
 
             SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.nearExpiryRefresh(rejecting)
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
@@ -1722,7 +1794,7 @@ class BffRuntimeProducerTest {
                     sessionRecord -> NOW.plusSeconds(30), (refreshToken, _) -> {
                         throw new TransportException("Token endpoint unreachable");
                     },
-                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
+                    ID_TOKEN_VALIDATION, binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
 
             SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.nearExpiryRefresh(unreachable)
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
@@ -1739,7 +1811,7 @@ class BffRuntimeProducerTest {
                     (refreshToken, _) -> {
                         throw new TransportException("Token endpoint unreachable");
                     },
-                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
+                    ID_TOKEN_VALIDATION, binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
 
             SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.nearExpiryRefresh(unreachable)
                     .refreshIfNeeded(live, cookieHeader(live), NOW);
@@ -1778,7 +1850,7 @@ class BffRuntimeProducerTest {
                         requestedOfEngine.add(Set.copyOf(scopes));
                         return rotation();
                     },
-                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
+                    ID_TOKEN_VALIDATION, binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
 
             SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.scopeRefresh(coordinator)
                     .refreshForScopes(live, cookieHeader(live), GRANTED_SCOPES, NOW);
@@ -1816,7 +1888,7 @@ class BffRuntimeProducerTest {
                     sessionRecord -> NOW.plusSeconds(600), (refreshToken, _) -> {
                         throw new CredentialRejectedException("Token endpoint rejected the credential with HTTP 400");
                     },
-                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
+                    ID_TOKEN_VALIDATION, binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
 
             SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.scopeRefresh(rejecting)
                     .refreshForScopes(live, cookieHeader(live), GRANTED_SCOPES, NOW);
@@ -1833,7 +1905,7 @@ class BffRuntimeProducerTest {
                     (refreshToken, _) -> {
                         throw new TransportException("Token endpoint unreachable");
                     },
-                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
+                    ID_TOKEN_VALIDATION, binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
 
             SessionAuthenticationStage.RefreshResult result = BffRuntimeProducer.scopeRefresh(unreachable)
                     .refreshForScopes(live, cookieHeader(live), GRANTED_SCOPES, NOW);
@@ -1872,7 +1944,7 @@ class BffRuntimeProducerTest {
                         engineCalls.incrementAndGet();
                         return rotation();
                     },
-                    binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
+                    ID_TOKEN_VALIDATION, binding, NO_REVOCATION, Runnable::run, EndedRefreshTokens.inert());
         }
 
         private SessionRecord storedSession(@Nullable String refreshToken) {
@@ -1909,12 +1981,15 @@ class BffRuntimeProducerTest {
          * The rotation the engine seam returns. {@code grantedScope} is {@code null} and
          * {@code scopeDelta} {@code UNDECLARED} — the "the IdP declared no scope on the refresh
          * response" pair — because nothing on the path under test reads either component; picking
-         * {@code EQUAL} would assert a scope comparison this fixture never performs.
+         * {@code EQUAL} would assert a scope comparison this fixture never performs. The response carries
+         * no ID token, so the session keeps the one it has; the refreshed-ID-token verification is
+         * {@code TokenRefreshCoordinatorTest}'s, which drives it with really signed tokens. The access
+         * token names the session's subject, which the verification requires of every rotation.
          */
         private static RotationResult rotation() {
             Map<String, ClaimValue> claims = new HashMap<>();
             claims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
-            return new RotationResult(new AccessTokenContent(claims, ROTATED_ACCESS_TOKEN), token(), token(),
+            return new RotationResult(new AccessTokenContent(claims, ROTATED_ACCESS_TOKEN), token(), null,
                     300L, true, null, RotationResult.ScopeDelta.UNDECLARED);
         }
     }
@@ -2715,17 +2790,18 @@ class BffRuntimeProducerTest {
         void discoveryStatusRecordsResolvedOnFirstEngineUse() {
             BffRuntimeProducer producer = stubProducer(stubOidc().build());
             BffRuntime runtime = producer.bffRuntime();
-            DiscoveryStatus.State afterAssembly = producer.discoveryStatus().state();
+            DiscoveryCacheStatus.State afterAssembly = producer.discoveryResolver().status().state();
 
             BffRuntime.ReservedHttpResponse answer = login(runtime, "/");
 
             assertAll("the first engine use resolves the metadata and records it",
-                    () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, afterAssembly,
+                    () -> assertEquals(DiscoveryCacheStatus.State.NOT_ATTEMPTED, afterAssembly,
                             "precondition: assembly asked the stub for nothing"),
                     () -> assertEquals(302, answer.status(), "precondition: the login went through"),
                     () -> assertEquals(1, stub.received(StubIdentityProvider.Endpoint.DISCOVERY).size(),
                             "the login is what fetched the discovery document"),
-                    () -> assertEquals(DiscoveryStatus.State.RESOLVED, producer.discoveryStatus().state()));
+                    () -> assertEquals(DiscoveryCacheStatus.State.RESOLVED,
+                            producer.discoveryResolver().status().state()));
         }
 
         /**
@@ -2738,19 +2814,19 @@ class BffRuntimeProducerTest {
         @DisplayName("producing the view first builds no runtime and resolves nothing; the runtime then records into it")
         void theViewIsTheOneTheRuntimeRecordsInto() {
             BffRuntimeProducer producer = stubProducer(stubOidc().build());
-            DiscoveryStatus view = producer.discoveryStatus();
-            DiscoveryStatus.State beforeTheRuntime = view.state();
+            CachingDiscoveryResolver view = producer.discoveryResolver();
+            DiscoveryCacheStatus.State beforeTheRuntime = view.status().state();
             int discoveriesBeforeTheRuntime = stub.received(StubIdentityProvider.Endpoint.DISCOVERY).size();
             BffRuntime runtime = producer.bffRuntime();
 
             BffRuntime.ReservedHttpResponse answer = login(runtime, "/");
 
             assertAll("one view per producer, whichever producer method runs first",
-                    () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, beforeTheRuntime,
+                    () -> assertEquals(DiscoveryCacheStatus.State.NOT_ATTEMPTED, beforeTheRuntime,
                             "producing the view resolves nothing"),
                     () -> assertEquals(0, discoveriesBeforeTheRuntime, "producing the view asks the stub for nothing"),
                     () -> assertEquals(302, answer.status(), "precondition: the login went through"),
-                    () -> assertEquals(DiscoveryStatus.State.RESOLVED, view.state(),
+                    () -> assertEquals(DiscoveryCacheStatus.State.RESOLVED, view.status().state(),
                             "the view read before the runtime existed shows what the runtime's login recorded"));
         }
 
@@ -2760,37 +2836,38 @@ class BffRuntimeProducerTest {
             String unreachableIssuer = "https://" + LoopbackHost.ADDRESS + ":" + UnreachablePort.pick();
             BffRuntimeProducer producer = stubProducer(stubOidc().issuer(unreachableIssuer).build());
             BffRuntime runtime = producer.bffRuntime();
-            DiscoveryStatus.State afterAssembly = producer.discoveryStatus().state();
+            DiscoveryCacheStatus.State afterAssembly = producer.discoveryResolver().status().state();
 
             assertThrows(RuntimeException.class, () -> login(runtime, "/"),
                     "a login cannot start without the provider metadata");
 
             assertAll("the failed resolution is recorded, not swallowed",
-                    () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, afterAssembly,
+                    () -> assertEquals(DiscoveryCacheStatus.State.NOT_ATTEMPTED, afterAssembly,
                             "precondition: an unreachable issuer still assembles, because discovery is deferred"),
-                    () -> assertEquals(DiscoveryStatus.State.FAILED, producer.discoveryStatus().state()));
+                    () -> assertEquals(DiscoveryCacheStatus.State.FAILED,
+                            producer.discoveryResolver().status().state()));
         }
 
         @Test
-        @DisplayName("Should retry a failed resolution on the next engine use and record resolved")
+        @DisplayName("Should not hammer a refusing discovery endpoint: a failed resolution waits out the minimum refresh interval")
         void discoveryStatusRecordsTheRetryAfterAFailure() {
             BffRuntimeProducer producer = stubProducer(stubOidc().build());
             BffRuntime runtime = producer.bffRuntime();
             stub.script(StubIdentityProvider.Endpoint.DISCOVERY,
                     StubIdentityProvider.Answer.json(503, "{\"error\":\"temporarily_unavailable\"}"));
 
-            assertThrows(RuntimeException.class, () -> login(runtime, "/"),
+            assertThrows(TransportException.class, () -> login(runtime, "/"),
                     "the first login meets a discovery endpoint that refuses");
-            DiscoveryStatus.State afterRefusal = producer.discoveryStatus().state();
-            BffRuntime.ReservedHttpResponse retried = login(runtime, "/");
+            DiscoveryCacheStatus.State afterRefusal = producer.discoveryResolver().status().state();
+            assertThrows(Exception.class, () -> login(runtime, "/"),
+                    "a login inside the minimum refresh interval does not start without the provider metadata");
 
-            assertAll("a failed resolution is not cached: the next engine use fetches again",
-                    () -> assertEquals(DiscoveryStatus.State.FAILED, afterRefusal),
-                    () -> assertEquals(302, retried.status(), "the second login resolved the metadata"),
-                    () -> assertEquals(2, stub.received(StubIdentityProvider.Endpoint.DISCOVERY).size(),
-                            "each attempt asked the stub once"),
-                    () -> assertEquals(DiscoveryStatus.State.RESOLVED, producer.discoveryStatus().state(),
-                            "the last attempt wins"));
+            assertAll("a failed resolution is retried no sooner than DISCOVERY_MIN_REFRESH_INTERVAL (ADR-0084)",
+                    () -> assertEquals(DiscoveryCacheStatus.State.FAILED, afterRefusal),
+                    () -> assertEquals(1, stub.received(StubIdentityProvider.Endpoint.DISCOVERY).size(),
+                            "the second login inside the interval asked the stub nothing"),
+                    () -> assertEquals(DiscoveryCacheStatus.State.FAILED,
+                            producer.discoveryResolver().status().state(), "the failure stays reported"));
         }
 
         @Test
@@ -3223,7 +3300,7 @@ class BffRuntimeProducerTest {
             Set<String> requested = Set.of("openid", SCOPED_ENDPOINT_SCOPE);
             SessionRecord live = refreshableSession(Set.of("openid"), requested, token());
             String sessionCookie = bind(runtime, live);
-            String accessToken = accessTokenBoundTo(fixture.expectedKeyId().orElseThrow());
+            String accessToken = accessTokenBoundTo(fixture.expectedKeyId().orElseThrow(), SUBJECT);
             stub.script(StubIdentityProvider.Endpoint.TOKEN, tokenAnswer(TYPE_DPOP, accessToken));
 
             SessionAuthenticationStage.RefreshResult result =
@@ -4588,6 +4665,15 @@ class BffRuntimeProducerTest {
          * why the claim is added here rather than through the holder.
          */
         private static String accessTokenBoundTo(String thumbprint) throws Exception {
+            return accessTokenBoundTo(thumbprint, null);
+        }
+
+        /**
+         * {@link #accessTokenBoundTo(String)} naming {@code subject} as its {@code sub} when one is given —
+         * a refreshed access token must name the session's subject, which the coordinator's
+         * refresh-result verification checks before anything of the rotation is persisted.
+         */
+        private static String accessTokenBoundTo(String thumbprint, @Nullable String subject) throws Exception {
             TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
             String issued = holder.getRawToken();
             String[] segments = issued.split("\\.");
@@ -4595,6 +4681,9 @@ class BffRuntimeProducerTest {
                     "this helper signs with SHA256withRSA; a holder signing another algorithm needs its own");
             ObjectNode claims = (ObjectNode) jwtPart(issued, 1);
             claims.putObject("cnf").put("jkt", thumbprint);
+            if (subject != null) {
+                claims.put(ClaimName.SUBJECT.getName(), subject);
+            }
             String signingInput = segments[0] + "."
                     + Base64.getUrlEncoder().withoutPadding().encodeToString(JSON.writeValueAsBytes(claims));
             Signature signer = Signature.getInstance("SHA256withRSA");

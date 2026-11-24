@@ -151,8 +151,8 @@ public final class BffLogMessages {
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 111-114, 127, 130-132, 135, 145
-     * and 147).
+     * Warn-level messages (WARN range 100-199; this catalogue owns 111-114, 127, 130-132, 135, 145,
+     * 147 and 153).
      */
     @UtilityClass
     public static final class WARN {
@@ -365,6 +365,24 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(147)
                 .template("Logout could not revoke the session's refresh token at the identity provider — the gateway session is ended and the refresh token stays valid at the provider until it expires; further failures stay at DEBUG")
+                .build();
+
+        /**
+         * A processed token refresh returned an identity that is not the session's, so nothing of it was
+         * stored (OIDC Core 12.2, ADR-0084): the refreshed ID token failed validation or is inconsistent
+         * with the refreshed access token, or the refreshed access token does not name the session's
+         * subject. The session is ended — {@link #SESSION_REFRESH_FAILED} follows with the reason
+         * {@code refresh-result-refused} — and the refresh token the exchange returned is revoked.
+         * <p>
+         * The template takes no substitution and is logged without a throwable, so it carries no value at
+         * all — never a token, the session id, either subject, an issuer or any claim value. Not latched:
+         * the refresh path runs only for a live session, and only the identity provider's answer can
+         * produce the record.
+         */
+        public static final LogRecord REFRESH_RESULT_REFUSED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(153)
+                .template("Token refresh result refused — the refreshed identity is not the session's (OIDC Core 12.2); nothing was stored and the session is ended")
                 .build();
     }
 }

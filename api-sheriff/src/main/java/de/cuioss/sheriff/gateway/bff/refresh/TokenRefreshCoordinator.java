@@ -40,6 +40,8 @@ import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.token.client.flow.RefreshFailureClassification;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
 import de.cuioss.sheriff.token.client.flow.RefreshRedemption;
+import de.cuioss.sheriff.token.client.flow.RefreshResultVerifier;
+import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
@@ -115,6 +117,17 @@ import org.jspecify.annotations.Nullable;
  *       is unknown. The outcome is {@link RefreshOutcome.Kind#FAILED FAILED} with reason
  *       {@code redeemed-response-refused} — unless the session's record was replaced or the session
  *       already ended meanwhile, in which case nothing is revoked (see below).</li>
+ *   <li><strong>Refresh result refused</strong> — the exchange succeeded, but the identity it returned is
+ *       not the session's (OIDC Core 12.2): the engine's {@code RefreshResultVerifier}, run before
+ *       anything of the rotation is built or persisted, refused the refreshed ID token — it failed
+ *       validation (a foreign issuer, a bad signature, an expired token) or is inconsistent with the
+ *       refreshed access token (another {@code iss} or {@code sub}) — or the refreshed access token does
+ *       not name the session's subject. Any other failure of the verification is treated the same way.
+ *       The presented token is already redeemed, so the session is destroyed and the refresh token the
+ *       exchange returned is revoked. {@code ApiSheriff-153} names the refusal and the outcome is
+ *       {@link RefreshOutcome.Kind#FAILED FAILED} with reason {@code refresh-result-refused}; neither
+ *       record carries the exception, a token, a subject or an issuer (ADR-0084). A response without an ID
+ *       token keeps the previous one, and its access token is still bound to the session's subject.</li>
  *   <li><strong>Persist failure</strong> — the exchange succeeded but the binding could not hold the
  *       rotated session. The presented token is already redeemed, so the session is destroyed and the
  *       refresh token the exchange returned is revoked. The outcome is
@@ -176,9 +189,9 @@ import org.jspecify.annotations.Nullable;
  * {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION}. A stateless binding can observe neither, so in
  * cookie mode a refusal always ends the session.
  * Every session-ending disposition records {@code ApiSheriff-111}; a refresh that was superseded or found
- * its session gone — at the persist or at the refusal — ends no session and records none. Only the two
+ * its session gone — at the persist or at the refusal — ends no session and records none. Only the three
  * dispositions in which the refresh <em>itself</em> ends the session revoke a token — a {@code REDEEMED}
- * refusal that destroyed the record it read, and a persist failure. A refresh that lost a race to a
+ * refusal that destroyed the record it read, a refused refresh result and a persist failure. A refresh that lost a race to a
  * session replacement (superseded, at the persist or at the refusal) or to a session destruction
  * (terminated at the persist, or a refusal that found the session gone) abandons its live token
  * unrevoked, and {@code CREDENTIAL_REJECTED}, {@code PRE_REDEMPTION}, {@code SCOPE_REFUSED} and a written
@@ -308,12 +321,20 @@ public final class TokenRefreshCoordinator {
      */
     static final String REASON_PERSIST_FAILURE = "persist-failure";
 
+    /**
+     * The bounded reason recorded when the identity a processed refresh returned is not the session's: the
+     * refreshed ID token failed validation, is inconsistent with the refreshed access token, or the
+     * refreshed access token does not name the session's subject (OIDC Core 12.2, ADR-0084).
+     */
+    static final String REASON_REFRESH_RESULT_REFUSED = "refresh-result-refused";
+
     /** The RFC 6749 §3.3 delimiter between the names of a {@code scope} value. */
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
     private final Duration leeway;
     private final AccessTokenExpiry accessTokenExpiry;
     private final RefreshExchange refreshExchange;
+    private final IdTokenValidationBridge refreshedIdTokenValidation;
     private final SessionBinding sessionBinding;
     private final RefreshTokenRevocation refreshTokenRevocation;
     private final Executor revocationExecutor;
@@ -341,6 +362,10 @@ public final class TokenRefreshCoordinator {
      *                               parsing; a test binds a fixed instant)
      * @param refreshExchange        the engine refresh seam (bound to {@code RefreshFlow#refresh}; a
      *                               test binds a stubbed rotation or a throwing stub)
+     * @param refreshedIdTokenValidation the engine bridge {@code RefreshResultVerifier} validates a
+     *                               refreshed ID token through, before anything of a processed refresh
+     *                               is persisted (OIDC Core 12.2) — the runtime's one
+     *                               {@link IdTokenValidationBridge} over the gateway validator
      * @param sessionBinding         the mode-neutral session binding the rotated record is persisted
      *                               through and an ended session is destroyed through
      * @param refreshTokenRevocation the best-effort RFC 7009 revocation seam a live refresh token is
@@ -353,13 +378,18 @@ public final class TokenRefreshCoordinator {
      *                               {@link EndedRefreshTokens#bounded()} in cookie mode,
      *                               {@link EndedRefreshTokens#inert()} in server mode
      */
+    // Each parameter is one independent seam of the coordinator; a parameter object would only regroup
+    // them without removing one, and every seam is bound separately by the session runtime and the tests.
+    @SuppressWarnings("java:S107")
     public TokenRefreshCoordinator(Duration leeway, AccessTokenExpiry accessTokenExpiry,
-            RefreshExchange refreshExchange, SessionBinding sessionBinding,
-            RefreshTokenRevocation refreshTokenRevocation, Executor revocationExecutor,
-            EndedRefreshTokens endedRefreshTokens) {
+            RefreshExchange refreshExchange, IdTokenValidationBridge refreshedIdTokenValidation,
+            SessionBinding sessionBinding, RefreshTokenRevocation refreshTokenRevocation,
+            Executor revocationExecutor, EndedRefreshTokens endedRefreshTokens) {
         this.leeway = Objects.requireNonNull(leeway, "leeway");
         this.accessTokenExpiry = Objects.requireNonNull(accessTokenExpiry, "accessTokenExpiry");
         this.refreshExchange = Objects.requireNonNull(refreshExchange, "refreshExchange");
+        this.refreshedIdTokenValidation = Objects.requireNonNull(refreshedIdTokenValidation,
+                "refreshedIdTokenValidation");
         this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
         this.refreshTokenRevocation = Objects.requireNonNull(refreshTokenRevocation, "refreshTokenRevocation");
         this.revocationExecutor = Objects.requireNonNull(revocationExecutor, "revocationExecutor");
@@ -603,11 +633,21 @@ public final class TokenRefreshCoordinator {
         }
         // The identity provider processed the grant: whatever follows, the outage the probe tested is over.
         releaseProbe(admission);
+        // OIDC Core 12.2: the refreshed identity must be the session's before anything of the rotation is
+        // stored. The verifier is the engine's; any failure it raises — a refusal or anything else — ends
+        // the session, because nothing of an unverified rotation may be persisted.
+        String verifiedIdToken;
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
+        try {
+            verifiedIdToken = RefreshResultVerifier.verify(rotation, refreshedIdTokenValidation, latest.sub());
+        } catch (RuntimeException refused) {
+            return refuseRefreshResult(sessionId, latest, now, refused, rotation.refreshToken());
+        }
         // The presented token is already redeemed here, so a persist failure cannot keep the session.
         SessionBinding.PersistResult persisted;
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
-            SessionRecord rotated = rotate(latest, rotation, scopes, scopeDriven);
+            SessionRecord rotated = rotate(latest, rotation, verifiedIdToken, scopes, scopeDriven);
             // persist() updates in place and never creates (a replace-if-current against latest in
             // server mode, a re-seal in a stateless mode), so no pre-persist destroy is needed on the
             // success path. Destroying first would open a window where a concurrent resolve() misses the
@@ -631,6 +671,31 @@ public final class TokenRefreshCoordinator {
             // The rotated refresh token is abandoned, not revoked: see superseded(...).
             case SessionBinding.PersistResult.Superseded _ -> superseded(sessionId, "persist");
         };
+    }
+
+    /**
+     * The disposition of a processed refresh whose result {@link RefreshResultVerifier} refused, or whose
+     * verification failed in any other way: the refreshed ID token failed validation (a foreign issuer, a
+     * bad signature, an expired token), it is inconsistent with the refreshed access token (another
+     * {@code iss} or {@code sub}), or the refreshed access token does not name the session's subject.
+     * <p>
+     * The presented refresh token is already redeemed, so the session cannot be kept on it, and the
+     * returned identity is not the session's, so nothing of the rotation may be stored. The session is
+     * ended through {@link #endSession} exactly as after a persist failure: destroyed, the presented
+     * token marked ended, {@code ApiSheriff-111} recorded with {@link #REASON_REFRESH_RESULT_REFUSED}, and
+     * the refresh token the exchange returned revoked once the outcome is published.
+     * <p>
+     * <strong>Non-disclosing.</strong> {@code ApiSheriff-153} names the refusal and carries no value, and
+     * neither record is given the throwable: a validation refusal's message may echo the refused token's
+     * issuer. Only the exception type reaches a {@code DEBUG} line — never a token, a subject, an issuer or
+     * any claim value.
+     */
+    private Disposition refuseRefreshResult(String sessionId, SessionRecord latest, Instant now,
+            RuntimeException refused, @Nullable String liveRefreshToken) {
+        LOGGER.debug("Refresh result refused by the OIDC Core 12.2 verification (%s)",
+                refused.getClass().getName());
+        LOGGER.warn(BffLogMessages.WARN.REFRESH_RESULT_REFUSED);
+        return endSession(sessionId, latest, now, null, REASON_REFRESH_RESULT_REFUSED, liveRefreshToken);
     }
 
     /**
@@ -871,19 +936,21 @@ public final class TokenRefreshCoordinator {
      * session destroyed, the presented refresh token marked ended until the session's absolute lifetime,
      * and {@code ApiSheriff-111} recorded. The live refresh token is only handed back; the single-flight
      * leader revokes it after the outcome has been published to the coalesced waiters. The destruction
-     * here is unconditional — a persist failure takes it; a refused exchange ends its session through
-     * {@link #endRefusedSession} instead, which destroys only the record it read. A persist that found the
-     * session gone ends nothing and does not come here: see {@link #foundSessionGone}.
+     * here is unconditional — a persist failure and a refused refresh result take it; a refused exchange
+     * ends its session through {@link #endRefusedSession} instead, which destroys only the record it read.
+     * A persist that found the session gone ends nothing and does not come here: see
+     * {@link #foundSessionGone}.
      * <p>
      * The presented refresh token is {@code latest.refreshToken()}: {@link #redeem} is only reached after
      * both legs confirmed it is present.
      *
-     * @param failure          the exception that ended the session, recorded with {@code ApiSheriff-111}
+     * @param failure          the exception that ended the session, recorded with {@code ApiSheriff-111};
+     *                         {@code null} when the record must not carry it (a refused refresh result)
      * @param liveRefreshToken the refresh token to revoke once the outcome is published — the one the
      *                         exchange returned, absent when the provider returned none
      */
     private Disposition endSession(String sessionId, SessionRecord latest, Instant now,
-            RuntimeException failure, String reason, @Nullable String liveRefreshToken) {
+            @Nullable RuntimeException failure, String reason, @Nullable String liveRefreshToken) {
         sessionBinding.destroy(latest);
         return recordSessionEnd(sessionId, latest, now, failure, reason, liveRefreshToken);
     }
@@ -893,17 +960,22 @@ public final class TokenRefreshCoordinator {
      * presented refresh token marked ended until the session's absolute lifetime, {@code ApiSheriff-111}
      * recorded with the exception that ended the session, and the live refresh token handed back for
      * revocation. {@link #endSession} reaches it once the session has been destroyed after a persist
-     * failure; {@link #endRefusedSession} only once the binding destroyed the record the refusal read. A
-     * refresh whose persist or refusal finds the session gone, or superseded, does not.
+     * failure or a refused refresh result; {@link #endRefusedSession} only once the binding destroyed the
+     * record the refusal read. A refresh whose persist or refusal finds the session gone, or superseded,
+     * does not.
      */
     private Disposition recordSessionEnd(String sessionId, SessionRecord latest, Instant now,
-            RuntimeException failure, String reason, @Nullable String liveRefreshToken) {
+            @Nullable RuntimeException failure, String reason, @Nullable String liveRefreshToken) {
         String presentedRefreshToken = Objects.requireNonNull(latest.refreshToken(),
                 "a session-ending disposition requires the presented refresh token");
         retryNotBefore.remove(sessionId);
         endedRefreshTokens.markEnded(presentedRefreshToken, latest.expiresAt(), now);
         // Bounded, non-sensitive reason only — never the presented refresh token or session id.
-        LOGGER.warn(failure, BffLogMessages.WARN.SESSION_REFRESH_FAILED, reason);
+        if (failure == null) {
+            LOGGER.warn(BffLogMessages.WARN.SESSION_REFRESH_FAILED, reason);
+        } else {
+            LOGGER.warn(failure, BffLogMessages.WARN.SESSION_REFRESH_FAILED, reason);
+        }
         return new Disposition(RefreshOutcome.failed(), liveRefreshToken);
     }
 
@@ -986,6 +1058,10 @@ public final class TokenRefreshCoordinator {
      * single-flight coalescing this coordinator depends on. Add a copy line here for every component
      * added to {@link SessionRecord}.
      * <p>
+     * The ID token is the one {@link RefreshResultVerifier} verified and handed back; when the exchange
+     * issued none (absent or blank) the previous ID token is kept, so a provider that returns no ID token on
+     * refresh leaves the session's identity as the login established it.
+     * <p>
      * The active scope set becomes the refresh response's {@code scope}, and becomes
      * {@code requestedScopes} when the response omits or blanks it (RFC 6749 §5.1 — an omitted
      * {@code scope} is identical to the one requested). On the near-expiry leg the requested set is
@@ -996,15 +1072,14 @@ public final class TokenRefreshCoordinator {
      * {@code A}. On the scope-driven leg ({@code scopeDriven}) it loses every requested scope the new
      * {@code A} lacks: the identity provider processed a grant naming that scope and did not return it.
      */
-    private static SessionRecord rotate(SessionRecord previous, RotationResult rotation, Set<String> requestedScopes,
-            boolean scopeDriven) {
-        String rotatedIdToken = rotation.idToken();
+    private static SessionRecord rotate(SessionRecord previous, RotationResult rotation,
+            @Nullable String verifiedIdToken, Set<String> requestedScopes, boolean scopeDriven) {
         Set<String> rotatedActiveScopes = refreshedActiveScopes(rotation.grantedScope(), requestedScopes);
         return SessionRecord.builder()
                 .sessionId(previous.sessionId())
                 .accessToken(rotation.accessToken().getRawToken())
                 .refreshToken(rotation.refreshToken())
-                .idToken(rotatedIdToken == null || rotatedIdToken.isBlank() ? previous.idToken() : rotatedIdToken)
+                .idToken(verifiedIdToken == null ? previous.idToken() : verifiedIdToken)
                 .sub(previous.sub())
                 .sid(previous.sid())
                 .expiresAt(previous.expiresAt())
@@ -1101,7 +1176,7 @@ public final class TokenRefreshCoordinator {
     /**
      * The engine refresh seam. The session runtime binds it to the per-scope-set engine seam as
      * {@code (refreshToken, scopes) -> scopedEngineFlows.refresh(providerMetadata, refreshToken,
-     * scopes)} (ADR-0048), so the grant's {@code scope} is the session's active scope set on the
+     * scopes)} (ADR-0083), so the grant's {@code scope} is the session's active scope set on the
      * near-expiry leg and the requested set on the scope-driven leg; a test
      * binds a stubbed rotation or a throwing stub. The engine owns the refresh grant and refresh-token
      * rotation, and its {@code RefreshFlow.classify} decides what a refusal means for the presented

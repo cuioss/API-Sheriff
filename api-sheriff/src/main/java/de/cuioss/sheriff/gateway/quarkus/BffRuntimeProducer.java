@@ -25,7 +25,6 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -65,7 +64,6 @@ import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
-import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus;
 import de.cuioss.sheriff.gateway.bff.runtime.ForwardedTrust;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.bff.runtime.PendingQuotaKeys;
@@ -89,6 +87,7 @@ import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.auth.ClientSecretBasicAuth;
 import de.cuioss.sheriff.token.client.config.ClientAuthMethod;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
+import de.cuioss.sheriff.token.client.discovery.CachingDiscoveryResolver;
 import de.cuioss.sheriff.token.client.discovery.DiscoveryResolver;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.dpop.SenderConstraint;
@@ -277,16 +276,21 @@ import org.jspecify.annotations.Nullable;
  * cancelled when the application shuts down. Cookie mode holds no sessions and a bearer-only gateway
  * builds no runtime, so neither registers a timer.
  * <p>
- * <strong>Lazy discovery.</strong> The OIDC provider metadata is resolved through a memoized supplier
- * on first engine use, not at boot: a BFF gateway in either session mode therefore boots (and is
- * unit-testable) without a live IdP. The discovery-dependent {@code end_session_endpoint} is read
- * by the logout leg per request, after the local session has been ended: a provider that publishes
- * none, or metadata that cannot be obtained, leaves the logout a local one that lands on
- * {@code final_redirect}. The memoized supplier caches a resolved value only: an attempt that throws
- * leaves nothing cached, so the next engine use retries the resolution. Every attempt records its
- * outcome into the one {@link DiscoveryStatus} this producer also publishes, as a non-fetching view
- * the readiness probe reports under {@code oidc_discovery}; boot never calls the supplier, so a fresh
- * runtime reports {@code not-attempted}. A bearer-only gateway gets the inert view.
+ * <strong>Lazy, cached discovery (ADR-0079, ADR-0084).</strong> The OIDC provider metadata is resolved
+ * on first engine use, not at boot, through the runtime's one engine {@link CachingDiscoveryResolver}
+ * over the engine {@link DiscoveryResolver}: a BFF gateway in either session mode therefore boots (and
+ * is unit-testable) without a live IdP. Every engine leg calls {@code resolve()} on that one instance.
+ * A resolved document is served for {@link #DISCOVERY_TTL} and then refreshed on the next engine use,
+ * so a changed provider endpoint is picked up without a restart. While refreshes fail the last document
+ * is still served for {@link #DISCOVERY_GRACE_PERIOD} past its time to live; after that the resolution
+ * fails closed and login and refresh stop until discovery succeeds again. After a failed attempt the
+ * next one waits {@link #DISCOVERY_MIN_REFRESH_INTERVAL}. The values are fixed, not configuration keys,
+ * and no jitter is applied. The discovery-dependent {@code end_session_endpoint} is read by the logout
+ * leg per request, after the local session has been ended: a provider that publishes none, or metadata
+ * that cannot be obtained, leaves the logout a local one that lands on {@code final_redirect}. The
+ * same resolver is published as a bean, so the readiness probe reads its non-fetching
+ * {@code status()} under {@code oidc_discovery}; boot never resolves, so a fresh runtime reports
+ * {@code not-attempted}. A bearer-only gateway has no resolver.
  * <p>
  * <strong>The identity-provider back-channel carries a pinned TLS posture (ADR-0045).</strong> The
  * {@link ClientConfiguration} every engine seam dials the identity provider with — discovery, the
@@ -328,6 +332,22 @@ public class BffRuntimeProducer {
     static final Duration SESSION_SWEEP_INTERVAL = Duration.ofSeconds(60);
     /** The value of {@link #sessionSweepTimer} while no sweep timer is registered; never a Vert.x timer id. */
     private static final long NO_SWEEP_TIMER = -1L;
+    /**
+     * How long a resolved OIDC discovery document is served before the next engine use refreshes it.
+     * Fixed, not configurable (operator decision {@code discovery-ttl}, ADR-0084).
+     */
+    static final Duration DISCOVERY_TTL = Duration.ofHours(1);
+    /**
+     * How long past its time to live the last resolved discovery document is still served while every
+     * refresh fails. Once it has passed, a resolution fails closed — 25 hours after the last successful
+     * resolution. Fixed, not configurable (ADR-0084).
+     */
+    static final Duration DISCOVERY_GRACE_PERIOD = Duration.ofHours(24);
+    /**
+     * The minimum time between a failed discovery refresh and the next attempt, so an identity-provider
+     * outage is not hammered by every request. Fixed, not configurable (ADR-0084).
+     */
+    static final Duration DISCOVERY_MIN_REFRESH_INTERVAL = Duration.ofSeconds(30);
     private static final Duration BACKCHANNEL_FRESHNESS_WINDOW = Duration.ofMinutes(2);
     /**
      * How many accepted back-channel logout tokens are remembered at once, each for the
@@ -391,12 +411,15 @@ public class BffRuntimeProducer {
      * entirely" and "block present, key omitted" are the same posture — verification ON.
      */
     private final EgressTlsConfig egressTls;
+    /** Guards the one-time assembly of {@link #backChannel}. */
+    private final Object backChannelLock = new Object();
     /**
-     * The one provider-metadata outcome view of the active runtime. The discovery supplier the runtime
-     * assembles records into it, and {@link #discoveryStatus()} publishes it; created here so both
-     * producer methods share it whichever runs first.
+     * The one back-channel configuration of the active runtime and the one caching discovery resolver
+     * over it, assembled on first need by whichever of {@link #bffRuntime()} and
+     * {@link #discoveryResolver()} runs first, so the runtime's engine legs and the readiness probe share
+     * the same resolver and every leg dials with the same configuration. {@code null} until then.
      */
-    private final DiscoveryStatus discoveryStatus = DiscoveryStatus.tracking();
+    private @Nullable BackChannel backChannel;
 
     /**
      * @param gatewayConfig         the bound global gateway document carrying the {@code oidc} block and
@@ -461,28 +484,65 @@ public class BffRuntimeProducer {
     }
 
     /**
-     * Produces the non-fetching view of the most recent OIDC provider-metadata resolution.
+     * Produces the active runtime's one engine caching discovery resolver, whose non-fetching
+     * {@code status()} the readiness probe reports under {@code oidc_discovery}.
      * <p>
-     * {@link Singleton} because the view is final and fixed once chosen. On an active BFF runtime it
-     * is the view the runtime's discovery supplier records into; producing it never resolves the
-     * metadata and never builds the runtime. A bearer-only gateway gets the inert view.
+     * {@link Singleton} because it is the very instance every engine leg of the runtime resolves the
+     * provider metadata through. Producing it never resolves the metadata and never builds the runtime.
+     * A bearer-only gateway has no OIDC back-channel and therefore no resolver: callers resolve this bean
+     * only after {@link #isBffMode(OidcConfig)} has confirmed an active runtime.
      *
-     * @return the tracking view for a recognised {@code session.mode}, or the inert view for a
-     *         bearer-only gateway
+     * @return the runtime's caching discovery resolver
+     * @throws IllegalStateException when the gateway runs no BFF runtime
      */
     @Produces
     @Singleton
-    public DiscoveryStatus discoveryStatus() {
+    public CachingDiscoveryResolver discoveryResolver() {
         OidcConfig oidc = gatewayConfig.oidc();
-        return oidc != null && isBffMode(oidc) ? discoveryStatus : DiscoveryStatus.inert();
+        if (oidc == null || !isBffMode(oidc)) {
+            throw new IllegalStateException("No BFF-mode oidc block — the gateway resolves no OIDC provider metadata");
+        }
+        return backChannel(oidc).discovery();
+    }
+
+    /**
+     * The runtime's one back-channel configuration and caching discovery resolver, assembled once. The
+     * configuration refuses the relaxed-hostname / trust-profile collision itself, so a refused posture
+     * leaves nothing assembled and every later call refuses again.
+     */
+    private BackChannel backChannel(OidcConfig oidc) {
+        synchronized (backChannelLock) {
+            BackChannel assembled = backChannel;
+            if (assembled == null) {
+                ClientConfiguration configuration = backChannelConfiguration(oidc);
+                assembled = new BackChannel(configuration, new CachingDiscoveryResolver(
+                        new DiscoveryResolver(configuration), DISCOVERY_TTL, DISCOVERY_GRACE_PERIOD,
+                        DISCOVERY_MIN_REFRESH_INTERVAL, Duration.ZERO, Clock.systemUTC()));
+                backChannel = assembled;
+            }
+            return assembled;
+        }
+    }
+
+    /**
+     * The one back-channel configuration of the active runtime and the caching discovery resolver over it.
+     *
+     * @param configuration the configuration every engine leg dials the identity provider with
+     * @param discovery     the caching resolver every engine leg and the readiness probe share
+     */
+    private record BackChannel(ClientConfiguration configuration, CachingDiscoveryResolver discovery) {
     }
 
     /**
      * The mode-aware activation predicate: a BFF runtime is built for either recognised
      * {@code session.mode} — {@code server} or {@code cookie} — provided a {@code redirect_uri} is
-     * configured. An unrecognised or absent mode leaves the gateway bearer-only.
+     * configured. An unrecognised or absent mode leaves the gateway bearer-only. Shared with the
+     * readiness probe, which reports the {@code oidc} and {@code oidc_discovery} data exactly when it holds.
+     *
+     * @param oidc the global {@code oidc} block
+     * @return {@code true} when the gateway runs an active BFF runtime
      */
-    private static boolean isBffMode(OidcConfig oidc) {
+    static boolean isBffMode(OidcConfig oidc) {
         OidcConfig.Session session = oidc.session();
         // isRecognisedMode() is the SHARED mode predicate on the config model — the mode spelling is
         // never compared against a locally-declared constant here.
@@ -529,7 +589,8 @@ public class BffRuntimeProducer {
         // through ScopedEngineFlows (ADR-0083), the step-up re-drive included, so there is exactly one
         // configuration and one pinned posture.
         reportBackChannelPosture(oidc);
-        ClientConfiguration clientConfiguration = backChannelConfiguration(oidc);
+        BackChannel runtimeBackChannel = backChannel(oidc);
+        ClientConfiguration clientConfiguration = runtimeBackChannel.configuration();
         ClientCredential clientCredential = selectClientCredential(oidc, clientId, issuer);
         ClientAuthentication clientAuthentication = clientCredential.authentication();
         // ADR-0058: one sender-constraint key, and the one SenderConstraint it hands out, for the whole
@@ -538,10 +599,11 @@ public class BffRuntimeProducer {
         // FAPI 2.0 section 6.8: the client assertion and the DPoP proofs are signed with two keys.
         refuseSharedSigningKey(clientCredential.signingKey(), senderConstraintKey);
         SenderConstraint senderConstraint = senderConstraintKey.senderConstraint();
-        // Every attempt records its outcome into the published DiscoveryStatus; memoize caches a
-        // resolved value only, so a failed attempt is recorded and the next engine use retries.
-        Supplier<ProviderMetadata> metadata = memoize(
-                discoveryStatus.recording(() -> new DiscoveryResolver(clientConfiguration).resolve()));
+        // Every engine leg resolves the provider metadata through the runtime's one caching resolver: a
+        // fresh document is served from the cache, a stale one is refreshed on that use, and the readiness
+        // probe reads the same resolver's status (ADR-0079).
+        CachingDiscoveryResolver discovery = runtimeBackChannel.discovery();
+        Supplier<ProviderMetadata> metadata = discovery::resolve;
 
         TokenValidator validator = tokenValidator.get();
         TokenValidationBridge tokenBridge = new TokenValidationBridge(validator);
@@ -645,11 +707,14 @@ public class BffRuntimeProducer {
         // ONE coordinator serves both stage seams — the near-expiry leg and the scope-driven leg — so the
         // two share its single-flight exclusion.
         RevocationClient revocationClient = new RevocationClient(clientConfiguration);
+        // The coordinator verifies every processed refresh through the engine's RefreshResultVerifier over
+        // the runtime's one ID-token bridge before anything of it is persisted (OIDC Core 12.2, ADR-0084).
         TokenRefreshCoordinator refreshCoordinator = refreshEnabled
                 ? new TokenRefreshCoordinator(refreshLeeway,
                 sessionRecord -> tokenBridge.validateAccessToken(sessionRecord.accessToken())
                         .getExpirationDateTime().toInstant(),
                 (refreshToken, scopes) -> scopedFlows.refresh(metadata.get(), refreshToken, scopes),
+                idBridge,
                 sessionBinding,
                 liveRefreshToken -> revokeRefreshToken(revocationClient, metadata.get(), liveRefreshToken,
                         clientAuthentication),
@@ -752,7 +817,7 @@ public class BffRuntimeProducer {
                 new BackchannelLogoutEndpoint(backchannelReceiver, sessionBinding);
 
         // D5 RP-initiated logout. The discovery-sourced end_session_endpoint is handed over as the
-        // memoized metadata supplier itself, never as a resolved value: the logout asks for it per
+        // caching resolver's supplier itself, never as a resolved value: the logout asks for it per
         // request and only after the local session is gone, so neither a provider without that
         // endpoint nor a failed discovery can stand between a user and the end of their session.
         // buildLogoutEndpoint binds the token-revocation seam to revokeOnLogout over the runtime's one
@@ -766,8 +831,10 @@ public class BffRuntimeProducer {
         // session.csrf.trusted_origins lists.
         CsrfDefence csrfDefence = new CsrfDefence(trustedOrigins);
         CsrfDefence logoutDefence = csrfDefence.withGatewayOrigin(gatewayOrigin);
-        Supplier<LogoutEndpoint> logoutEndpoint = memoize(() -> buildLogoutEndpoint(oidc, gatewayOrigin,
-                metadata, sessionBinding, revocationClient, clientAuthentication, logoutDefence));
+        // The assembly reads no provider metadata (see buildLogoutEndpoint), so it is built here, once.
+        LogoutEndpoint assembledLogoutEndpoint = buildLogoutEndpoint(oidc, gatewayOrigin, metadata, sessionBinding,
+                revocationClient, clientAuthentication, logoutDefence);
+        Supplier<LogoutEndpoint> logoutEndpoint = () -> assembledLogoutEndpoint;
 
         // build(...) is reached for BOTH modes, so the diagnostic must name the mode that was actually
         // resolved — this is the line an operator greps to confirm which binding came up.
@@ -1274,7 +1341,8 @@ public class BffRuntimeProducer {
      *
      * @param revocationClient     the runtime's one engine revocation client, on the pinned back-channel
      *                             posture
-     * @param metadata             the memoized provider metadata, resolved here and not at assembly
+     * @param metadata             the provider metadata through the runtime's caching resolver, resolved
+     *                             here and not at assembly
      * @param clientAuthentication the runtime's one confidential-client authentication
      * @param session              the session being logged out
      */
@@ -1425,7 +1493,8 @@ public class BffRuntimeProducer {
      *
      * @param oidc                 the global {@code oidc} block
      * @param gatewayOrigin        the gateway's own origin, the base of the default return leg
-     * @param metadata             the memoized provider metadata, resolved by the seams and not here
+     * @param metadata             the provider metadata through the runtime's caching resolver, resolved
+     *                             by the seams and not here
      * @param sessionBinding       the session binding the logout resolves, destroys and clears through
      * @param revocationClient     the runtime's one engine revocation client
      * @param clientAuthentication the runtime's one confidential-client authentication
@@ -1509,34 +1578,5 @@ public class BffRuntimeProducer {
             return 80;
         }
         return -1;
-    }
-
-    /**
-     * Wraps {@code delegate} in a thread-safe memoizing supplier: the delegate runs on
-     * {@link Supplier#get()} until it yields a value, and every later call returns that value without
-     * running it. Only a resolved value is cached: an attempt that throws leaves nothing behind, so the
-     * next call runs the delegate again. Used to defer OIDC discovery (and the discovery-dependent logout
-     * endpoint) to first request rather than boot.
-     */
-    private static <T> Supplier<T> memoize(Supplier<T> delegate) {
-        AtomicReference<T> cache = new AtomicReference<>();
-        return () -> {
-            T existing = cache.get();
-            if (existing != null) {
-                return existing;
-            }
-            // Not an AtomicReference update: the delegate performs OIDC discovery (network I/O)
-            // and must run exactly once while concurrent callers wait for its result. AtomicReference.updateAndGet
-            // or compareAndSet would let racing callers each run the delegate, so the check-and-run is a
-            // multi-step critical section that only a lock keeps atomic.
-            synchronized (cache) { // NOSONAR java:S2442 multi-step critical section, see above
-                T current = cache.get();
-                if (current == null) {
-                    current = Objects.requireNonNull(delegate.get(), "memoized supplier produced null");
-                    cache.set(current);
-                }
-                return current;
-            }
-        };
     }
 }
