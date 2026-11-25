@@ -3286,11 +3286,12 @@ concurrency half is `TokenRefreshCoordinator`'s single-flight *per session, per 
 requests on one session share one redemption, so one instance never presents the same token twice
 and never forks the family itself.
 
-*Control -- a refresh cannot rotate another identity into the session (closed gap, token-sheriff
-0.9.10).* Until 0.9.10 the gateway persisted whatever a processed refresh returned: the engine's
-refresh flow validates the refreshed access token but leaves the refreshed ID token, and whose session
-the refresh belongs to, to its caller. A refresh response could therefore rotate an ID token of a
-foreign issuer or a foreign subject into the session, which would carry that identity from then on.
+*Control -- a refresh cannot rotate an untrusted or inconsistent identity into the session (closed
+gap, token-sheriff 0.9.10).* Until 0.9.10 the gateway persisted whatever a processed refresh returned:
+the engine's refresh flow validates the refreshed access token but leaves the refreshed ID token, and
+whose session the refresh belongs to, to its caller. A refresh response could therefore rotate into
+the session an ID token of a foreign subject, or of an issuer the gateway does not trust or that
+differs from the refreshed access token's, and the session would carry that identity from then on.
 `TokenRefreshCoordinator` now runs the engine's `RefreshResultVerifier` (OIDC Core 12.2) on every
 processed refresh before anything of it is built or persisted, bound to the session's subject: the
 refreshed ID token is validated through the gateway's ID-token pipeline, refused when its `iss` or
@@ -3303,7 +3304,11 @@ response without an ID token keeps the session's previous one
 (link:adr/0084-A_refreshed_ID_token_that_fails_the_OIDC_refresh-result_checks_ends_the_session.adoc[ADR-0084]).
 *Residual (accepted):* the subject binding fails closed on a refreshed access token without `sub`, so
 an identity provider configured to omit `sub` from access tokens ends every session at its first
-refresh.
+refresh. *Residual (accepted):* the refreshed issuer is not compared with the session's original
+issuer. OIDC Core 12.2's "same `iss` as the session" is met only through the trusted-issuer set and the
+access-token consistency check, so with more than one trusted issuer, a token endpoint that returned
+another trusted issuer's tokens for the same subject would pass the verification. That requires the
+identity provider's token endpoint itself to answer with another trusted issuer's tokens.
 
 *Observed Keycloak behaviour (the pinned Keycloak image, `integration-tests/docker-compose.yml`,
 pinned by `BffRefreshReuseIT`).* On a detected replay
@@ -3357,7 +3362,8 @@ detection signal rotation exists to provide -- an operator decision, never a gat
 a targeted IdP revocation ends exactly one server-mode session while its sibling keeps refreshing;
 concurrent refreshes on one session within an instance make one redemption; cookie mode never
 exposes the refresh token to the browser. A refresh response whose ID token names a foreign subject or
-a foreign issuer ends the session, persists nothing and revokes the returned refresh token, and the
+an issuer the gateway does not trust ends the session, persists nothing and revokes the returned
+refresh token, and the
 assertion goes red when the verifier call is removed (`TokenRefreshCoordinatorTest`).
 
 [#bff-09]

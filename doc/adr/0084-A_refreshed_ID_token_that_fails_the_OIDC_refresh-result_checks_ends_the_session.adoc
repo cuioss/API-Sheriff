@@ -69,11 +69,14 @@ the first resolved discovery document for the lifetime of the process. The runti
 metadata through one engine `CachingDiscoveryResolver` over the engine `DiscoveryResolver`, with fixed
 values (operator decision `discovery-ttl`):
 
-* *Time to live: one hour.* A resolved document is served for an hour and refreshed on the next engine
-  use after that, so a changed provider endpoint is picked up without a restart.
+* *Time to live: one hour.* A resolved document is served for an hour. The resolver runs no background
+  refresh: it refreshes the document only when an engine use resolves the metadata after the time to
+  live has expired. A changed provider endpoint therefore takes effect, without a restart, on the first
+  resolution after the one-hour time to live expires.
 * *Grace period: 24 hours.* While refreshes fail, the last document is still served for 24 hours past
-  its time to live. After that the resolution fails closed, and login and refresh stop until discovery
-  succeeds again, 25 hours after the last successful resolution.
+  its time to live. The grace period is likewise evaluated only on a resolution: the first resolution at
+  or after 25 hours past the last successful resolution fails closed, and login and refresh stay refused
+  until a later resolution succeeds.
 * *Minimum refresh interval: 30 seconds.* After a failed refresh the next attempt waits 30 seconds, so
   an identity-provider outage is not hit by every request. Before the first success this means a failed
   discovery is retried at most every 30 seconds, where the memo retried on every engine use.
@@ -134,19 +137,29 @@ posture every engine leg of the runtime dials with (ADR-0045).
 
 == Consequences
 
-* *A refresh can no longer rotate another identity into a session.* A foreign `iss` or `sub` on the
-  refreshed ID token, or a refreshed access token for another subject, ends the session.
-  `TokenRefreshCoordinatorTest` pins both with really signed ID tokens, and the tests go red when the
-  verifier call is removed.
+* *A refresh whose result fails the refresh-result checks ends the session.* The session ends when the
+  refreshed ID token fails validation against the gateway's trusted issuers (signature, `iss`, `aud`,
+  `exp` / `iat`), when its `iss` or `sub` differs from the refreshed access token's, or when the
+  refreshed access token does not name the session's subject. The `RefreshResultVerification` tests of
+  `TokenRefreshCoordinatorTest` pin four cases: a refreshed ID token for another subject and one from an
+  issuer the gateway does not trust, both really signed, a refreshed access token for another subject,
+  and a verification that fails. The tests go red when the verifier call is removed.
+* *Residual (accepted): the refreshed issuer is not compared with the session's original issuer.* OIDC
+  Core 12.2's "same `iss` as the session" is met only through the trusted-issuer set and the
+  access-token consistency check. With more than one trusted issuer, a token endpoint that returned
+  another trusted issuer's tokens for the same subject would pass the verification. That requires the
+  identity provider's token endpoint itself to answer with another trusted issuer's tokens.
 * *An identity provider whose refreshed access tokens carry no `sub` ends every session at its first
   refresh.* The verifier's subject binding fails closed on an absent `sub`. Keycloak access tokens
   carry `sub` by default; a provider configured to omit it (a lightweight access token) must keep it
   for the BFF client.
 * *One more `WARN` per refused refresh.* `ApiSheriff-153` and `ApiSheriff-111` are written together.
   The engine adds its own `WARN` for a 12.2 inconsistency.
-* *Discovery follows provider changes within an hour, and fails closed after 25 hours of failure.*
-  Before, a running gateway kept its first document until a restart, and never failed closed while
-  it had one.
+* *Discovery follows provider changes after its time to live, and fails closed once a resolution
+  falls outside the grace period.* A changed endpoint takes effect on the first resolution after the
+  one-hour time to live expires. The first resolution at or after 25 hours past the last success fails
+  closed, and login and refresh stay refused until a later resolution succeeds. Before, a running
+  gateway kept its first document until a restart, and never failed closed while it had one.
 
 == Links
 
@@ -161,4 +174,5 @@ posture every engine leg of the runtime dials with (ADR-0045).
 * link:0079-The_oidc_discovery_readiness_datum_reports_provider-metadata_resolution_and_never_changes_the_verdict.adoc[ADR-0079]
   -- the readiness datum read from the discovery resolver
 * https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokenResponse[OpenID Connect Core 1.0, section 12.2]
-* link:../security-threat-model.adoc[Security threat model] -- the closed refresh-identity gap
+* link:../security-threat-model.adoc[Security threat model] -- the refresh-identity control and its
+  accepted residuals

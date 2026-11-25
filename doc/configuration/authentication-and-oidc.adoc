@@ -1056,6 +1056,7 @@ or `oidc.sender_constraint.key_file`, then:
 | The two halves are of different key types | `holds a PRIVATE KEY block with an RSA key and a PUBLIC KEY block that is not an RSA public key`, or the same for EC | Write the public block from this private key.
 | An RSA key below the minimum | `holds an RSA key with a modulus below 2048 bits` | Use at least 2048 bits.
 | An EC key on another curve | `holds an EC key on a curve other than P-256` | Use P-256.
+| An EC public point that is not on P-256 | `holds a PUBLIC KEY block whose public point is not valid for its key` | Write the public block from this private key.
 | An Ed25519 key | `holds an EdDSA key; EdDSA is not offered` | Use RSA >= 2048 bits or EC P-256.
 | Any other key type | `holds a PRIVATE KEY block that is neither an RSA nor an EC key in unencrypted PKCS#8 form` | Use RSA or EC P-256.
 |===
