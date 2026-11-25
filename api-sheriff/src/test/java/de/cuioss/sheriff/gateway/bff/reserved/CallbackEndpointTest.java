@@ -376,6 +376,65 @@ class CallbackEndpointTest {
             assertTrue(pendingStore.consume(recordId, T0).isPresent(),
                     "the record is untouched — parse fails before binding resolution");
         }
+
+        @ParameterizedTest(name = "unparsable query \"{0}\"")
+        @ValueSource(strings = {"code=%zz&state=", "code=abc&state=%zz"})
+        @DisplayName("Should reject an unparsable callback query 400 without consuming the pending record")
+        void shouldRejectAnUnparsableQuery(String prefix) {
+            CallbackOutcome outcome = endpoint.handle(prefix + state, bindingCookieHeader, QUOTA_KEY, T0);
+
+            assertEquals(400, outcome.status(), "a query that does not decode is refused, never guessed at");
+            assertFalse(outcome.isRedirect());
+            assertTrue(pendingStore.consume(recordId, T0).isPresent(),
+                    "the record is untouched — parse fails before binding resolution");
+        }
+
+        @Test
+        @DisplayName("Should complete the same callback once each parameter is named once and decodes (matched control)")
+        void shouldAcceptTheWellFormedQuery() {
+            CallbackOutcome outcome = endpoint.handle("code=abc&state=" + state, bindingCookieHeader, QUOTA_KEY, T0);
+
+            assertEquals(302, outcome.status(), "the refusals above are of the malformed parameter, not the fixture");
+        }
+    }
+
+    /**
+     * The callback a query-mode authorization response produces. The pushed request asks for
+     * {@code response_mode=query}, so the identity provider answers with a {@code 302} whose
+     * {@code Location} carries {@code code}, {@code state} and {@code iss} in the query, and the browser
+     * follows it with a top-level GET — the navigation on which it sends the {@code SameSite=Lax}
+     * binding cookie, next to whatever other cookies the gateway origin holds. A {@code form_post}
+     * response would instead arrive as a cross-site POST, on which the browser withholds a Lax cookie,
+     * and that callback is refused {@code 403}.
+     */
+    @Nested
+    @DisplayName("Query-mode callback with the Lax binding cookie")
+    class QueryModeCallback {
+
+        @Test
+        @DisplayName("Should complete the top-level GET callback that carries the Lax binding cookie among other cookies")
+        void shouldCompleteTheTopLevelGetCallback() {
+            assertTrue(bindingCodec.toSetCookieHeader(recordId).endsWith("; SameSite=Lax"),
+                    "precondition: the binding cookie is Lax, so it is sent on exactly this navigation");
+            String query = "code=auth-code&state=" + state + "&iss=" + "https%3A%2F%2Fidp.example.com";
+            String cookies = "theme=dark; " + bindingCookieHeader + "; other=1";
+
+            CallbackOutcome outcome = endpoint.handle(query, cookies, QUOTA_KEY, T0);
+
+            assertEquals(302, outcome.status(), "the query-mode callback completes the login");
+            assertEquals(RETURN_URL, outcome.location());
+        }
+
+        @Test
+        @DisplayName("Should refuse the same callback 403 when the browser withheld the binding cookie (matched control)")
+        void shouldRefuseTheCallbackWithoutTheBindingCookie() {
+            String query = "code=auth-code&state=" + state + "&iss=" + "https%3A%2F%2Fidp.example.com";
+
+            CallbackOutcome outcome = endpoint.handle(query, "theme=dark; other=1", QUOTA_KEY, T0);
+
+            assertEquals(403, outcome.status(), "a cross-site POST callback, which carries no Lax cookie, dead-ends here");
+            assertTrue(pendingStore.consume(recordId, T0).isPresent(), "the record was never resolved");
+        }
     }
 
     @Nested
@@ -1128,6 +1187,41 @@ class CallbackEndpointTest {
                 assertEquals(1, wideningCalls.size(), "the refusal follows the pushed interactive request");
                 assertEquals(1, saturated.size(), "the saturated store holds no re-drive record");
                 assertEquals(live, resolveServerSession(), "the live session is unchanged");
+            }
+
+            /**
+             * The re-drive's request is pushed (ADR-0058), and the seam raises a refused push as the
+             * {@code 502} event before the widening stores anything. The callback lets it propagate
+             * exactly as before the push moved into the engine: no {@code 302}, no new binding cookie, the
+             * live session untouched. The matched control is {@link #shouldRedriveOneInteractiveAttempt}.
+             */
+            @Test
+            @DisplayName("Should propagate a refused re-drive push as the 502 refusal, set no cookie, keep the session")
+            void shouldPropagateARefusedRedrivePush() {
+                GatewayException pushRefused = new GatewayException(EventType.UPSTREAM_ERROR,
+                        "Pushed authorization request refused (push-failed)");
+                SessionWidening refusingWidening = new SessionWidening((scopes, silent) -> {
+                    wideningCalls.add(new WideningCall(Set.copyOf(scopes), silent, FlowContext.create(CALLBACK_URI)));
+                    throw pushRefused;
+                }, pendingStore, bindingCodec, GATEWAY_ORIGIN, RETURN_URL, Clock.fixed(T0, ZoneOffset.UTC));
+                CallbackEndpoint refusing = new CallbackEndpoint(successfulExchange(), pendingStore, bindingCodec,
+                        sessionBinding, SESSION_TTL, refusingWidening);
+                String query = "error=login_required&state=" + wideningState;
+                String cookies = requestCookies();
+                int pendingBefore = pendingStore.size();
+
+                GatewayException thrown = assertThrows(GatewayException.class,
+                        () -> refusing.handle(query, cookies, CALLBACK_QUOTA_KEY, CALLBACK_AT),
+                        "the refusal replaces the 302, so no new binding cookie is set");
+
+                assertAll("a refused re-drive push",
+                        () -> assertSame(pushRefused, thrown, "the seam's refusal reaches the edge unchanged"),
+                        () -> assertEquals(502, thrown.getEventType().httpStatus()),
+                        () -> assertEquals(1, wideningCalls.size(), "the interactive request was asked for once"),
+                        () -> assertFalse(wideningCalls.getFirst().silent(), "and it was the interactive one"),
+                        () -> assertEquals(pendingBefore - 1, pendingStore.size(),
+                                "the silent record was consumed and no re-drive record was stored"),
+                        () -> assertEquals(live, resolveServerSession(), "the live session is unchanged"));
             }
 
             @ParameterizedTest(name = "a second {0} is terminal")

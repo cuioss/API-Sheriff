@@ -23,19 +23,21 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
+import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PSSParameterSpec;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -358,6 +360,131 @@ class ClientSigningKeyTest {
         }
     }
 
+    /**
+     * The key id and the public members of one fixed key per key type, pinned to literal values. The
+     * expected values were computed outside the gateway, by an independent RFC 7638 computation over
+     * the public key alone, so a change in how the gateway renders a member or derives the thumbprint
+     * — a lost leading zero, a missing coordinate padding, a reordered canonical member set — changes a
+     * published {@code kid} and fails here, even where the gateway and the engine would still agree
+     * with each other.
+     * <p>
+     * The two keys are published test fixtures, held as base64 DER and armoured only into the
+     * temporary key file; they sign nothing outside this class.
+     */
+    @Nested
+    @DisplayName("Pinned key id and public members for a fixed key")
+    class PinnedKeyId {
+
+        private static final String EC_PRIVATE_DER = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgZj7UCDhDJ6BUt5YB"
+                + "coXIEsQk+B4aSjfeONKV2uytwXmhRANCAARLjnBPFPjbSt+KLUwDJ+jT18EYYcGN"
+                + "ops7rZs/pG6ny6rN75XSCrQ6IZgFW8b7BJkIeerAZT4EoT6sLAkIPJpJ";
+        private static final String EC_PUBLIC_DER = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAES45wTxT420rfii1MAyfo09fBGGHB"
+                + "jaKbO62bP6Rup8uqze+V0gq0OiGYBVvG+wSZCHnqwGU+BKE+rCwJCDyaSQ==";
+        private static final String RSA_PRIVATE_DER = """
+                MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDWbJfzAsbMT+FY
+                tXJpOkjtHm6b/csY0RcqdnrXIhQKnxoBPH7pyg01mAwL0Ckkf9tfcLU0VV796HmN
+                YypASz0T8+8uBFZ/4HAjoSwksRNy3QcFBFeoavYNX9M8WqWeClfffpoDjEnIRCOo
+                L13hr+C2bv872kCWtL1PSfl5vxTIcjKAMc5y8Gfl76SnwIhQhu0KqrW7Xh1XKPSp
+                h+MfEQUgljH7Oqb3hnXgfb7SmSYrNd7E7KFJmr+BtC6MkAqvsW9YgcTobjFW5ftx
+                E8SBeEX1tmcaosl5Sn4qVthfPYOEQUrmo6xpnrT0YCen2Cs5JHDhjjGCDhHLI0eg
+                g2xoqkj9AgMBAAECggEANZmuwC4FAOTE+ZZd88UAntmZH8BpCRqXdmNooKehp+gO
+                qZl0Rj/eXnPUKw3NgxS9A1Yazeq7VLBM1lWgJbNJINg9BV1LPCsgDSAId2GWcYOj
+                8hKcUPrv5/b4yGEGfoOqZLFykYl7libGXQ/+IWEERMZpYg5UT/f9TLk6tj7YVKSV
+                yMHb946xp6NicZ3CXdy6cNxza89yr677u2VHcfk7qWrgwoLv9iNj3iDSUOkqimbU
+                Gt5AaL25qIUHSW4O13ylyQG830USQUGm+9CC/a61ax03kbzmLpCBIxnVTxAab0yk
+                NQCzuqPPkPQGJn+SJhDTJvlSXgrihHbzyZPGH/SnpwKBgQDX2dCYm3ri8xOUNfFz
+                WP+WqtlnDsumfKULiSV6uzCsL+Dvm/EAlKghS+VsLNAaZAwC7z5HMNigUWcaflEt
+                n51FitlHmijYabY/x2rGEJdX7wZtjSIoAeQankPHE5W3OGB3cni0Lc3OanTKmWcN
+                4XvH6cxWx1Ah0mCnqGXp9pGlrwKBgQD+TtiVvgpHlhe7g9CxErOYMwCwp9LgYHZf
+                JaJ8h1Z3KtB2TPJuc0FO4GNXoPkBGKRKrX372pQgg1pHI5v8KKDIAr+kVSe8IjNY
+                yXnCHLAoesQnSsExTOql1zTyc1kUdfWB6a4WYSedvyhAEaxOJEGPrfg6o4hiegvG
+                rOeAXyETEwKBgGp3z8JWfqjPCUtDyFMDBR8GKrIAxEbcmHQ2M7xz9LAZ9bN6kced
+                i8jQrNtMx2EdFCemZmurFk8Nl/OjdtswLd0NfdspmRgWHIUdEfecW2pORjdnM//T
+                3vWaNwhNCr4TGtIQLqWBKlC0heMhA4n/PJUBJ39uVII6SN6p24spyfGVAoGAcaX6
+                1LChF2zUHlDCKuAYsqPYYxoc+3kgbVT8UHqLAaZ4kuXAUevf+8f7nWWq4fqJMXZn
+                Hu6H1B/fcHtRclcVw0y3KFGF+GWwXLVtXHpFn1F957FYtReSpZqPZup1nNc6aFxu
+                GEJC2hRbgIZlYmaBhhxRGqOKh7fTG26Z5pycw1ECgYAKTzNmi+xeZWRvC/gx5EMj
+                CNyg4ttiaXOh7/ttq5R03/9XkozTpRYDgsKCq20EqQ2TW6oCU8w0+CaNYJ1oU1PR
+                TUiiFCcwVPNZMJF3M0KwYIiPMAnQdJBOMF9L5tHVdvzsKSZLfZK//gZl3BytKSaC
+                IvtOy+ZjaveB5KIcgTJrVg==
+                """;
+        private static final String RSA_PUBLIC_DER = """
+                MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1myX8wLGzE/hWLVyaTpI
+                7R5um/3LGNEXKnZ61yIUCp8aATx+6coNNZgMC9ApJH/bX3C1NFVe/eh5jWMqQEs9
+                E/PvLgRWf+BwI6EsJLETct0HBQRXqGr2DV/TPFqlngpX336aA4xJyEQjqC9d4a/g
+                tm7/O9pAlrS9T0n5eb8UyHIygDHOcvBn5e+kp8CIUIbtCqq1u14dVyj0qYfjHxEF
+                IJYx+zqm94Z14H2+0pkmKzXexOyhSZq/gbQujJAKr7FvWIHE6G4xVuX7cRPEgXhF
+                9bZnGqLJeUp+KlbYXz2DhEFK5qOsaZ609GAnp9grOSRw4Y4xgg4RyyNHoINsaKpI
+                /QIDAQAB
+                """;
+
+        private Path fixedKeyFile(String privateDer, String publicDer) {
+            Base64.Decoder decoder = Base64.getMimeDecoder();
+            return TestSigningKeys.writeContent(directory,
+                    TestSigningKeys.pemBlock(TestSigningKeys.PRIVATE_KEY_LABEL, decoder.decode(privateDer))
+                            + TestSigningKeys.pemBlock(TestSigningKeys.PUBLIC_KEY_LABEL, decoder.decode(publicDer)));
+        }
+
+        @Test
+        @DisplayName("Should derive the pinned kid and publish the pinned members for the fixed EC P-256 key")
+        void shouldPinTheEcKeyIdAndMembers() {
+            Path keyFile = fixedKeyFile(EC_PRIVATE_DER, EC_PUBLIC_DER);
+
+            ClientSigningKey key = ClientSigningKey.resolve(keyFile.toString(), Purpose.SENDER_CONSTRAINT);
+
+            assertAll("the fixed EC key",
+                    () -> assertEquals("vpJsIg-tGgLLoLUuU2BHxLvmUSQ2OihaJVOkz17ychc", key.keyId(),
+                            "the kid is the RFC 7638 thumbprint of the fixed public key"),
+                    () -> assertEquals(List.of("EC", "sig", "ES256", key.keyId(), "P-256",
+                                    "S45wTxT420rfii1MAyfo09fBGGHBjaKbO62bP6Rup8s",
+                                    "qs3vldIKtDohmAVbxvsEmQh56sBlPgShPqwsCQg8mkk"),
+                            List.copyOf(key.publicJwk().values()),
+                            "the published members, in their fixed order, are bit-identical"));
+        }
+
+        @Test
+        @DisplayName("Should derive the pinned kid and publish the pinned members for the fixed RSA-2048 key")
+        void shouldPinTheRsaKeyIdAndMembers() {
+            Path keyFile = fixedKeyFile(RSA_PRIVATE_DER, RSA_PUBLIC_DER);
+
+            ClientSigningKey key = ClientSigningKey.resolve(keyFile.toString(), Purpose.CLIENT_AUTHENTICATION);
+
+            assertAll("the fixed RSA key",
+                    () -> assertEquals("1aGnBU-wzdMbDAwp2KmwYtShHa1mEDwx3M07JWsmvC8", key.keyId(),
+                            "the kid is the RFC 7638 thumbprint of the fixed public key"),
+                    () -> assertEquals(List.of("RSA", "sig", "PS256", key.keyId(),
+                                    "1myX8wLGzE_hWLVyaTpI7R5um_3LGNEXKnZ61yIUCp8aATx-6coNNZgMC9ApJH_bX3C1NFVe_eh5jWMqQEs9"
+                                            + "E_PvLgRWf-BwI6EsJLETct0HBQRXqGr2DV_TPFqlngpX336aA4xJyEQjqC9d4a_gtm7_O9pAlrS9T0n5eb"
+                                            + "8UyHIygDHOcvBn5e-kp8CIUIbtCqq1u14dVyj0qYfjHxEFIJYx-zqm94Z14H2-0pkmKzXexOyhSZq_gbQu"
+                                            + "jJAKr7FvWIHE6G4xVuX7cRPEgXhF9bZnGqLJeUp-KlbYXz2DhEFK5qOsaZ609GAnp9grOSRw4Y4xgg4Ryy"
+                                            + "NHoINsaKpI_Q",
+                                    "AQAB"),
+                            List.copyOf(key.publicJwk().values()),
+                            "the published members, in their fixed order, are bit-identical"));
+        }
+
+        @ParameterizedTest
+        @EnumSource(KeyType.class)
+        @DisplayName("Should write no log record at any level that carries the path, the kid or a key member")
+        void shouldLogNothingOfAProvidedKey(KeyType keyType) {
+            Path keyFile = TestSigningKeys.writeKeyFile(directory, keyType.generate());
+
+            ClientSigningKey key = ClientSigningKey.resolve(keyFile.toString(), Purpose.CLIENT_AUTHENTICATION);
+
+            List<String> disclosures = new ArrayList<>(List.of(keyFile.toString(), key.keyId()));
+            key.publicJwk().entrySet().stream()
+                    .filter(member -> List.of("n", "x", "y").contains(member.getKey()))
+                    .forEach(member -> disclosures.add((String) member.getValue()));
+            for (TestLogLevel level : TestLogLevel.values()) {
+                for (String disclosure : disclosures) {
+                    assertEquals(List.of(), TestLoggerFactory.getTestHandler()
+                                    .resolveLogMessagesContaining(level, disclosure),
+                            "no " + level + " record carries the path, the kid or a key member");
+                }
+            }
+        }
+    }
+
     @Nested
     @DisplayName("Refusal of an unusable key file")
     class FileRefusal {
@@ -415,6 +542,29 @@ class ClientSigningKeyTest {
                     + TestSigningKeys.publicBlock(keyPair.getPublic()) + padding);
 
             assertContentRefusal(keyFile, "names a file larger than the 16384 byte limit");
+        }
+
+        /**
+         * The public members are rendered by the engine ({@code JwkPublicMembers.of}), which refuses an
+         * EC point that is not on P-256 with its own text. The JDK key factory accepts such a point —
+         * asserted first, so the case cannot pass on a factory refusal — which leaves the engine's
+         * renderer as what refuses the file. The refusal must still name the field of the purpose and
+         * carry neither the path nor the key.
+         */
+        @Test
+        @DisplayName("Should refuse a PUBLIC KEY block whose EC point is not on P-256, naming the field")
+        void shouldRefuseAnOffCurvePublicPoint() throws Exception {
+            Base64.Decoder decoder = Base64.getMimeDecoder();
+            byte[] offCurvePublic = decoder.decode(PinnedKeyId.EC_PUBLIC_DER);
+            offCurvePublic[offCurvePublic.length - 1] ^= 0x01;
+            Path keyFile = TestSigningKeys.writeContent(directory,
+                    TestSigningKeys.pemBlock(TestSigningKeys.PRIVATE_KEY_LABEL, decoder.decode(PinnedKeyId.EC_PRIVATE_DER))
+                            + TestSigningKeys.pemBlock(TestSigningKeys.PUBLIC_KEY_LABEL, offCurvePublic));
+
+            assertDoesNotThrow(() -> KeyFactory.getInstance("EC").generatePublic(new X509EncodedKeySpec(offCurvePublic)),
+                    "the JDK key factory should accept the off-curve point, so the engine renderer is what refuses it");
+            assertContentRefusal(keyFile, Purpose.SENDER_CONSTRAINT, SENDER_CONSTRAINT_FIELD,
+                    "holds a PUBLIC KEY block whose public point is not valid for its key");
         }
 
         @Test

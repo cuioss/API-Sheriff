@@ -153,10 +153,10 @@ cross-site `POST`. Under `response_mode=form_post` the IdP returns the code by a
 The browser drops the binding cookie, the callback finds no pending login, and every real-browser
 login ends in `403`. The cookie side cannot move, so the transport moves.
 
-*The gateway selects `response_mode=query`.* `QueryResponseModeAuthorizationRequestBuilder` replaces
-the engine's `form_post` and copies every other parameter unchanged, in order and encoding. It is
-wired into every seam that builds an authorization request: the login, the session widening and the
-RFC 9470 step-up re-drive. The URL it builds is the parameter source of the pushed authorization
+*The gateway selects `response_mode=query`.* The engine defaults to `form_post` and offers `query`
+as a per-call option (`AuthorizationRequestOptions.responseMode(QUERY)`, token-sheriff 0.9.10).
+`ScopedEngineFlows` requests it on every seam that starts an authorization request: the login, the
+session widening and the RFC 9470 step-up re-drive. The option is part of the pushed authorization
 request (ADR-0058), so the mode travels to the IdP inside the push. The mode has no configuration
 key, because its other value cannot produce a working login.
 
@@ -459,8 +459,8 @@ silent and shows only in the deployments least equipped to diagnose it.
 
 * rebuilding the session record without the nonce, which changes the derived identity mid-session.
   The re-seal path fails loud instead of re-minting;
-* reverting to `form_post`, adding an authorization-request seam that bypasses the query builder, or
-  relaxing the binding cookie's `SameSite`;
+* reverting to `form_post`, adding an authorization-request seam that does not request
+  `ResponseMode.QUERY` through `ScopedEngineFlows`, or relaxing the binding cookie's `SameSite`;
 * splitting an updating write into a check and a write across two store calls;
 * using the session identity as a cookie value or a lookup key for a request;
 * letting any caller other than the session stage call `recordAccess`.
@@ -491,5 +491,5 @@ silent and shows only in the deployments least equipped to diagnose it.
 * link:../user/bff-session.adoc[Operator setup -- server-session BFF] and link:../user/bff-cookie.adoc[Operator setup -- cookie-based BFF].
 * link:../development/bff-session.adoc[Contributor guide -- server-session BFF] and link:../development/bff-cookie.adoc[Contributor guide -- cookie-based BFF].
 * link:../security-threat-model.adoc#bff-09[BFF-09] and link:../security-threat-model.adoc#bff-21[BFF-21] -- the accepted cookie-mode residuals.
-* `SessionBinding`, `ServerSessionBinding`, `CookieSessionBinding`, `ReservedPathRegistry`, `QueryResponseModeAuthorizationRequestBuilder` -- the implementation; `BffReservedPathPrecedenceIT`, `BffBackchannelLogoutIT`, `BffSessionIdleTimeoutIT` -- the integration tests.
+* `SessionBinding`, `ServerSessionBinding`, `CookieSessionBinding`, `ReservedPathRegistry`, `ScopedEngineFlows` -- the implementation; `BffReservedPathPrecedenceIT`, `BffBackchannelLogoutIT`, `BffSessionIdleTimeoutIT` -- the integration tests.
 * `ReservedPathRules` and `ReservedPathRulesTest` -- the boot refusals of the reserved-path amendment.

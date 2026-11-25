@@ -28,7 +28,6 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
 
-
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
@@ -87,12 +86,16 @@ import org.junit.jupiter.api.Test;
  * </ol>
  * <p>
  * <strong>Coverage is evaluated class → list, never list → class.</strong> The gate asks "is this
- * class covered by some entry?" and never "does every entry still name a live class". The list
- * legitimately carries entries this gate cannot see — most visibly the package-prefix entry
- * {@code de.cuioss.sheriff.token.client.flow}, which covers a package in another artifact — and the
- * detected set is deliberately <em>not</em> frozen to today's fully-qualified names: freezing it
- * would force an edit to this test for every legitimate new registration, which is exactly the
- * maintenance tax that makes a gate get deleted.
+ * class covered by some entry?" and never "does every entry still name a live class". An entry this
+ * gate cannot see — a package prefix, or a class in another artifact — would be legitimate and is
+ * not reported, and the detected set is deliberately <em>not</em> frozen to today's fully-qualified
+ * names: freezing it would force an edit to this test for every legitimate new registration, which is
+ * exactly the maintenance tax that makes a gate get deleted.
+ * <p>
+ * <strong>Engine classes are out of scope.</strong> The {@code token-sheriff-client} jar ships its
+ * own {@code native-image.properties} carrying the runtime-init entries for its {@code SecureRandom}
+ * holders, so the gateway's list names gateway classes only; {@code TokenClientNativeMetadataTest}
+ * guards the engine's list.
  * <p>
  * <strong>The properties file is read from {@code target/classes}, not the classpath.</strong>
  * {@code getResourceAsStream("/application.properties")} would resolve against the whole test
@@ -385,7 +388,7 @@ class NativeRuntimeInitRegistrationArchTest {
     /**
      * Answers coverage class → list: a class is registered when an entry names it exactly, or names a
      * package that contains it. GraalVM reads a bare package name as a prefix over that package and
-     * its classes, which is how the one package-prefix entry in the list covers a whole flow package.
+     * its classes, so a package-prefix entry covers every class beneath it.
      */
     private static boolean isRegistered(String className, Set<String> registrations) {
         return registrations.stream().anyMatch(entry -> isWithin(className, entry));

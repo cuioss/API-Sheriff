@@ -22,7 +22,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValueType;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
@@ -31,9 +30,21 @@ import org.jspecify.annotations.Nullable;
 /**
  * The pure OIDC back-channel-logout-token check pipeline (D2c residual, BFF-09).
  * <p>
- * The engine's issuer/JWKS infrastructure verifies the logout token's <em>signature</em> before it
- * reaches this validator (reuse of {@code token-sheriff-validation}, ADR-11); the library carries no
- * back-channel-logout support, so the gateway-side claim residual lives here. This validator is the
+ * The engine's signature-only entry point, {@code TokenValidator#verifySignature}, verifies the logout
+ * token's <em>signature</em> before it reaches this validator (reuse of {@code token-sheriff-validation},
+ * ADR-11, ADR-0050), and the gateway-side claim residual lives here.
+ * <p>
+ * <strong>Why the library's {@code logout.LogoutTokenValidator} is not used (token-sheriff 0.9.10).</strong>
+ * The released validator runs the same checks in the same order with the same outcome vocabulary, but
+ * its {@code events} check does not reproduce this one: it accepts the claim only when it arrives as a
+ * native JSON object whose back-channel member is itself an object, so an {@code events} claim carried
+ * as a JSON string — which this validator accepts, and its tests pin — is refused there. A replacement
+ * that changes which tokens destroy a session is not one-to-one, so the gateway keeps this validator
+ * and {@link LogoutTokenReplayGuard}. The released validator is also stricter at four further edges
+ * this one admits: a whitespace-padded {@code typ}, a blank or {@code null} {@code sub} beside a valid
+ * {@code sid}, a non-string {@code jti}, and a blank {@code nonce}.
+ * <p>
+ * This validator is the
  * <strong>sole</strong> authority over a logout token's claims — the seam ahead of it verifies the
  * signature and nothing else, deliberately, because the
  * <a href="https://openid.net/specs/openid-connect-backchannel-1_0.html">OpenID Connect Back-Channel

@@ -79,8 +79,11 @@ changes that touch the gateway.
 | Adopted unrelaxed; relaxed per host by `oidc.allowed_egress_hosts` (this record).
 
 | Engine-side DPoP issuance binding (`token_type` and `cnf.jkt`)
-| Adopted; the gateway's own duplicate check and `ApiSheriff-134` are retired (ADR-0058). The nested DSL-JSON converters it reads the access token through are registered for native, and
-  `TokenClientDslJsonReflectionTest` enumerates the client jar so the next one cannot be missed. Exactly three converters are new in the range, and all three are registered.
+| Adopted; the gateway's own duplicate check and `ApiSheriff-134` are retired (ADR-0058). The nested DSL-JSON converters it reads the access token through must be registered for native;
+  exactly three converters are new in the range. _Amended at 0.9.10:_ the registration no longer lives in the gateway. From token-sheriff 0.9.10 (TokenSheriff #898) the client jar ships
+  its own native-image metadata, a `reflect-config.json` naming every generated converter and a `native-image.properties` forcing the engine's `SecureRandom` holders to runtime
+  initialization, so the gateway's reflection holder and its `de.cuioss.sheriff.token.client.flow` runtime-init entry were deleted. `TokenClientNativeMetadataTest` enumerates the client
+  jar and fails when a generated converter, the DPoP-binding converter included, is missing from that metadata.
 
 | Refresh refusal `invalid_scope` classified as `SCOPE_REFUSED`
 | Adopted: backed off like a pre-redemption failure, the session and its refresh token are kept.

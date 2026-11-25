@@ -27,7 +27,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
-
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.http.forwarded.ForwardedResolverConfig;
 import de.cuioss.http.security.config.SecurityConfiguration;
@@ -532,6 +531,119 @@ class AuthenticationStageTest {
                 Map<String, List<String>> headers) {
             return request(AuthConfig.builder().require(Require.BEARER).tokenRelay(tokenRelay)
                     .sessionFallback(Boolean.TRUE).build(), neededScopes, headers);
+        }
+    }
+
+    /**
+     * Pins the {@code Authorization: Bearer} credential parsing the stage relies on, independent of
+     * which code performs it: the scheme is matched case-insensitively (RFC 9110 section 11.1), the
+     * token is stripped, an empty token is no token, a non-{@code Bearer} scheme is no token, and a
+     * token holding a space or a control character is refused 401 exactly as an invalid token is.
+     */
+    @Nested
+    @DisplayName("Bearer credential parsing")
+    class BearerCredentialParsing {
+
+        @ParameterizedTest(name = "scheme \"{0}\"")
+        @ValueSource(strings = {"Bearer", "bearer", "BEARER", "bEaReR"})
+        @DisplayName("matches the Bearer scheme case-insensitively")
+        void matchesSchemeCaseInsensitively(String scheme) {
+            // Arrange
+            TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+            AuthenticationStage stage = stageFor(holder);
+            PipelineRequest request = authorizationRequest(Require.BEARER, scheme + " " + holder.getRawToken());
+
+            // Act
+            stage.process(request);
+
+            // Assert
+            assertAll("the scheme's case does not decide whether the token is read",
+                    () -> assertTrue(request.trustBoundaryPassed(), "the token was read and validated"),
+                    () -> assertNull(request.responseHeaders().get(WWW_AUTHENTICATE)));
+        }
+
+        @Test
+        @DisplayName("strips the whitespace around the token before it is validated and mediated")
+        void stripsTheToken() {
+            // Arrange — a session_fallback route records the token it validated, so the mediated
+            // bearer shows exactly which string the stage extracted.
+            TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+            AuthenticationStage stage = stageFor(holder);
+            PipelineRequest request = request(AuthConfig.builder().require(Require.BEARER)
+                            .sessionFallback(Boolean.TRUE).build(), Set.of(),
+                    Map.of("authorization", List.of("Bearer    " + holder.getRawToken() + "   ")));
+
+            // Act
+            stage.process(request);
+
+            // Assert
+            assertEquals(holder.getRawToken(), request.mediatedBearer().orElseThrow(),
+                    "the token is the value between the scheme and the end, whitespace stripped");
+        }
+
+        static Stream<Arguments> noTokenRows() {
+            return Stream.of(
+                    Arguments.of("an empty token", "Bearer "),
+                    Arguments.of("a whitespace-only token", "Bearer    "),
+                    Arguments.of("a tab-only token", "Bearer " + (char) 9 + (char) 9),
+                    Arguments.of("the bare scheme", "Bearer"),
+                    Arguments.of("a Basic scheme", "Basic dXNlcjpwYXNzd29yZA=="),
+                    Arguments.of("an unknown scheme", "Token abc.def.ghi"),
+                    Arguments.of("a scheme glued to its token", "Bearerabc.def.ghi"),
+                    Arguments.of("an empty header value", ""));
+        }
+
+        @ParameterizedTest(name = "{0} -> 401 TOKEN_MISSING")
+        @MethodSource("noTokenRows")
+        @DisplayName("treats an empty token and a non-Bearer scheme as no token")
+        void noTokenIsTokenMissing(String description, String authorization) {
+            // Arrange — a validator that fails on resolution proves no token reached validation.
+            AuthenticationStage stage = new AuthenticationStage(() -> {
+                throw new AssertionError("no token was presented, so the validator must not be resolved");
+            });
+            PipelineRequest request = authorizationRequest(Require.BEARER, authorization);
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request),
+                    description);
+
+            // Assert
+            assertAll(description,
+                    () -> assertEquals(EventType.TOKEN_MISSING, thrown.getEventType()),
+                    () -> assertEquals("Bearer", request.responseHeaders().get(WWW_AUTHENTICATE)),
+                    () -> assertFalse(request.trustBoundaryPassed()));
+        }
+
+        static Stream<Arguments> malformedTokenRows() {
+            String raw = TestTokenGenerators.accessTokens().next().getRawToken();
+            return Stream.of(
+                    Arguments.of("an inner space", "Bearer abc def"),
+                    Arguments.of("an inner tab", "Bearer abc" + (char) 9 + "def"),
+                    Arguments.of("an inner BEL control character", "Bearer abc" + (char) 7 + "def"),
+                    Arguments.of("a valid token followed by a second word", "Bearer " + raw + " extra"));
+        }
+
+        @ParameterizedTest(name = "{0} -> 401 TOKEN_INVALID")
+        @MethodSource("malformedTokenRows")
+        @DisplayName("refuses a token holding a space or a control character 401 as an invalid token")
+        void malformedTokenIsTokenInvalid(String description, String authorization) {
+            // Arrange
+            AuthenticationStage stage = stageFor(TestTokenGenerators.accessTokens().next());
+            PipelineRequest request = authorizationRequest(Require.BEARER, authorization);
+
+            // Act
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request),
+                    description);
+
+            // Assert
+            assertAll(description,
+                    () -> assertEquals(EventType.TOKEN_INVALID, thrown.getEventType()),
+                    () -> assertEquals("Bearer", request.responseHeaders().get(WWW_AUTHENTICATE)),
+                    () -> assertFalse(request.trustBoundaryPassed(), "a malformed credential is pre-trust"));
+        }
+
+        private static PipelineRequest authorizationRequest(Require require, String authorization) {
+            return request(require, Set.of(), Map.of("authorization", List.of(authorization)));
         }
     }
 

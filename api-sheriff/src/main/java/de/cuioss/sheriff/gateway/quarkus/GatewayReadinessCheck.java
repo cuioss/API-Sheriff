@@ -17,13 +17,14 @@ package de.cuioss.sheriff.gateway.quarkus;
 
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus;
-import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.token.client.discovery.CachingDiscoveryResolver;
+import de.cuioss.sheriff.token.client.discovery.DiscoveryCacheStatus;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.tools.logging.CuiLogger;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -81,11 +82,13 @@ import org.jspecify.annotations.Nullable;
  *       reported {@code not-applicable} and does not gate readiness.</li>
  *   <li><strong>OIDC provider metadata (BFF, both session modes)</strong> — when the gateway runs an
  *       active BFF runtime, {@code oidc.session.mode: server} or {@code cookie}, the probe adds an
- *       {@code oidc=<mode>} datum and an {@code oidc_discovery} datum read from the non-fetching
- *       {@link DiscoveryStatus}: {@code not-attempted} (no engine use has asked for the provider
- *       metadata yet), {@code resolved} (the most recent resolution produced it) or {@code failed} (the
- *       most recent resolution threw). The probe sends no network request; discovery stays lazy, so a
- *       fresh instance reports {@code not-attempted}. <strong>The datum never changes the UP/DOWN
+ *       {@code oidc=<mode>} datum and an {@code oidc_discovery} datum read through the non-fetching
+ *       {@link DiscoveryState} view of the runtime's one engine {@link CachingDiscoveryResolver}:
+ *       {@code not-attempted} (no engine use has asked for the provider metadata yet), {@code resolved}
+ *       (the most recent resolution produced it) or {@code failed} (the most recent resolution threw).
+ *       The probe sends no network request; discovery stays lazy, so a fresh instance reports
+ *       {@code not-attempted}. The datum is the resolver's state alone: the probe never reads the
+ *       status's last-failure cause or last-success instant (ADR-0079). <strong>The datum never changes the UP/DOWN
  *       verdict.</strong> A provider-metadata failure stops the BFF's identity-provider legs only —
  *       login, refresh, step-up — while bearer-only and public routes keep working; flipping readiness would take the whole instance out of rotation for an
  *       identity-provider outage those routes do not depend on. The datum names no issuer, URL or
@@ -122,8 +125,14 @@ public class GatewayReadinessCheck implements HealthCheck {
      */
     private static final String JWKS_UNAVAILABLE = "unavailable";
     private static final String DATA_OIDC = "oidc";
-    /** The provider-metadata datum, one of the fixed {@link DiscoveryStatus.State} tokens. */
+    /** The provider-metadata datum, one of the fixed tokens {@link #discoveryToken} maps a state to. */
     private static final String DATA_OIDC_DISCOVERY = "oidc_discovery";
+    /** No engine use has asked for the provider metadata yet. */
+    static final String DISCOVERY_NOT_ATTEMPTED = "not-attempted";
+    /** The most recent provider-metadata resolution produced the metadata. */
+    static final String DISCOVERY_RESOLVED = "resolved";
+    /** The most recent provider-metadata resolution failed. */
+    static final String DISCOVERY_FAILED = "failed";
 
     /**
      * The fixed, non-disclosing value of the {@code error} datum on a DOWN response.
@@ -140,7 +149,37 @@ public class GatewayReadinessCheck implements HealthCheck {
     private final GatewayConfig gatewayConfig;
     private final Instance<TokenValidator> gatewayValidator;
     private final Instance<IssuerKeySetStatus> issuerKeySetStatus;
-    private final DiscoveryStatus discoveryStatus;
+    private final Instance<DiscoveryState> discoveryState;
+
+    /**
+     * The non-fetching view of the state of the BFF runtime's one engine
+     * {@link CachingDiscoveryResolver}, published by {@link BffRuntimeProducer#discoveryState()}.
+     * <p>
+     * A gateway-owned type rather than the resolver itself: the token-sheriff-client Quarkus extension
+     * refuses to start an application that declares an injection point of {@link CachingDiscoveryResolver}
+     * unless its own {@code sheriff.client.discovery-cache.*} keys are set, and the gateway's cache values
+     * are fixed, not configuration (ADR-0084). The view carries the state alone, so the probe cannot read
+     * the status's last-failure cause or last-success instant (ADR-0079). Implementations are thread-safe
+     * and never fetch.
+     *
+     * @since 1.0
+     */
+    @FunctionalInterface
+    public interface DiscoveryState {
+
+        /**
+         * @return the resolver's current state, read without resolving anything
+         */
+        DiscoveryCacheStatus.State state();
+
+        /**
+         * @param resolver the caching discovery resolver whose state is viewed
+         * @return a live view reading {@code resolver.status().state()} on every call, never resolving
+         */
+        static DiscoveryState of(CachingDiscoveryResolver resolver) {
+            return () -> resolver.status().state();
+        }
+    }
 
     /**
      * @param gatewayConfig      the bound, boot-validated gateway document
@@ -148,17 +187,18 @@ public class GatewayReadinessCheck implements HealthCheck {
      * @param issuerKeySetStatus the lazily-resolved, non-fetching per-issuer key-set view published by
      *                           the validator's assembly; resolved only when {@code token_validation}
      *                           is configured
-     * @param discoveryStatus    the non-fetching view of the most recent OIDC provider-metadata
-     *                           resolution; the inert view on a gateway without an active BFF runtime
+     * @param discoveryState     the lazily-resolved, non-fetching state view of the BFF runtime's caching
+     *                           discovery resolver; resolved only when the gateway runs an active BFF
+     *                           runtime, which a bearer-only gateway never does
      */
     @Inject
     public GatewayReadinessCheck(GatewayConfig gatewayConfig,
             @GatewayValidator Instance<TokenValidator> gatewayValidator,
-            Instance<IssuerKeySetStatus> issuerKeySetStatus, DiscoveryStatus discoveryStatus) {
+            Instance<IssuerKeySetStatus> issuerKeySetStatus, Instance<DiscoveryState> discoveryState) {
         this.gatewayConfig = gatewayConfig;
         this.gatewayValidator = gatewayValidator;
         this.issuerKeySetStatus = issuerKeySetStatus;
-        this.discoveryStatus = discoveryStatus;
+        this.discoveryState = discoveryState;
     }
 
     /**
@@ -185,7 +225,7 @@ public class GatewayReadinessCheck implements HealthCheck {
             // reported beside the verdict and never feeds it: a provider-metadata outage stops the
             // identity-provider legs only, not the bearer-only and public routes.
             builder.withData(DATA_OIDC, bffMode)
-                    .withData(DATA_OIDC_DISCOVERY, discoveryStatus.state().token());
+                    .withData(DATA_OIDC_DISCOVERY, discoveryToken(discoveryState.get().state()));
         }
 
         TokenValidationConfig tokenValidation = gatewayConfig.tokenValidation();
@@ -253,14 +293,31 @@ public class GatewayReadinessCheck implements HealthCheck {
      *         readiness; {@code null} otherwise
      */
     private @Nullable String activeBffMode() {
-        // The runtime producer decides activation and hands out the tracking view only for an active
-        // runtime, so applicability is read from the view rather than re-derived here. The mode label
-        // comes from the SHARED predicate on the config model — never a locally-declared constant.
+        // Activation is the runtime producer's own predicate, shared rather than re-derived here, so the
+        // discovery resolver is resolved exactly when the producer builds one. The mode label comes from
+        // the SHARED predicate on the config model — never a locally-declared constant.
         OidcConfig oidc = gatewayConfig.oidc();
         OidcConfig.Session session = oidc == null ? null : oidc.session();
-        if (!discoveryStatus.isApplicable() || session == null) {
+        if (oidc == null || session == null || !BffRuntimeProducer.isBffMode(oidc)) {
             return null;
         }
         return session.isCookieMode() ? OidcConfig.Session.MODE_COOKIE : OidcConfig.Session.MODE_SERVER;
+    }
+
+    /**
+     * Maps the resolver's state to the fixed, non-disclosing token the {@code oidc_discovery} datum
+     * carries. The switch has no {@code default} arm, so a further engine state fails compilation here
+     * instead of being reported under a guessed token. It is the authoritative source of the documented
+     * {@code oidc_discovery} vocabulary, which the documentation contract test compares against.
+     *
+     * @param state the caching discovery resolver's current state
+     * @return {@code not-attempted}, {@code resolved} or {@code failed}
+     */
+    public static String discoveryToken(DiscoveryCacheStatus.State state) {
+        return switch (state) {
+            case NOT_ATTEMPTED -> DISCOVERY_NOT_ATTEMPTED;
+            case RESOLVED -> DISCOVERY_RESOLVED;
+            case FAILED -> DISCOVERY_FAILED;
+        };
     }
 }

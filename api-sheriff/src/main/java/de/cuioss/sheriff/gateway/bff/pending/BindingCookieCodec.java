@@ -19,7 +19,6 @@ import java.time.Duration;
 import java.util.Objects;
 import java.util.Optional;
 
-
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -37,9 +36,9 @@ import org.jspecify.annotations.Nullable;
  * raw header values, so it carries no JAX-RS/Vert.x coupling and is unit-testable without a
  * container.
  * <p>
- * <strong>Why {@code SameSite=Lax} is both correct and sufficient here.</strong> The gateway drives
- * the authorization request with {@code response_mode=query} (see
- * {@link de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder}), so the
+ * <strong>Why {@code SameSite=Lax} is both correct and sufficient here.</strong> The gateway requests
+ * every authorization request with {@code response_mode=query} (the engine's per-call
+ * {@code ResponseMode.QUERY}, see {@link de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows}), so the
  * callback the IdP sends the browser to <em>is</em> a top-level GET navigation — precisely the
  * request shape a Lax cookie is sent on, while every cross-site send is still blocked. That is
  * exactly why the gateway does <strong>not</strong> need {@code SameSite=None} on this cookie:

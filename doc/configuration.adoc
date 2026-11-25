@@ -458,8 +458,14 @@ token_validation:                  # offline bearer validation (routes with auth
                                    #   the jwks.url host (port dropped) is the one host exempted
                                    #   from the private-address refusal. A non-empty list is
                                    #   AUTHORITATIVE, host-exact, never merged with the derived
-                                   #   host; declare it to pin the allowance (GW-05). A blank or
-                                   #   host:port entry is refused at boot
+                                   #   host; declare it to pin the allowance (GW-05). Every entry
+                                   #   is held to token-sheriff's egress-host shape check and
+                                   #   refused at boot, naming the entry: a blank entry, a
+                                   #   host:port entry, a control, whitespace or non-ASCII
+                                   #   character, URL syntax (a scheme, @ user-info, ? # %), a
+                                   #   malformed IPv6 literal, a non-numeric port such as
+                                   #   keycloak:https, and anything that is not a valid host name
+                                   #   or IPv4 literal. A bare IPv6 literal (fd00::1) is admitted
         # tls_profile: corporate-idp             # logical trust profile; OMIT for a public-CA
                                    #   IdP. Names trust anchors without carrying them; the
                                    #   deployment binds the name. See "Trust profiles" below.

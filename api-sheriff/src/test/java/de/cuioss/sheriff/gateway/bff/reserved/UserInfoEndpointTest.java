@@ -23,7 +23,8 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
-
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint.ClaimSource;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint.UserInfoOutcome;
@@ -32,7 +33,13 @@ import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
+import de.cuioss.sheriff.token.validation.TokenType;
+import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
+import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
+import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
+import de.cuioss.sheriff.token.validation.test.generator.ClaimControlParameter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -64,6 +71,15 @@ class UserInfoEndpointTest {
     private static final Instant AUTH_TIME = Instant.ofEpochSecond(1_721_730_000L);
     private static final String RAW_ACCESS_TOKEN = "raw-access-token-SECRET-material";
     private static final String RAW_ID_TOKEN = "raw-id-token-SECRET-material";
+    /**
+     * The validator whose raw-claims view, {@link TokenValidator#getRawClaims}, the production seam binds
+     * the {@link ClaimSource} to. The view reads only the token's payload, so any configured issuer
+     * serves.
+     */
+    private static final TokenValidator RAW_CLAIMS_VALIDATOR = TokenValidator.builder()
+            .issuerConfig(new TestTokenHolder(TokenType.ID_TOKEN,
+                    ClaimControlParameter.defaultForTokenType(TokenType.ID_TOKEN)).getIssuerConfig())
+            .build();
 
     private InMemorySessionStore sessionStore;
     private SessionCookieCodec sessionCodec;
@@ -299,7 +315,7 @@ class UserInfoEndpointTest {
     }
 
     @Nested
-    @DisplayName("Native JSON claim types through the production projection")
+    @DisplayName("Native JSON claim types through the production raw-claims view")
     class NativeClaimTypes {
 
         private static final String PAYLOAD = """
@@ -315,7 +331,7 @@ class UserInfoEndpointTest {
                     List.of("sub", "groups", "address", "exp", "email_verified"), List.of("sub"));
             IdTokenContent idToken = new IdTokenContent(Map.of(), compactToken(PAYLOAD));
             projectingEndpoint = new UserInfoEndpoint(new ServerSessionBinding(sessionStore, sessionCodec),
-                    structuredFilter, session -> IdTokenClaimProjection.project(idToken));
+                    structuredFilter, session -> RAW_CLAIMS_VALIDATOR.getRawClaims(idToken));
         }
 
         private static String compactToken(String payloadJson) {
@@ -354,6 +370,152 @@ class UserInfoEndpointTest {
             Map<String, Object> claims = claimsOf(outcome);
             assertFalse(claims.containsKey("secret_structure"), "a structured claim never widens disclosure");
             assertTrue(claims.keySet().containsAll(List.of("groups", "address", "exp", "email_verified")));
+        }
+    }
+
+    /**
+     * The production claim source: {@link TokenValidator#getRawClaims}, the library view that replaced
+     * the gateway's own projection. These pins carry that projection's contract over to the library —
+     * every claim keeps its native JSON type, a top-level {@code null} claim is omitted, the view is
+     * unmodifiable, and a payload that is not a well-formed, bounded JSON object is refused rather than
+     * partially disclosed. The {@link IdTokenContent} is built over a hand-composed compact token,
+     * because the view reads only the token's payload.
+     */
+    @Nested
+    @DisplayName("The library raw-claims view the claim source is bound to")
+    class RawClaimsView {
+
+        private static final String HEADER = "{\"alg\":\"RS256\",\"typ\":\"JWT\"}";
+        private static final String SIGNATURE = "c2lnbmF0dXJl";
+
+        private static final String PAYLOAD = """
+                {"sub":"user-sub-1",
+                 "groups":["test-group","admins"],
+                 "address":{"country":"DE","locality":"Berlin"},
+                 "exp":1790000000,
+                 "score":1.5,
+                 "email_verified":true,
+                 "entitlements":[{"id":7,"name":"reports"}],
+                 "nickname":null}
+                """;
+
+        private static String encode(String json) {
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(json.getBytes(StandardCharsets.UTF_8));
+        }
+
+        private static IdTokenContent tokenWithPayload(String payloadSegment) {
+            return new IdTokenContent(Map.of(), encode(HEADER) + "." + payloadSegment + "." + SIGNATURE);
+        }
+
+        private static Map<String, Object> rawClaimsOf(String payloadJson) {
+            return RAW_CLAIMS_VALIDATOR.getRawClaims(tokenWithPayload(encode(payloadJson)));
+        }
+
+        @Test
+        @DisplayName("Every claim kind keeps its native JSON type")
+        void shouldKeepNativeTypes() {
+            Map<String, Object> claims = rawClaimsOf(PAYLOAD);
+
+            assertAll("native JSON types",
+                    () -> assertIterableEquals(List.of("test-group", "admins"),
+                            assertInstanceOf(List.class, claims.get("groups")), "an array is a List"),
+                    () -> assertEquals("Berlin", assertInstanceOf(Map.class, claims.get("address")).get("locality"),
+                            "an object is a Map"),
+                    () -> assertEquals(1_790_000_000L, assertInstanceOf(Number.class, claims.get("exp")).longValue(),
+                            "an integer is a Number, never its string spelling"),
+                    () -> assertEquals(1.5d, assertInstanceOf(Number.class, claims.get("score")).doubleValue(),
+                            "a fraction is a Number carrying its fraction"),
+                    () -> assertEquals(Boolean.TRUE, claims.get("email_verified"), "a boolean is a Boolean"),
+                    () -> assertEquals("user-sub-1", claims.get("sub"), "a string stays a String"));
+        }
+
+        @Test
+        @DisplayName("An object nested inside an array keeps its native member types")
+        void shouldKeepNestedObjectInsideArray() {
+            Map<String, Object> claims = rawClaimsOf(PAYLOAD);
+
+            List<?> entitlements = assertInstanceOf(List.class, claims.get("entitlements"));
+            Map<?, ?> entitlement = assertInstanceOf(Map.class, entitlements.getFirst());
+            assertEquals(7L, assertInstanceOf(Number.class, entitlement.get("id")).longValue());
+            assertEquals("reports", entitlement.get("name"));
+        }
+
+        @Test
+        @DisplayName("A top-level null claim is omitted, exactly as an absent claim")
+        void shouldOmitTopLevelNullClaim() {
+            Map<String, Object> claims = rawClaimsOf(PAYLOAD);
+
+            assertFalse(claims.containsKey("nickname"), "a null-valued claim is not disclosed");
+        }
+
+        @Test
+        @DisplayName("The view and every nested structure are unmodifiable")
+        void shouldReturnUnmodifiableStructures() {
+            Map<String, Object> claims = rawClaimsOf(PAYLOAD);
+            List<?> groups = (List<?>) claims.get("groups");
+            Map<?, ?> address = (Map<?, ?>) claims.get("address");
+
+            assertThrows(UnsupportedOperationException.class, () -> claims.put("injected", "x"));
+            assertThrows(UnsupportedOperationException.class, groups::clear);
+            assertThrows(UnsupportedOperationException.class, address::clear);
+        }
+
+        /** Asserts the view refuses {@code token} as a whole, on the named bound, disclosing nothing. */
+        private static void assertRefused(IdTokenContent token, SecurityEventCounter.EventType expected) {
+            TokenValidationException refusal = assertThrows(TokenValidationException.class,
+                    () -> RAW_CLAIMS_VALIDATOR.getRawClaims(token), "refused, never partially read");
+            assertEquals(expected, refusal.getEventType(), refusal.getMessage());
+        }
+
+        @Test
+        @DisplayName("A token that is not a three-segment compact JWS is refused")
+        void shouldRejectMalformedTokenShape() {
+            assertRefused(new IdTokenContent(Map.of(), encode(HEADER) + "." + encode(PAYLOAD)),
+                    SecurityEventCounter.EventType.INVALID_JWT_FORMAT);
+        }
+
+        @Test
+        @DisplayName("An empty payload segment discloses no claim")
+        void shouldDiscloseNothingForEmptyPayload() {
+            Map<String, Object> claims = RAW_CLAIMS_VALIDATOR.getRawClaims(tokenWithPayload(""));
+
+            assertTrue(claims.isEmpty(), "an empty payload carries no claim to disclose: " + claims);
+        }
+
+        @Test
+        @DisplayName("A payload that is not JSON is refused")
+        void shouldRejectNonJsonPayload() {
+            assertRefused(tokenWithPayload(encode("this is not json")),
+                    SecurityEventCounter.EventType.FAILED_TO_DECODE_JWT);
+        }
+
+        @Test
+        @DisplayName("A payload segment that is not base64url is refused")
+        void shouldRejectNonBase64UrlPayload() {
+            assertRefused(tokenWithPayload("not*base64url"), SecurityEventCounter.EventType.FAILED_TO_DECODE_JWT);
+        }
+
+        @Test
+        @DisplayName("A payload nesting beyond the parser nesting limit is refused")
+        void shouldRejectExcessiveNesting() {
+            assertRefused(tokenWithPayload(encode("{\"deep\":" + "[".repeat(12) + "1" + "]".repeat(12) + "}")),
+                    SecurityEventCounter.EventType.JSON_STRUCTURE_BOUNDS_EXCEEDED);
+        }
+
+        @Test
+        @DisplayName("An array beyond the parser array-size limit is refused")
+        void shouldRejectOversizedArray() {
+            String elements = IntStream.range(0, 1_001).mapToObj(i -> "1").collect(Collectors.joining(","));
+
+            assertRefused(tokenWithPayload(encode("{\"many\":[" + elements + "]}")),
+                    SecurityEventCounter.EventType.JSON_STRUCTURE_BOUNDS_EXCEEDED);
+        }
+
+        @Test
+        @DisplayName("A token beyond the library token-size limit is refused before its payload is read")
+        void shouldRejectOversizedToken() {
+            assertRefused(tokenWithPayload(encode("{\"blob\":\"" + "a".repeat(9_000) + "\"}")),
+                    SecurityEventCounter.EventType.TOKEN_SIZE_EXCEEDED);
         }
     }
 

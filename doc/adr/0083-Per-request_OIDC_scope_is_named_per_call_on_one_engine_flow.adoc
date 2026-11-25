@@ -1,0 +1,139 @@
+= ADR-0083: Per-request OIDC scope is named per call on one engine flow
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: Since token-sheriff 0.9.10 the confidential-client engine takes the scope set, the response_mode and the prompt of an authorization request as per-call AuthorizationRequestOptions and the scope set of a refresh grant as a per-call argument, so the gateway drives one AuthorizationCodeFlow and one RefreshFlow over one back-channel configuration that carries no scope, and ScopedEngineFlows names the canonical scope set (deduplicated, then sorted) on every login, widening, refresh and RFC 9470 step-up call; nothing is built or cached per scope set, an empty canonical set is sent as no override and therefore as no scope parameter, the ADR-0045 posture is held by the one configuration, and the step-up re-drive now names oidc.scopes per call instead of reading it from the configuration.
+// tags: bff, oidc, scopes, engine-seam, token-sheriff-client
+// affects: api-sheriff
+// supersedes: 0048
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Accepted. Supersedes link:0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048].
+
+== Decision
+
+=== The question
+
+A BFF gateway requests OAuth scopes on every leg it drives through the confidential-client engine (`token-sheriff-client`): the login and the
+session widening name a `scope` on the authorization request, the refresh grant may name one (RFC 6749 §6), and the RFC 9470 step-up re-drive names one
+on its authorization request. The needed set is not one gateway-wide value: each route materializes `neededScopes = oidc.scopes ∪ endpoint.scopes` at
+boot, a widening requests the session's granted set plus the route's needed scopes, and a refresh requests the session's active set, because a refresh
+that names a narrower set silently narrows the session.
+
+ADR-0048 answered this for an engine that read `scope` only from `ClientConfiguration.getScopes()`: one configuration per scope set, a cache of login
+flows per canonical set, and a refresh or widening flow built per call. From 0.9.10 the engine takes the set per call:
+
+* `AuthorizationRequestOptions{scopes, responseMode, prompt}` on `AuthorizationCodeFlow.authorize(metadata, options)` and
+  `authorizePushed(metadata, clientAuthentication, options)`, and on `StepUpHandler.initiate(configuration, metadata, challenge, options)`;
+* `RefreshFlow.refresh(metadata, refreshToken, scopes)`.
+
+The options apply to one call and never change the shared configuration, so concurrent calls with different sets do not interfere. This record settles
+how the gateway drives that engine.
+
+=== One flow, the set named per call
+
+The runtime builds one back-channel `ClientConfiguration`, one `AuthorizationCodeFlow` and one `RefreshFlow` over it. `ScopedEngineFlows` is the seam
+every scope-naming leg goes through, and it names the set on every call:
+
+* `authorize(metadata, scopes)` and `widen(metadata, scopes, silent)` start the login and the widening through `authorizePushed` with the set, with
+  `response_mode=query` (ADR-0018) and, on a silent widening, `prompt=none`. Both are pushed (ADR-0058).
+* `refresh(metadata, refreshToken, scopes)` posts the refresh grant with the set.
+* `stepUp(metadata, challenge, scopes)` mints the step-up context through `StepUpHandler` with the set and pushes its parameters. The runtime passes
+  `oidc.scopes`, so the step-up re-drive requests the same set it requested from the configuration before.
+
+Nothing is built per scope set and nothing is cached. The set a leg sends is its *canonical* form: duplicates removed, then sorted. That is gateway
+policy, so two requests naming the same scopes in a different order send the same `scope`.
+
+=== The configuration carries no scope
+
+The one configuration is built with an empty scope list, and every leg that sends a scope names it per call. The engine refuses an empty override, so an
+empty canonical set is passed as *no override*: the request then carries the configuration's scopes, which are none, and so no `scope` parameter at all,
+on the authorization request and on the refresh grant alike. That is the request a configuration built for the empty set sent under ADR-0048. Discovery,
+the callback's code exchange and refresh-token revocation send no scope and are unaffected.
+
+=== The configuration pins the posture
+
+The ADR-0045 posture — the `oidc_verify_hostname` passthrough, the `oidc_tls_profile` trust context and the boot refusal of the two together — is applied
+by `backChannelConfiguration(oidc)` to the one configuration. Every leg dials the identity provider with it, so no leg can carry a weaker posture, and
+the gateway reports a relaxed or replaced posture once per runtime.
+
+=== Who chooses the set
+
+Unchanged from ADR-0048. The session stage passes the selected route's `neededScopes`, the login-initiation endpoint the set `ReturnTargetScopes`
+resolves for the return target, the widening `S ∪ needed`
+(link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]), the
+refresh leg the session's active set, and the step-up re-drive `oidc.scopes`.
+
+== Alternatives rejected
+
+=== Keep one configuration per scope set
+
+ADR-0048's shape still works on the 0.9.10 engine.
+
+*Rejected because* it keeps a configuration factory, a login-flow cache and a flow construction per refresh and per widening to express what the engine
+now takes as an argument. Every per-set configuration also re-applies the back-channel posture, which the one configuration holds once.
+
+=== Keep `oidc.scopes` on the configuration and guard the empty set in the gateway
+
+The configuration would keep carrying `oidc.scopes`, and the gateway would handle the empty canonical set in front of the engine call.
+
+*Rejected because* the engine falls back to the configured scopes when no override is given, so the empty set would request `oidc.scopes` instead of no
+scope, and the gateway would need a second configuration to send none. A configuration without scope gives the empty set its own request with no guard.
+
+=== Cache nothing but the canonical lists
+
+A cache of canonical lists would save the sort on repeated sets.
+
+*Rejected as disproportionate.* The sort runs over a handful of scope names per request, and a cache keyed by IdP-granted sets would again be sized
+outside the gateway.
+
+== Consequences
+
+=== Properties of the design
+
+* One `AuthorizationCodeFlow`, one `RefreshFlow` and one configuration serve every scope set. The runtime holds no per-set state.
+* The ADR-0045 posture holds on every leg by construction: there is one configuration.
+* Scope encoding stays the engine's. The gateway never renders or rewrites a `scope` parameter, and it validates no scope token: the engine's
+  scope-token rule refuses a bad entry, which the seam answers as the `502` refusal of ADR-0058.
+* Requesting and checking still read one derivation: the login request, the `/auth/login` resolution and the bearer route's `insufficient_scope` check
+  read the route's boot-derived `neededScopes`.
+
+=== Accepted costs
+
+* The step-up re-drive's `scope` is the canonical form of `oidc.scopes`, sorted, where ADR-0048 sent the configured order. A scope parameter is a set
+  (RFC 6749 §3.3), so the order carries no meaning.
+* The configuration carrying no scope is a gateway convention the engine does not enforce. A leg that called the engine without an override would send
+  no scope.
+
+=== Risks
+
+* *The step-up leg still requests the static `oidc.scopes`.* An RFC 9470 re-drive requests `oidc.scopes` rather than the session's active set, as under
+  ADR-0048. The session-side lookup that re-drive uses is unwired, so no live path narrows a session through it, and the step-up pending record states the
+  static set it requested.
+* *Granted scopes accumulate across endpoints.* Unchanged from ADR-0048: a session carries every scope granted to it, and per-endpoint token narrowing is
+  out of scope.
+
+== Links
+
+* link:0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]: the superseded per-scope-set configuration
+* link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]: the back-channel posture the one configuration carries
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the `response_mode=query` every authorization request names
+* link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]: the pushed request the options travel in
+* link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]: the widening and the refresh inside the grant
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/ScopedEngineFlows.java`: the per-call scope seam
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/ReturnTargetScopes.java`: the `/auth/login?returnUrl=` scope resolution
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java`: `backChannelConfiguration(oidc)`, the one configuration

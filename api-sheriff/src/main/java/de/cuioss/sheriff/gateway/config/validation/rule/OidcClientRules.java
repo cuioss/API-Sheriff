@@ -20,18 +20,19 @@ import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.rende
 
 import java.io.IOException;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
-
 
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.token.client.config.BackChannelOriginValidator;
+import de.cuioss.sheriff.token.commons.transport.EgressHostValidator;
 import lombok.experimental.UtilityClass;
 
 /**
@@ -92,7 +93,23 @@ public class OidcClientRules {
     private static final String OIDC_BACK_CHANNEL_ALLOW_INSECURE_HTTP_POINTER =
             "/oidc/back_channel_allow_insecure_http";
     private static final String HTTP_SCHEME = "http";
-    private static final String HTTPS_SCHEME = "https";
+
+    /**
+     * The engine's fixed refusal reasons of {@link BackChannelOriginValidator#refusal}, keyed by the
+     * engine's text, each mapped to the gateway's reason for the same defect. The engine's verdict
+     * decides whether and why a value is refused; only the words are the gateway's.
+     */
+    private static final Map<String, String> BACK_CHANNEL_ORIGIN_REASONS = Map.of(
+            "backChannelOrigin must not be blank when provided", "is declared but blank",
+            "backChannelOrigin must be a valid absolute URL", "is not a well-formed URI",
+            "backChannelOrigin must be an absolute http(s) URL with a host",
+            "must be an absolute http or https URI naming a host",
+            "backChannelOrigin must not carry user-info",
+            "must not carry user-info; credentials never belong in an origin",
+            "backChannelOrigin must not carry a query", "must not carry a query ('?')",
+            "backChannelOrigin must not carry a fragment", "must not carry a fragment ('#')",
+            "backChannelOrigin must be an origin without a path",
+            "must not carry a path; an origin is scheme, host and port only");
 
     /**
      * The remedy every shape refusal of {@code oidc.back_channel_origin} closes with. Fixed text, so
@@ -397,9 +414,10 @@ public class OidcClientRules {
      * <ul>
      *   <li><strong>Shape.</strong> A declared origin must be an absolute {@code http} or {@code https}
      *       URI with a host, carrying no user-info, no query, no fragment and no path other than a
-     *       single trailing {@code /}. A blank value is refused as such. These are the refusals the
-     *       engine itself raises while the runtime is assembled, moved to boot validation so they arrive
-     *       on the key's own pointer instead of as the engine's exception.</li>
+     *       single trailing {@code /}. A blank value is refused as such. The verdict is the engine's own
+     *       ({@link BackChannelOriginValidator#refusal}), the check its configuration builder raises
+     *       while the runtime is assembled, run at boot validation so it arrives on the key's own
+     *       pointer instead of as the engine's exception; only the wording is the gateway's.</li>
      *   <li><strong>Cleartext.</strong> An {@code http} origin is refused unless
      *       {@code oidc.back_channel_allow_insecure_http} is {@code true}: the back channel carries the
      *       client credential and every token, and the opt-in widens the whole OIDC client to cleartext,
@@ -431,10 +449,11 @@ public class OidcClientRules {
             }
             return;
         }
-        Optional<String> shapeRefusal = backChannelOriginShapeRefusal(origin);
+        Optional<String> shapeRefusal = BackChannelOriginValidator.refusal(origin);
         if (shapeRefusal.isPresent()) {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_BACK_CHANNEL_ORIGIN_POINTER,
-                    "oidc.back_channel_origin " + shapeRefusal.get() + BACK_CHANNEL_ORIGIN_REMEDY));
+                    "oidc.back_channel_origin " + backChannelOriginReason(shapeRefusal.get())
+                            + BACK_CHANNEL_ORIGIN_REMEDY));
             return;
         }
         // The shape check admitted the value, so it parses and its scheme is http or https.
@@ -452,13 +471,12 @@ public class OidcClientRules {
      * Rule: every {@code oidc.allowed_egress_hosts} entry must name a bare host.
      * <p>
      * The list is handed to token-sheriff's egress guard, which exempts exactly the host an entry names
-     * from the refusal of loopback and private addresses and matches it host-exact, so the shape review
-     * is the one every {@code allowed_egress_hosts} list is held to
-     * ({@link RuleSupport#egressHostRefusal}): a blank entry names no host and an entry carrying a port
-     * names a host the guard never compares against. Either leaves the operator believing an
-     * identity provider is reachable that every dial then refuses at runtime, so it is refused at boot
-     * instead. The engine would refuse a blank entry at construction anyway, but only when the BFF
-     * runtime is first built, and with a message that cannot name the key.
+     * from the refusal of loopback and private addresses and matches it host-exact, so each entry is
+     * held to the guard's own shape check ({@link EgressHostValidator#refusal}), worded by
+     * {@link RuleSupport#egressEntryRefusalReason}: a blank entry names no host, and an entry carrying a
+     * port, URL syntax or any other character no host carries names a host the guard never compares
+     * against. Either leaves the operator believing an identity provider is reachable that every dial
+     * then refuses at runtime, so it is refused at boot instead, with a message that names the key.
      * <p>
      * An absent block, an absent key and an empty list are admitted: they leave the secure default in
      * force. The entry is echoed through {@link RuleSupport#renderForMessage}, so a hostile value cannot
@@ -474,48 +492,26 @@ public class OidcClientRules {
             return;
         }
         for (String entry : oidc.allowedEgressHosts()) {
-            RuleSupport.egressHostRefusal(entry, ALLOWED_EGRESS_HOSTS_BLANK_REMEDY)
-                    .ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE, OIDC_ALLOWED_EGRESS_HOSTS_POINTER,
-                            "oidc.allowed_egress_hosts entry '%s' is refused: %s"
-                                    .formatted(renderForMessage(entry), reason))));
+            EgressHostValidator.refusal(entry)
+                    .ifPresent(refusal -> errors.add(new ConfigError(GATEWAY_FILE, OIDC_ALLOWED_EGRESS_HOSTS_POINTER,
+                            "oidc.allowed_egress_hosts entry '%s' is refused: %s".formatted(renderForMessage(entry),
+                                    RuleSupport.egressEntryRefusalReason(entry, refusal,
+                                            ALLOWED_EGRESS_HOSTS_BLANK_REMEDY)))));
         }
     }
 
     /**
-     * The reason a declared {@code oidc.back_channel_origin} is not a bare {@code http}/{@code https}
-     * origin, or empty when it is one. Every reason is fixed text; none echoes the configured value.
+     * Words the token engine's refusal of a declared {@code oidc.back_channel_origin} in the gateway's
+     * field naming, phrased to follow the key name. The engine names its own builder property
+     * ({@code backChannelOrigin}); each of its fixed reasons is translated here to the reason the
+     * operator contract has always stated, and a reason this table does not know is reported as the
+     * engine wrote it, so a reworded engine reason degrades to an accurate message rather than to none.
+     * No reason, translated or not, echoes the configured value.
      *
-     * @param origin the declared origin, never {@code null}
-     * @return the refusal reason, phrased to follow the key name, or empty when the shape holds
+     * @param engineRefusal the engine's fixed refusal reason
+     * @return the reason to report after the key name
      */
-    private static Optional<String> backChannelOriginShapeRefusal(String origin) {
-        if (origin.isBlank()) {
-            return Optional.of("is declared but blank");
-        }
-        URI uri;
-        try {
-            uri = new URI(origin);
-        } catch (URISyntaxException _) {
-            return Optional.of("is not a well-formed URI");
-        }
-        String scheme = uri.getScheme();
-        if (!uri.isAbsolute() || uri.getHost() == null
-                || !(HTTP_SCHEME.equalsIgnoreCase(scheme) || HTTPS_SCHEME.equalsIgnoreCase(scheme))) {
-            return Optional.of("must be an absolute http or https URI naming a host");
-        }
-        if (uri.getRawUserInfo() != null) {
-            return Optional.of("must not carry user-info; credentials never belong in an origin");
-        }
-        if (uri.getRawQuery() != null) {
-            return Optional.of("must not carry a query ('?')");
-        }
-        if (uri.getRawFragment() != null) {
-            return Optional.of("must not carry a fragment ('#')");
-        }
-        String path = uri.getRawPath();
-        if (path != null && !path.isEmpty() && !"/".equals(path)) {
-            return Optional.of("must not carry a path; an origin is scheme, host and port only");
-        }
-        return Optional.empty();
+    private static String backChannelOriginReason(String engineRefusal) {
+        return BACK_CHANNEL_ORIGIN_REASONS.getOrDefault(engineRefusal, "is refused: " + engineRefusal);
     }
 }

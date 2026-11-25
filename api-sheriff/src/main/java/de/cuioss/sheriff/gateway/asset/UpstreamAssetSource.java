@@ -15,7 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.asset;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -23,27 +22,23 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
-import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
-import java.util.concurrent.Flow;
 import javax.net.ssl.SSLContext;
-
 
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.http.PathSlashes;
-import org.jspecify.annotations.Nullable;
+import de.cuioss.sheriff.token.commons.transport.BoundedBodyHandler;
+import de.cuioss.sheriff.token.commons.transport.BoundedBodyHandler.BoundedBody;
+import de.cuioss.sheriff.token.commons.transport.BoundedBodyHandler.OverLimitPolicy;
 
 /**
  * The secondary-origin {@link AssetSource} (decision: ADR-0014).
@@ -276,8 +271,10 @@ public final class UpstreamAssetSource implements AssetSource {
      * redirects, honours a connect and read timeout, and reads a <strong>streamed</strong>,
      * mid-flight-abort-capped body — consistent with the proxy data plane's
      * {@code DispatchStage.ByteCappedBodyStream} (ADR-0006): the fetch never buffers the whole
-     * upstream body before enforcing {@code maxBytes}, it stops pulling further chunks and
-     * completes as soon as the cap is crossed.
+     * upstream body before enforcing {@code maxBytes}. The body is read through the library's
+     * {@link BoundedBodyHandler} in its {@link OverLimitPolicy#TRUNCATE truncating} mode, which
+     * cancels the subscription as soon as the cap is crossed, keeps exactly the bytes up to the cap,
+     * and flags the body as truncated — the flag {@link #serve} refuses with a {@code 413}.
      * <p>
      * The redirect-{@code NEVER} policy is the SSRF control that keeps a hostile upstream
      * from bouncing the fetch to an internal address; the fixed-topology target supplied
@@ -296,6 +293,8 @@ public final class UpstreamAssetSource implements AssetSource {
      * @param readTimeout    the per-request read timeout
      * @param maxBytes       the response body cap in bytes
      * @return the SSRF-guarded fetch seam
+     * @throws IllegalArgumentException when {@code maxBytes} is negative or above
+     *                                  {@link BoundedBodyHandler#MAX_CEILING}
      */
     public static UpstreamFetcher httpFetcher(Duration connectTimeout, Duration readTimeout, long maxBytes) {
         return new HttpUpstreamFetcher(connectTimeout, readTimeout, maxBytes);
@@ -317,15 +316,18 @@ public final class UpstreamAssetSource implements AssetSource {
      */
     static final class HttpUpstreamFetcher implements UpstreamFetcher {
 
+        /** The label the bounded body handler names this origin by in its over-limit message. */
+        private static final String BODY_ORIGIN = "asset upstream";
+
         private final HttpClient client;
         private final Duration connectTimeout;
         private final Duration readTimeout;
-        private final long maxBytes;
+        private final HttpResponse.BodyHandler<BoundedBody> bodyHandler;
 
         HttpUpstreamFetcher(Duration connectTimeout, Duration readTimeout, long maxBytes) {
             this.connectTimeout = Objects.requireNonNull(connectTimeout, "connectTimeout");
             this.readTimeout = Objects.requireNonNull(readTimeout, "readTimeout");
-            this.maxBytes = maxBytes;
+            this.bodyHandler = BoundedBodyHandler.ofBytes(maxBytes, OverLimitPolicy.TRUNCATE, BODY_ORIGIN);
             this.client = HttpClient.newBuilder()
                     .sslContext(defaultSslContext())
                     .followRedirects(HttpClient.Redirect.NEVER)
@@ -350,33 +352,25 @@ public final class UpstreamAssetSource implements AssetSource {
         @Override
         public Fetched fetch(URI target) throws IOException {
             HttpRequest request = HttpRequest.newBuilder(target).timeout(readTimeout).GET().build();
-            HttpResponse<byte[]> response;
+            HttpResponse<BoundedBody> response;
             try {
-                response = client.send(request, info -> new CappedByteArrayBodySubscriber(maxBytes));
+                response = client.send(request, bodyHandler);
             } catch (HttpTimeoutException timeout) {
                 throw new UpstreamTimeoutException(timeout);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 throw new IOException("upstream fetch interrupted", interrupted);
             }
-            byte[] body = response.body();
             // Crossing THIS seam's cap is what makes the body a prefix rather than the whole
-            // response, so the signal is captured here — before the trim below changes the length
-            // the caller would otherwise have to infer it from.
-            boolean truncated = body.length > maxBytes;
-            // The subscriber already stopped pulling once the cap was crossed, so body is at most
-            // one in-flight chunk past maxBytes; this backstop trims it to a fixed, small over-cap
-            // size so callers checking body.length > maxBytes see a stable signal either way.
-            if (truncated) {
-                body = Arrays.copyOf(body, (int) Math.min(maxBytes + 1, body.length));
-            }
+            // response; the handler kept the bytes up to the cap and reports the crossing itself.
+            BoundedBody body = response.body();
             Map<String, String> headers = new LinkedHashMap<>();
             response.headers().map().forEach((name, values) -> {
                 if (!values.isEmpty()) {
                     headers.put(name, values.getFirst());
                 }
             });
-            return new UpstreamFetcher.Fetched(response.statusCode(), headers, body, truncated);
+            return new UpstreamFetcher.Fetched(response.statusCode(), headers, body.bytes(), body.truncated());
         }
 
         /**
@@ -396,72 +390,6 @@ public final class UpstreamAssetSource implements AssetSource {
                 throw new IllegalStateException(
                         "the JVM default TLS context is required for the asset-origin HTTP client", unavailable);
             }
-        }
-    }
-
-    /**
-     * A {@link HttpResponse.BodySubscriber} that accumulates the upstream body only up to
-     * {@code maxBytes} and then <strong>cancels its subscription</strong> — the mid-flight abort
-     * that keeps a large or slow (hostile or merely misbehaving) asset upstream from forcing the
-     * gateway to buffer an unbounded response into memory before the size cap has any effect,
-     * mirroring {@code DispatchStage.ByteCappedBodyStream}'s streamed request-body cap.
-     */
-    private static final class CappedByteArrayBodySubscriber implements HttpResponse.BodySubscriber<byte[]> {
-
-        private final long maxBytes;
-        private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        private final CompletableFuture<byte[]> result = new CompletableFuture<>();
-        private Flow.@Nullable Subscription subscription;
-        private long bytesSeen;
-
-        CappedByteArrayBodySubscriber(long maxBytes) {
-            this.maxBytes = maxBytes;
-        }
-
-        @Override
-        public CompletionStage<byte[]> getBody() {
-            return result;
-        }
-
-        @Override
-        public void onSubscribe(Flow.Subscription subscription) {
-            this.subscription = subscription;
-            subscription.request(Long.MAX_VALUE);
-        }
-
-        @Override
-        public void onNext(List<ByteBuffer> items) {
-            // Late chunks may still be delivered after the cap-crossed branch below cancels the
-            // subscription and completes the result — cancellation is not instantaneous. Fast-return
-            // once the result is settled so the over-cap buffer is bounded at the first cap crossing
-            // rather than growing by whatever the publisher delivers during cancel propagation.
-            if (result.isDone()) {
-                return;
-            }
-            for (ByteBuffer item : items) {
-                byte[] chunk = new byte[item.remaining()];
-                item.get(chunk);
-                buffer.writeBytes(chunk);
-                bytesSeen += chunk.length;
-            }
-            if (bytesSeen > maxBytes && subscription != null) {
-                // Abort the in-flight fetch: stop pulling further chunks. The over-cap buffer
-                // already accumulated is enough to trip the caller's body.length > maxBytes check
-                // (backstop-trimmed there), without ever reading the remainder of a large body.
-                subscription.cancel();
-                result.complete(buffer.toByteArray());
-            }
-        }
-
-        @Override
-        public void onError(Throwable throwable) {
-            result.completeExceptionally(throwable);
-        }
-
-        @Override
-        public void onComplete() {
-            // A no-op when the cap-crossed branch in onNext already completed result.
-            result.complete(buffer.toByteArray());
         }
     }
 

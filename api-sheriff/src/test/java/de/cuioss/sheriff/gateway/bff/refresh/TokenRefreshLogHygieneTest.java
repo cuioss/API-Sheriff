@@ -26,7 +26,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.logging.LogRecord;
 
-
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
@@ -34,10 +33,15 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.token.client.flow.CredentialRejectedException;
+import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
 import de.cuioss.sheriff.token.client.token.RotationResult;
+import de.cuioss.sheriff.token.validation.TokenType;
+import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
+import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
+import de.cuioss.sheriff.token.validation.test.generator.ClaimControlParameter;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.TestLogLevel;
@@ -73,7 +77,13 @@ class TokenRefreshLogHygieneTest {
     private final String currentId = secret();
     private final String rotatedAccess = secret();
     private final String rotatedRefresh = secret();
-    private final String rotatedId = secret();
+    /** The refreshed ID token is really signed, so it passes the refresh-result verification. */
+    private final TestTokenHolder idTokenSigner = new TestTokenHolder(TokenType.ID_TOKEN,
+            ClaimControlParameter.builder().build())
+            .withClaim(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
+    private final String rotatedId = idTokenSigner.getRawToken();
+    private final IdTokenValidationBridge idTokenValidation = new IdTokenValidationBridge(
+            TokenValidator.builder().issuerConfig(idTokenSigner.getIssuerConfig()).build());
     private final String cookieHeader = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + handle;
 
     private final InMemorySessionStore store = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE,
@@ -98,6 +108,7 @@ class TokenRefreshLogHygieneTest {
     private RotationResult rotation() {
         Map<String, ClaimValue> claims = new HashMap<>();
         claims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
+        claims.put(ClaimName.ISSUER.getName(), ClaimValue.forPlainString(idTokenSigner.getIssuer()));
         return new RotationResult(new AccessTokenContent(claims, rotatedAccess), rotatedRefresh, rotatedId, 300L,
                 true, null, RotationResult.ScopeDelta.UNDECLARED);
     }
@@ -128,7 +139,8 @@ class TokenRefreshLogHygieneTest {
     void successfulRefreshLogsNoCredential() {
         SessionRecord live = storedSession();
         TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR_EXPIRY,
-                (presented, scopes) -> rotation(), binding, revoked::add, Runnable::run, EndedRefreshTokens.inert());
+                (presented, scopes) -> rotation(), idTokenValidation, binding, revoked::add, Runnable::run,
+                EndedRefreshTokens.inert());
 
         coordinator.refresh(live, cookieHeader, NOW);
 
@@ -144,7 +156,7 @@ class TokenRefreshLogHygieneTest {
         TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR_EXPIRY,
                 (presented, scopes) -> {
                     throw new CredentialRejectedException("Token endpoint rejected the credential with HTTP 400");
-                }, binding, revoked::add, Runnable::run, EndedRefreshTokens.inert());
+                }, idTokenValidation, binding, revoked::add, Runnable::run, EndedRefreshTokens.inert());
 
         coordinator.refresh(live, cookieHeader, NOW);
 

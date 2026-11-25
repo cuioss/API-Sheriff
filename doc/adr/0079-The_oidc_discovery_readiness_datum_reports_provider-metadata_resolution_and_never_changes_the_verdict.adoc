@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: On a gateway with an active BFF runtime, GatewayReadinessCheck reads a non-fetching DiscoveryStatus view that BffRuntimeProducer publishes and attaches oidc_discovery (not-attempted, resolved or failed) as a datum on UP and on DOWN alike. The datum never changes the readiness verdict. JWKS key-set readiness is the separate signal that does change it.
+// summary: On a gateway with an active BFF runtime, GatewayReadinessCheck reads the non-fetching state of the runtime's one engine CachingDiscoveryResolver through the gateway-owned DiscoveryState view BffRuntimeProducer publishes, and attaches oidc_discovery (not-attempted, resolved or failed) as a datum on UP and on DOWN alike. The datum never changes the readiness verdict. JWKS key-set readiness is the separate signal that does change it.
 // tags: readiness, health-checks, oidc, discovery, bff, observability
 // affects: api-sheriff
 // supersedes:
@@ -35,20 +35,48 @@ changes the UP/DOWN verdict.*
 
 The mechanism has three parts:
 
-* *One non-fetching view.* `BffRuntimeProducer` creates one `DiscoveryStatus` and publishes it as a
-  CDI bean. The runtime's memoized discovery supplier records into it through
-  `DiscoveryStatus.recording(..)`. Each attempt records its own outcome: `resolved` when the attempt
-  returns, `failed` when it throws. The last attempt wins. `DiscoveryStatus.state()` only reads, so a
-  read never triggers a fetch.
-* *One datum on both verdicts.* `GatewayReadinessCheck` reads that view on every probe call. On a
-  gateway with an active BFF runtime, in server or cookie session mode, it adds two data: `oidc`, the
-  session mode, and `oidc_discovery`, the state token. It adds them before it reaches the verdict, so
-  they appear on `UP` and on `DOWN` alike.
-* *A closed vocabulary.* `oidc_discovery` is one of three fixed tokens: `not-attempted` (no engine use
-  has asked for the metadata yet), `resolved` or `failed`. The datum names no issuer, no URL and no
-  cause. The engine's own failure logging carries the cause.
+* *One non-fetching view.* Since token-sheriff 0.9.10 the state is the engine's own.
+  `BffRuntimeProducer` builds one `CachingDiscoveryResolver` over the engine `DiscoveryResolver`.
+  Every engine leg of the runtime resolves the provider metadata through that instance. The resolver
+  records the outcome of each refresh in its `status()`: `RESOLVED` when the refresh returns, `FAILED`
+  when it throws. `status()` reads an in-memory snapshot, so a read never triggers a fetch and never
+  waits for one. The producer publishes the resolver's state as a CDI bean of the gateway-owned type
+  `GatewayReadinessCheck.DiscoveryState`, which carries `state()` and nothing else. It does not
+  publish the resolver itself: the token-sheriff-client Quarkus extension ships its own producer of
+  `CachingDiscoveryResolver` and refuses to start an application that declares an injection point of
+  that type, qualified or through `Instance`, unless the extension's `sheriff.client.discovery-cache.*`
+  keys are set. Those keys would make the fixed cache values of ADR-0084 configuration.
+* *One datum on both verdicts.* `GatewayReadinessCheck` reads the view's `state()` on every probe call.
+  On a gateway with an active BFF runtime, in server or cookie session mode, it adds two data: `oidc`,
+  the session mode, and `oidc_discovery`, the state token. It adds them before it reaches the verdict,
+  so they appear on `UP` and on `DOWN` alike.
+* *A closed vocabulary.* `oidc_discovery` is one of three fixed tokens. The probe maps the engine
+  states `NOT_ATTEMPTED`, `RESOLVED` and `FAILED` to `not-attempted` (no engine use has asked for the
+  metadata yet), `resolved` and `failed`. The datum text is unchanged by the switch to the engine
+  resolver. The datum names no issuer, no URL and no cause. The probe reads the state only and never
+  the status's last-failure cause or last-success instant; the view it reads through exposes nothing
+  else. The engine's own failure logging carries the cause.
 
-A gateway without an active BFF runtime gets the inert view. The probe then adds neither datum.
+A gateway without an active BFF runtime has no discovery resolver. The probe then adds neither datum.
+
+=== The cache has a time to live (amended at token-sheriff 0.9.10)
+
+Before 0.9.10 the gateway's own memoized supplier kept the first resolved document for the lifetime of
+the process, so a changed provider endpoint was picked up only after a restart. The engine resolver
+serves a resolved document for a fixed time to live of one hour. It runs no background refresh: it
+refreshes the document only when an engine use resolves the metadata after the time to live has
+expired. A changed provider endpoint therefore takes effect, without a restart, on the first resolution
+after the one-hour time to live expires, which is later than the hour mark when no engine use asks for
+the metadata in between. While refreshes fail, the last document is still served for a grace period
+of 24 hours past its time to live. The grace period is likewise evaluated only on a resolution: the
+first resolution at or after 25 hours past the last successful resolution fails closed, and login and
+refresh stay refused until a later resolution succeeds. After a failed refresh the next attempt waits
+at least 30 seconds. The values are fixed constants of `BffRuntimeProducer`, not configuration keys, and
+no jitter is applied. ADR-0084 records that decision.
+
+The datum keeps its meaning under the cache. `resolved` says the most recent refresh produced a
+document, `failed` that it threw. A `failed` datum inside the grace period does not mean logins fail:
+the stale document is still served.
 
 === The boundary with JWKS readiness
 
@@ -92,9 +120,9 @@ what the engine actually did.
 The runtime would resolve the metadata during startup, so readiness would start from a known state.
 
 Rejected because a BFF gateway would then not boot while its identity provider is unreachable. Lazy
-resolution lets the gateway boot and serve its bearer-only and public routes first. The memoized
-supplier caches only a resolved value, so an attempt that fails leaves nothing cached and the next
-engine use retries.
+resolution lets the gateway boot and serve its bearer-only and public routes first. The caching
+resolver caches only a resolved document, so an attempt that fails leaves nothing cached, and the next
+engine use after the 30-second minimum refresh interval retries.
 
 === Omit the datum entirely
 
@@ -131,18 +159,21 @@ fixed token and the cause stays in the log.
   engine use, and an operator must not alert on it alone.
 * *The datum reports the last attempt, not the current reachability.* `resolved` means the most recent
   attempt succeeded. An identity provider that went down after that attempt still reads `resolved`
-  until an engine use tries again. The probe accepts this lag in exchange for sending no request.
+  until an engine use refreshes the document, at the earliest one hour after it was resolved. The probe
+  accepts this lag in exchange for sending no request.
 * *A gateway can be `UP` while every login fails.* This is deliberate. The alert for that state is
-  `oidc_discovery: failed`, not the verdict.
+  `oidc_discovery: failed`, not the verdict. Inside the 24-hour grace period a `failed` datum is the
+  early warning: logins still work on the stale document until the grace period ends.
 
 == Links
 
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/GatewayReadinessCheck.java` -- the
   probe that attaches the datum and computes the verdict
-* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/DiscoveryStatus.java` -- the
-  non-fetching view and its three state tokens
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` -- the
-  producer that publishes the view and wraps the discovery supplier with it
+  producer that builds the engine `CachingDiscoveryResolver` with its fixed time to live, grace period
+  and minimum refresh interval, and publishes the `DiscoveryState` view over it
+* link:0084-A_refreshed_ID_token_that_fails_the_OIDC_refresh-result_checks_ends_the_session.adoc[ADR-0084]
+  -- the record of the discovery time-to-live decision
 * link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]
   -- the record that introduced the live per-issuer key-set readiness signal
 * link:0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]

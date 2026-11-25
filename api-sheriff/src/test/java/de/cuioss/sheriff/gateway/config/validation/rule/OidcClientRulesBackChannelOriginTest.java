@@ -23,7 +23,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
@@ -181,6 +180,27 @@ class OidcClientRulesBackChannelOriginTest {
                     refusal);
         }
 
+        /**
+         * The verdict is the token engine's ({@code BackChannelOriginValidator}), whose reasons name its
+         * own builder property. Every reason the engine gives for a refused shape is translated into the
+         * gateway's field wording, so no message falls back to the engine's untranslated text.
+         */
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("refusedShapes")
+        void translatesEveryEngineReason(String name, String origin, @Nullable Boolean allowInsecureHttp,
+                String refusal) {
+            List<ConfigError> errors = backChannelErrors(
+                    oidc(origin.formatted(host(), port(), letters(), letters()), allowInsecureHttp));
+
+            assertEquals(1, errors.size(), () -> "expected exactly one back-channel refusal, got: " + errors);
+            String message = errors.getFirst().message();
+            assertAll("the wording of " + name,
+                    () -> assertFalse(message.contains("backChannelOrigin"),
+                            () -> "the engine's untranslated reason reached the operator: " + message),
+                    () -> assertFalse(message.contains("is refused: "),
+                            () -> "the fallback for an unknown engine reason was taken: " + message));
+        }
+
         @Test
         @DisplayName("an origin carrying user-info is refused without echoing the credential")
         void refusesUserInfo() {
@@ -189,8 +209,12 @@ class OidcClientRulesBackChannelOriginTest {
             String origin = "https://" + user + ":" + password + "@" + host() + ":" + port();
 
             assertSingleRefusal(origin, null, ORIGIN_POINTER, "oidc.back_channel_origin must not carry user-info");
-            assertFalse(backChannelErrors(oidc(origin, null)).getFirst().message().contains(password),
-                    "the password of the user-info must never reach the boot log");
+            String message = backChannelErrors(oidc(origin, null)).getFirst().message();
+            assertAll("the user-info refusal",
+                    () -> assertFalse(message.contains(password),
+                            "the password of the user-info must never reach the boot log"),
+                    () -> assertFalse(message.contains("backChannelOrigin"),
+                            () -> "the engine's untranslated reason reached the operator: " + message));
         }
 
     }

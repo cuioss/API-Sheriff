@@ -24,7 +24,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
-
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow.LoginRedirect;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
@@ -70,7 +69,7 @@ import org.jspecify.annotations.Nullable;
  * <strong>The widening request is pushed (ADR-0058).</strong> The redirect a widening yields carries
  * {@code client_id} and {@code request_uri} only; the scope set and {@code prompt=none} travel in the
  * pushed request. A push that fails is raised out of {@link #handle} as the {@code 502} refusal of
- * {@link de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests}, before a pending record is
+ * {@link de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows}, before a pending record is
  * stored and before a cookie is set; the live session is left as it was.
  * <p>
  * <strong>Refused when the pending store is full.</strong> The widening's pending record is counted

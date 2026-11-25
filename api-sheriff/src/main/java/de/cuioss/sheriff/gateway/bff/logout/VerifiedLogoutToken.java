@@ -17,7 +17,8 @@ package de.cuioss.sheriff.gateway.bff.logout;
 
 import java.util.Objects;
 
-
+import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
+import de.cuioss.sheriff.token.validation.domain.token.SignatureVerifiedToken;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
 import org.jspecify.annotations.Nullable;
 
@@ -25,6 +26,10 @@ import org.jspecify.annotations.Nullable;
  * A back-channel logout token whose signature has been verified: its claims, and the {@code typ}
  * value of its protected header. Both are covered by the signature. No claim and no header value has
  * been judged yet — that is {@link LogoutTokenValidator}'s part.
+ * <p>
+ * The verification itself is the engine's signature-only entry point,
+ * {@code TokenValidator#verifySignature} (ADR-0050); {@link #of(SignatureVerifiedToken)} adapts its
+ * result to the claim carrier the gateway's claim residual reads.
  *
  * @param content    the signature-verified claims
  * @param headerType the {@code typ} header parameter as the token carries it, {@code null} when the
@@ -40,5 +45,18 @@ public record VerifiedLogoutToken(TokenContent content, @Nullable String headerT
      */
     public VerifiedLogoutToken {
         Objects.requireNonNull(content, "content");
+    }
+
+    /**
+     * Adapts the engine's signature-only verification result: its mapped claims become the claim
+     * carrier, its protected-header {@code typ} the header type. Nothing is judged here.
+     *
+     * @param verified the token {@code TokenValidator#verifySignature} returned
+     * @return the signature-verified logout token
+     */
+    public static VerifiedLogoutToken of(SignatureVerifiedToken verified) {
+        Objects.requireNonNull(verified, "verified");
+        return new VerifiedLogoutToken(new IdTokenContent(verified.getClaims(), verified.getRawToken()),
+                verified.getTypHeader().orElse(null));
     }
 }

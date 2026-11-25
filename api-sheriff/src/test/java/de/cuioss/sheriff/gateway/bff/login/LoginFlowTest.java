@@ -17,14 +17,21 @@ package de.cuioss.sheriff.gateway.bff.login;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Queue;
+import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
-
 
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow.AuthorizationInitiation;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow.LoginRedirect;
@@ -34,8 +41,28 @@ import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.testsupport.SettableClock;
+import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
+import de.cuioss.sheriff.token.client.auth.ClientSecretBasicAuth;
+import de.cuioss.sheriff.token.client.config.ClientAuthMethod;
+import de.cuioss.sheriff.token.client.config.ClientConfiguration;
+import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
+import de.cuioss.sheriff.token.client.flow.RefreshFlow;
+import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
+import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
+import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
+import de.cuioss.sheriff.token.validation.TokenValidator;
+import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
+import de.cuioss.test.generator.junit.EnableGeneratorController;
+import de.cuioss.test.mockwebserver.EnableMockWebServer;
+import de.cuioss.test.mockwebserver.URIBuilder;
+import de.cuioss.test.mockwebserver.dispatcher.HttpMethodMapper;
+import de.cuioss.test.mockwebserver.dispatcher.ModuleDispatcher;
+import de.cuioss.test.mockwebserver.dispatcher.ModuleDispatcherElement;
+import mockwebserver3.MockResponse;
+import mockwebserver3.RecordedRequest;
+import okio.ByteString;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -49,8 +76,16 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>
  * The engine authorization is driven through the {@link AuthorizationInitiation} seam with a
  * hand-built {@link AuthorizationCodeFlow.AuthorizationRedirect}, so the flow is exercised without a
- * live IdP or discovery round-trip.
+ * live IdP or discovery round-trip. The composed cases at the top level bind the seam the way the
+ * runtime does — to {@link ScopedEngineFlows#authorize} over the engine's own flow — against an
+ * in-process pushed-authorization-request endpoint, so what the browser receives from a login is
+ * pinned end to end: the redirect location, the {@code response_mode} that makes the callback a
+ * top-level GET, and the {@code SameSite=Lax} binding cookie that is sent on exactly that navigation.
+ * They sit at the top level because the mock server resolves its dispatcher from the test instance.
  */
+@EnableGeneratorController
+@EnableMockWebServer
+@ModuleDispatcher
 class LoginFlowTest {
 
     private static final Instant T0 = Instant.parse("2026-07-23T10:00:00Z");
@@ -65,6 +100,9 @@ class LoginFlowTest {
     /** The requester source the login is counted under. */
     private static final String QUOTA_KEY = "192.0.2.10";
     private static final String OTHER_QUOTA_KEY = "198.51.100.20";
+    private static final String IDP_AUTHORIZATION_ENDPOINT = "https://idp.example.com/authorize";
+    private static final String CLIENT_ID = "api-sheriff";
+    private static final String REQUEST_URI = "urn:ietf:params:oauth:request_uri:login-flow-test";
 
     private InMemoryPendingAuthorizationStore pendingStore;
     private BindingCookieCodec bindingCodec;
@@ -93,6 +131,137 @@ class LoginFlowTest {
         Optional<String> recordId = bindingCodec.readRecordId(cookieHeader);
         assertTrue(recordId.isPresent(), "the login sets a binding cookie carrying the record id");
         return pendingStore.consume(recordId.get(), T0).orElseThrow();
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Composed with the engine seam the runtime binds
+    // ---------------------------------------------------------------------------------------------
+
+    /** Every form body the pushed-authorization-request endpoint received. */
+    private final List<String> pushedBodies = new CopyOnWriteArrayList<>();
+    /** The answers the endpoint serves next; empty means the accepting default. */
+    private final Queue<MockResponse> pushAnswers = new ConcurrentLinkedQueue<>();
+
+    /**
+     * The pushed-authorization-request endpoint: records each push and answers from the script, and
+     * once the script is empty with {@code 201} and {@link #REQUEST_URI}.
+     *
+     * @return the endpoint dispatcher
+     */
+    public ModuleDispatcherElement getModuleDispatcher() {
+        return new ModuleDispatcherElement() {
+
+            @Override
+            public String getBaseUrl() {
+                return "/par";
+            }
+
+            @Override
+            public Optional<MockResponse> handlePost(RecordedRequest request) {
+                ByteString body = request.getBody();
+                pushedBodies.add(body == null ? "" : body.utf8());
+                MockResponse next = pushAnswers.poll();
+                return Optional.of(next == null ? json(201,
+                        "{\"request_uri\":\"" + REQUEST_URI + "\",\"expires_in\":60}") : next);
+            }
+
+            @Override
+            public Set<HttpMethodMapper> supportedMethods() {
+                return Set.of(HttpMethodMapper.POST);
+            }
+        };
+    }
+
+    @Test
+    @DisplayName("Composed: the login redirect carries client_id and request_uri only, the push response_mode=query, and the binding cookie is Lax")
+    void shouldRedirectWithThePushedLocationAndTheLaxBindingCookie(URIBuilder uriBuilder) {
+        LoginFlow composed = composedLoginFlow(uriBuilder);
+
+        LoginRedirect result = composed.initiate("/dashboard", List.of("profile", "orders:read", "openid", "openid"),
+                QUOTA_KEY, T0);
+
+        Map<String, String> location = pairs(result.authorizationUrl()
+                .substring(IDP_AUTHORIZATION_ENDPOINT.length() + 1));
+        assertEquals(1, pushedBodies.size(), "the login pushed its request once");
+        Map<String, String> pushed = pairs(pushedBodies.getFirst());
+        String setCookie = result.setCookieHeaders().getFirst();
+        PendingAuthorizationRecord pending = consumeBoundRecord(result);
+        assertAll("what the browser receives from a pushed login",
+                () -> assertTrue(result.authorizationUrl().startsWith(IDP_AUTHORIZATION_ENDPOINT + "?"),
+                        result.authorizationUrl()),
+                () -> assertEquals(Map.of("client_id", CLIENT_ID, "request_uri", REQUEST_URI), location,
+                        "the location carries client_id and request_uri and no authorization parameter"),
+                () -> assertEquals("query", pushed.get("response_mode"),
+                        "the callback is a top-level GET navigation"),
+                () -> assertEquals("openid orders:read profile", pushed.get("scope"),
+                        "the push carries the canonical scope set"),
+                () -> assertEquals(pending.flowContext().state(), pushed.get("state"),
+                        "the stored record is the transaction the push was made for"),
+                () -> assertTrue(setCookie.startsWith(BindingCookieCodec.COOKIE_NAME + "=" + pending.id() + ";"),
+                        "the binding cookie carries the pending record id"),
+                () -> assertTrue(setCookie.contains("; SameSite=Lax"),
+                        "Lax: the browser sends it on the top-level GET the query-mode callback is: " + setCookie),
+                () -> assertFalse(setCookie.contains("SameSite=None"),
+                        "the cross-site binding control is not weakened to make the callback work"));
+    }
+
+    @Test
+    @DisplayName("Composed: a push the identity provider refuses stores no record and sets no cookie (matched control)")
+    void shouldStoreNothingWhenTheComposedPushIsRefused(URIBuilder uriBuilder) {
+        LoginFlow composed = composedLoginFlow(uriBuilder);
+        pushAnswers.add(json(500, "{\"error\":\"server_error\"}"));
+
+        GatewayException refused = assertThrows(GatewayException.class,
+                () -> composed.initiate("/dashboard", SCOPES, QUOTA_KEY, T0));
+
+        assertAll("a refused push leaves no login half-started",
+                () -> assertEquals(EventType.UPSTREAM_ERROR, refused.getEventType()),
+                () -> assertEquals("Pushed authorization request refused (push-failed)", refused.getMessage()),
+                () -> assertEquals(1, pushedBodies.size(), "the push did reach the endpoint"),
+                () -> assertEquals(0, pendingStore.size(), "nothing is stored, so no binding cookie can name it"));
+    }
+
+    /** The login flow as the runtime binds it: the seam is {@link ScopedEngineFlows#authorize}. */
+    private LoginFlow composedLoginFlow(URIBuilder uriBuilder) {
+        ClientConfiguration configuration = ClientConfiguration.builder()
+                .issuer("https://idp.example.com").clientId(CLIENT_ID).clientSecret("secret")
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .scopes(List.of()).redirectUri(GATEWAY_ORIGIN + "/auth/callback")
+                .allowInsecureHttp(true).allowLoopbackEgress(true)
+                .build();
+        TokenValidator validator = TokenValidator.builder()
+                .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+        TokenEndpointClient tokenClient = new TokenEndpointClient(configuration);
+        TokenValidationBridge tokenBridge = new TokenValidationBridge(validator);
+        ClientAuthentication authentication = new ClientSecretBasicAuth(CLIENT_ID, "secret");
+        ScopedEngineFlows seam = new ScopedEngineFlows(configuration,
+                new AuthorizationCodeFlow(configuration, tokenClient, tokenBridge, new IdTokenValidationBridge(validator)),
+                new RefreshFlow(configuration, tokenClient, tokenBridge, authentication), authentication);
+        ProviderMetadata metadata = new ProviderMetadata();
+        metadata.issuer = "https://idp.example.com";
+        metadata.authorizationEndpoint = IDP_AUTHORIZATION_ENDPOINT;
+        metadata.pushedAuthorizationRequestEndpoint = uriBuilder.addPathSegment("par").buildAsString();
+        metadata.codeChallengeMethodsSupported = List.of(ProviderMetadata.CODE_CHALLENGE_METHOD_S256);
+        return new LoginFlow(scopes -> seam.authorize(metadata, scopes), pendingStore, bindingCodec, GATEWAY_ORIGIN,
+                CONFIGURED_DEFAULT, CLOCK);
+    }
+
+    private static MockResponse json(int status, String body) {
+        return new MockResponse.Builder().code(status).addHeader("Content-Type", "application/json").body(body)
+                .build();
+    }
+
+    /** Decodes a form-encoded string into its pairs, refusing a name that occurs twice. */
+    private static Map<String, String> pairs(String encoded) {
+        Map<String, String> pairs = new LinkedHashMap<>();
+        for (String pair : encoded.split("&")) {
+            String[] nameValue = pair.split("=", 2);
+            String name = URLDecoder.decode(nameValue[0], StandardCharsets.UTF_8);
+            assertNull(pairs.put(name, nameValue.length == 2
+                            ? URLDecoder.decode(nameValue[1], StandardCharsets.UTF_8) : ""),
+                    "the parameter " + name + " occurs twice");
+        }
+        return pairs;
     }
 
     @Nested

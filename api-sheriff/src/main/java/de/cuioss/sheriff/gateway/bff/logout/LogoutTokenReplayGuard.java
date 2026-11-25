@@ -43,6 +43,10 @@ import java.util.Objects;
  * <p>
  * The memory is per process: a token accepted by one gateway instance is not known to another.
  * <p>
+ * token-sheriff 0.9.10 carries an equivalent guard, but only inside its {@code logout.LogoutTokenValidator},
+ * which the gateway does not adopt (see {@link LogoutTokenValidator} for the check that does not map),
+ * so this guard stays beside the gateway's claim residual.
+ * <p>
  * Thread-safe; every operation runs under the instance's monitor and never blocks on I/O.
  *
  * @author API Sheriff Team

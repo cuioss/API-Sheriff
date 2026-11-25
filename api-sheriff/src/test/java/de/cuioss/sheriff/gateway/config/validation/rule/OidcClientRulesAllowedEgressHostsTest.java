@@ -22,7 +22,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
@@ -139,6 +138,46 @@ class OidcClientRulesAllowedEgressHostsTest {
                         () -> "the refusal names the offending entry: " + refusal.message()),
                 () -> assertTrue(refusal.message().contains("carrying a port"), refusal::message),
                 () -> assertTrue(refusal.message().contains("declare the bare host"), refusal::message));
+    }
+
+    /**
+     * The refusal classes the egress guard's own shape check adds to the blank and {@code host:port}
+     * entries refused before the gateway adopted that check, each with a matched twin that differs only
+     * in the defect.
+     */
+    static Stream<Arguments> engineRefusedEntries() {
+        return Stream.of(
+                Arguments.of("a control character", "keycloak" + (char) 0x07, "must not contain control characters",
+                        "keycloak"),
+                Arguments.of("inner whitespace", "key cloak", "must not contain whitespace", "keycloak"),
+                Arguments.of("a non-ASCII character", "kéycloak", "must contain ASCII characters only", "keycloak"),
+                Arguments.of("a URL", "https://keycloak", "must be a bare host, not a URL", "keycloak"),
+                Arguments.of("a non-numeric port", "keycloak:https", "must be a bare host without a port", "keycloak"),
+                Arguments.of("an unterminated IPv6 literal", "[fd00::1", "is not a valid IPv6 literal", "[fd00::1]"),
+                Arguments.of("an IPv4 octet above 255", "10.0.0.256", "is not a valid host name or IPv4 literal",
+                        "10.0.0.255"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("engineRefusedEntries")
+    @DisplayName("Should refuse every other entry the egress guard's shape check refuses, naming its reason")
+    void shouldRefuseWhatTheEngineRefuses(String defect, String entry, String engineReason, String admittedTwin) {
+        List<ConfigError> errors = egressErrors(List.of(entry));
+
+        assertEquals(1, errors.size(), () -> "expected exactly one refusal, got: " + errors);
+        String message = errors.getFirst().message();
+        assertAll("the refusal of " + defect,
+                () -> assertTrue(message.startsWith("oidc.allowed_egress_hosts entry '"), message),
+                () -> assertTrue(message.contains(engineReason), message),
+                () -> assertTrue(message.contains("host-exact"), message),
+                () -> assertTrue(message.contains("declare the bare host"), message));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("engineRefusedEntries")
+    @DisplayName("Should admit the matched twin that differs from a refused entry only in the defect")
+    void shouldAdmitTheMatchedTwin(String defect, String entry, String engineReason, String admittedTwin) {
+        assertEquals(List.of(), egressErrors(List.of(admittedTwin)), "the entry without " + defect + " is admitted");
     }
 
     @Test

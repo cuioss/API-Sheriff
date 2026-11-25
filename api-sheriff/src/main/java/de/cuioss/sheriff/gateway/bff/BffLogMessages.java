@@ -151,8 +151,8 @@ public final class BffLogMessages {
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 111-114, 127, 130-132, 135, 145
-     * and 147).
+     * Warn-level messages (WARN range 100-199; this catalogue owns 111-114, 127, 130-132, 135, 145,
+     * 147 and 153).
      */
     @UtilityClass
     public static final class WARN {
@@ -268,22 +268,23 @@ public final class BffLogMessages {
          * An authorization request could not be pushed to the identity provider, so the login, the
          * session widening or the RFC 9470 step-up re-drive was refused with {@code 502} before
          * anything was stored and before a cookie was set. The only substitution is the reason, a closed set: {@code no-par-endpoint}
-         * (the provider metadata advertises no {@code pushed_authorization_request_endpoint}),
-         * {@code invalid-request} (the engine-built authorization request could not be split into
-         * its parameters, or names one parameter twice) or {@code push-failed} (the push itself
-         * failed: a transport failure, a timeout, a non-success answer, an unparsable answer or an
-         * answer without a {@code request_uri}). Never records the authorization URL, a parameter
+         * (the provider metadata advertises no, or a blank, {@code pushed_authorization_request_endpoint}),
+         * {@code invalid-request} (the engine could not form the authorization request: the
+         * authorization endpoint is missing or not a TLS URL, PKCE {@code S256} is not advertised, or
+         * a requested scope fails the engine's scope-token rule) or {@code push-failed} (the push
+         * itself failed: a transport failure, a timeout, a non-success answer, an unparsable answer or
+         * an answer without a {@code request_uri}). Never records the authorization URL, a parameter
          * value or the {@code request_uri}.
          * <p>
          * The template names the one consequence the callers share — no redirect to the identity
          * provider was issued — and names none of them: the login, the session widening and the
-         * step-up re-drive push through the same adapter instance, so the record cannot tell which
+         * step-up re-drive push through the same seam instance, so the record cannot tell which
          * one was refused.
          * <p>
          * <strong>Latched per reason.</strong> The login-initiation path is reachable without a
          * credential, so the record is emitted only on the FIRST occurrence of each reason and every
          * repeat drops to {@code DEBUG} (ADR-0051) — see
-         * {@code de.cuioss.sheriff.gateway.bff.login.PushedAuthorizationRequests}. Absence of a
+         * {@code de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows}. Absence of a
          * repeated {@code WARN} therefore says nothing about the refusal <em>rate</em>; read the
          * DEBUG channel for that.
          */
@@ -364,6 +365,24 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(147)
                 .template("Logout could not revoke the session's refresh token at the identity provider — the gateway session is ended and the refresh token stays valid at the provider until it expires; further failures stay at DEBUG")
+                .build();
+
+        /**
+         * A processed token refresh returned an identity that is not the session's, so nothing of it was
+         * stored (OIDC Core 12.2, ADR-0084): the refreshed ID token failed validation or is inconsistent
+         * with the refreshed access token, or the refreshed access token does not name the session's
+         * subject. The session is ended — {@link #SESSION_REFRESH_FAILED} follows with the reason
+         * {@code refresh-result-refused} — and the refresh token the exchange returned is revoked.
+         * <p>
+         * The template takes no substitution and is logged without a throwable, so it carries no value at
+         * all — never a token, the session id, either subject, an issuer or any claim value. Not latched:
+         * the refresh path runs only for a live session, and only the identity provider's answer can
+         * produce the record.
+         */
+        public static final LogRecord REFRESH_RESULT_REFUSED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(153)
+                .template("Token refresh result refused — the refreshed identity is not the session's (OIDC Core 12.2); nothing was stored and the session is ended")
                 .build();
     }
 }

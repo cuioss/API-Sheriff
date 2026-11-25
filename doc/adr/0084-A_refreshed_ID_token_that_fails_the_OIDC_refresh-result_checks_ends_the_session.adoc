@@ -1,0 +1,178 @@
+= ADR-0084: A refreshed ID token that fails the OIDC refresh-result checks ends the session
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: TokenRefreshCoordinator runs the engine's RefreshResultVerifier (OIDC Core 12.2) on every processed refresh before anything of it is persisted, bound to the session's subject. A refused or failed verification ends the session through endSession, revokes the returned refresh token and records ApiSheriff-153 and ApiSheriff-111 (refresh-result-refused) without any token, subject or issuer. The same plan replaces the gateway's process-lifetime discovery memo with the engine CachingDiscoveryResolver at fixed values: TTL 1 h, grace 24 h, minimum refresh interval 30 s, no jitter, no configuration key.
+// tags: bff, refresh, oidc, id-token, session, discovery, security
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+== Decision
+
+=== The question
+
+A `require: session` route refreshes its mediated tokens transparently (ADR-0046). Until token-sheriff
+0.9.10 the gateway persisted whatever a successful refresh exchange returned. The engine's
+`RefreshFlow` validates the refreshed access token, but it deliberately leaves the refreshed ID token,
+and the question of whose session the refresh belongs to, to its caller. The gateway checked neither.
+A refresh response could therefore rotate an ID token of another issuer or another subject into the
+session, and the session would carry that identity from then on.
+
+OpenID Connect Core 1.0, section 12.2, owes the caller those checks: a refreshed ID token must have the
+same `iss` as the session's, and its `sub` must be the session's subject.
+
+=== The decision
+
+*Every processed refresh is verified before anything of it is stored, and a refresh whose result fails
+the verification ends the session.*
+
+* *The engine verifies.* `TokenRefreshCoordinator` calls the engine's
+  `RefreshResultVerifier.verify(rotation, idTokenValidationBridge, session.sub())` right after the
+  identity provider processed the grant and before the rotated session record is built. The verifier
+  runs three checks and stops at the first refusal. It validates a refreshed ID token through the
+  runtime's one `IdTokenValidationBridge` (signature, `iss`, `aud`, `exp` / `iat`, no `nonce`). It refuses
+  an ID token whose `iss` differs from the refreshed access token's, or whose `sub` differs from the
+  access token's `sub`. It refuses a refreshed access token that does not name the session's subject.
+  The gateway does not re-implement any of these checks.
+* *A refusal ends the session.* A refusal of the verifier, and any other failure of the verification,
+  takes the existing `endSession` path: the session is destroyed, the presented refresh token is marked
+  ended, and the refresh token the exchange returned is revoked best-effort once the outcome is
+  published. The outcome is `FAILED`, so the stage clears the cookie and follows
+  `oidc.session.refresh.on_failure`. The presented refresh token is already redeemed, so the session
+  cannot be kept on it, and the returned identity is not the session's, so nothing of the rotation may
+  be persisted.
+* *The records disclose nothing.* `ApiSheriff-153` names the refusal and takes no substitution.
+  `ApiSheriff-111` follows with the new bounded reason `refresh-result-refused`, because every
+  session-ending refresh records it. Neither record is given the exception, since a validation
+  refusal's message can echo the refused token's issuer. Only the exception type reaches a `DEBUG`
+  line. No record carries a token, the session id, a subject, an issuer or a claim value.
+* *An absent ID token keeps the previous one.* A refresh response without an ID token, or with a blank
+  one, skips the ID-token checks, and the session keeps the ID token of its login. Its access token is
+  still bound to the session's subject.
+* *The single-flight is untouched.* The verification runs inside the per-session single-flight leader
+  (ADR-0046), so concurrent requests on one session share its outcome as they share every other
+  refresh disposition.
+
+=== The discovery cache has a time to live
+
+The same plan replaces the gateway's provider-metadata memo. Before 0.9.10 a memoized supplier kept
+the first resolved discovery document for the lifetime of the process. The runtime now resolves the
+metadata through one engine `CachingDiscoveryResolver` over the engine `DiscoveryResolver`, with fixed
+values (operator decision `discovery-ttl`):
+
+* *Time to live: one hour.* A resolved document is served for an hour. The resolver runs no background
+  refresh: it refreshes the document only when an engine use resolves the metadata after the time to
+  live has expired. A changed provider endpoint therefore takes effect, without a restart, on the first
+  resolution after the one-hour time to live expires.
+* *Grace period: 24 hours.* While refreshes fail, the last document is still served for 24 hours past
+  its time to live. The grace period is likewise evaluated only on a resolution: the first resolution at
+  or after 25 hours past the last successful resolution fails closed, and login and refresh stay refused
+  until a later resolution succeeds.
+* *Minimum refresh interval: 30 seconds.* After a failed refresh the next attempt waits 30 seconds, so
+  an identity-provider outage is not hit by every request. Before the first success this means a failed
+  discovery is retried at most every 30 seconds, where the memo retried on every engine use.
+* *No jitter and no configuration key.* The values are constants of `BffRuntimeProducer`. The
+  resolver is the producer's own and is not a CDI bean: the token-sheriff-client Quarkus extension
+  publishes its own `CachingDiscoveryResolver`, configured from its `sheriff.client.discovery-cache.*`
+  keys, and refuses to start an application that injects that type without those keys.
+
+The readiness probe reads the same resolver's state, through the gateway-owned view the producer
+publishes, for its `oidc_discovery` datum, whose text is unchanged (ADR-0079).
+
+== Alternatives rejected
+
+=== Keep the session and drop the refused rotation
+
+The gateway would discard the refused response and keep serving the session on its old tokens.
+
+Rejected because the presented refresh token is already redeemed. Under strict rotation the identity
+provider has spent it, so the kept session could never refresh again, and its access token expires
+soon. More importantly, the provider has just answered for another identity. A session the gateway can
+no longer tie to its own subject is not one it should keep serving.
+
+=== Re-implement the 12.2 checks in the gateway
+
+The coordinator would parse the refreshed ID token and compare `iss` and `sub` itself.
+
+Rejected because the engine ships the checks for every caller that stores a refresh result, and a
+second copy would drift from the engine's validation pipeline. The gateway keeps its own policy around
+the seam: what a refusal does to the session, the revocation and the records.
+
+=== Destroy only while the record is current
+
+The refusal would end the session through `destroyIfCurrent`, as a refused exchange does, and take the
+superseded disposition when a widening replaced the record meanwhile.
+
+Rejected because the refusal is not a lost race. The provider returned an identity that is not the
+session's, whichever record is current. The persist-failure disposition already destroys
+unconditionally for the same reason: the presented token is redeemed and nothing of the rotation can
+be stored.
+
+=== Make the discovery values configurable
+
+The time to live, the grace period and the minimum refresh interval would be configuration keys.
+
+Rejected at outline by the operator. The values bound how long a stale document may be served and how
+hard an outage is retried, and no deployment has asked to tune them. A key that nobody sets is a key
+nobody tests.
+
+=== Use the extension's discovery cache
+
+The gateway would set the extension's `sheriff.client.discovery-cache.*` keys to the fixed values in
+`application.properties` and inject the `CachingDiscoveryResolver` the extension produces.
+
+Rejected for the same reason as the previous alternative: the values would become configuration keys
+that any environment variable can override. The extension's resolver is also built over the
+extension's own `ClientConfiguration`, not over the back-channel configuration with the pinned TLS
+posture every engine leg of the runtime dials with (ADR-0045).
+
+== Consequences
+
+* *A refresh whose result fails the refresh-result checks ends the session.* The session ends when the
+  refreshed ID token fails validation against the gateway's trusted issuers (signature, `iss`, `aud`,
+  `exp` / `iat`), when its `iss` or `sub` differs from the refreshed access token's, or when the
+  refreshed access token does not name the session's subject. The `RefreshResultVerification` tests of
+  `TokenRefreshCoordinatorTest` pin four cases: a refreshed ID token for another subject and one from an
+  issuer the gateway does not trust, both really signed, a refreshed access token for another subject,
+  and a verification that fails. The tests go red when the verifier call is removed.
+* *Residual (accepted): the refreshed issuer is not compared with the session's original issuer.* OIDC
+  Core 12.2's "same `iss` as the session" is met only through the trusted-issuer set and the
+  access-token consistency check. With more than one trusted issuer, a token endpoint that returned
+  another trusted issuer's tokens for the same subject would pass the verification. That requires the
+  identity provider's token endpoint itself to answer with another trusted issuer's tokens.
+* *An identity provider whose refreshed access tokens carry no `sub` ends every session at its first
+  refresh.* The verifier's subject binding fails closed on an absent `sub`. Keycloak access tokens
+  carry `sub` by default; a provider configured to omit it (a lightweight access token) must keep it
+  for the BFF client.
+* *One more `WARN` per refused refresh.* `ApiSheriff-153` and `ApiSheriff-111` are written together.
+  The engine adds its own `WARN` for a 12.2 inconsistency.
+* *Discovery follows provider changes after its time to live, and fails closed once a resolution
+  falls outside the grace period.* A changed endpoint takes effect on the first resolution after the
+  one-hour time to live expires. The first resolution at or after 25 hours past the last success fails
+  closed, and login and refresh stay refused until a later resolution succeeds. Before, a running
+  gateway kept its first document until a restart, and never failed closed while it had one.
+
+== Links
+
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/refresh/TokenRefreshCoordinator.java` --
+  the verifier call and the `refresh-result-refused` disposition
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` -- the
+  `IdTokenValidationBridge` the coordinator is given and the `CachingDiscoveryResolver` constants
+* link:../LogMessages.adoc#apisheriff-153[ApiSheriff-153] and
+  link:../LogMessages.adoc#apisheriff-111[ApiSheriff-111] -- the records of the refusal
+* link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046] -- the
+  per-session single-flight refresh this disposition joins
+* link:0079-The_oidc_discovery_readiness_datum_reports_provider-metadata_resolution_and_never_changes_the_verdict.adoc[ADR-0079]
+  -- the readiness datum read from the discovery resolver
+* https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokenResponse[OpenID Connect Core 1.0, section 12.2]
+* link:../security-threat-model.adoc[Security threat model] -- the refresh-identity control and its
+  accepted residuals

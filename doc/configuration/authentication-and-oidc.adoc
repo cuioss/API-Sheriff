@@ -141,9 +141,11 @@ Required when any route's *effective* auth is `require: bearer`.
     `https:///path`) *fails the boot* with `CONFIG_INVALID`, naming the issuer, never the URL.
   * *Non-empty -- authoritative.* Each entry exempts exactly the host it names (no wildcard or
     suffix); the `jwks.url` host is *never* merged in. Declaring the list pins the allowance: a later
-    `jwks.url` change to another host fails closed. A blank or whitespace-only entry and a
-    `host:port` entry are *refused at boot*, naming the entry (a bare IPv6 literal such as
-    `fd00::1` is admitted).
+    `jwks.url` change to another host fails closed. Every entry is held to token-sheriff's own
+    egress-host shape check and *refused at boot*, naming the entry, unless it is a bare host name,
+    IPv4 literal or IPv6 literal: a blank or whitespace-only entry, a `host:port` entry, and an entry
+    carrying a control, whitespace or non-ASCII character or URL syntax (`/ @ ? # %`) are refused (a
+    bare IPv6 literal such as `fd00::1`, bracketed or not, is admitted).
 
   *Caveat of the derived form:* the `jwks.url` host is exempted in every deployment, so a public IdP
   hostname that resolves to an internal address (DNS change, split-horizon resolver, poisoned cache)
@@ -1054,6 +1056,7 @@ or `oidc.sender_constraint.key_file`, then:
 | The two halves are of different key types | `holds a PRIVATE KEY block with an RSA key and a PUBLIC KEY block that is not an RSA public key`, or the same for EC | Write the public block from this private key.
 | An RSA key below the minimum | `holds an RSA key with a modulus below 2048 bits` | Use at least 2048 bits.
 | An EC key on another curve | `holds an EC key on a curve other than P-256` | Use P-256.
+| An EC public point that is not on P-256 | `holds a PUBLIC KEY block whose public point is not valid for its key` | Write the public block from this private key.
 | An Ed25519 key | `holds an EdDSA key; EdDSA is not offered` | Use RSA >= 2048 bits or EC P-256.
 | Any other key type | `holds a PRIVATE KEY block that is neither an RSA nor an EC key in unencrypted PKCS#8 form` | Use RSA or EC P-256.
 |===

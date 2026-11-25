@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
 import java.util.Map;
-
+import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -35,12 +35,15 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for the {@link TokenValidationRules} rule the {@link ConfigValidator} runs that refuses an unusable
- * {@code token_validation.issuers[].jwks.allowed_egress_hosts} entry: a blank or whitespace-only entry
- * and a {@code host:port} entry of an {@code http}-sourced issuer.
+ * {@code token_validation.issuers[].jwks.allowed_egress_hosts} entry of an {@code http}-sourced issuer:
+ * a blank or whitespace-only entry, a {@code host:port} entry, and every other entry the egress guard's
+ * shape check refuses.
  * <p>
  * Every case drives the full default validator, so a rule dropped from its registration fails here as
  * surely as a rule whose body is removed. Errors are filtered to the allowlist pointers, because the
@@ -129,18 +132,73 @@ class TokenValidationRulesJwksEgressTest {
             assertEquals(List.of(), egressErrors(httpIssuer(issuerName(), List.of(entry))));
         }
 
+        /**
+         * The entry carries a port and a CR/LF pair. The engine's shape check judges the characters
+         * before the port, so the entry is refused for its control characters — still refused, still
+         * under the host-exact remedy, and still echoed escaped.
+         */
         @Test
-        @DisplayName("a CR/LF-bearing entry is echoed escaped, never raw")
+        @DisplayName("a CR/LF-bearing entry is refused for its control characters and echoed escaped, never raw")
         void echoesControlCharactersEscaped() {
             List<ConfigError> errors = egressErrors(httpIssuer(issuerName(), List.of("keycloak\r\nforged:8443")));
 
             assertSingleRefusal(errors, GATEWAY_FILE, pointer(0), HOST_EXACT);
             String message = errors.getFirst().message();
             assertAll(
+                    () -> assertTrue(message.contains("must not contain control characters"), message),
                     () -> assertTrue(message.contains("keycloak\\u000D\\u000Aforged:8443"),
                             () -> "the entry must be echoed with CR and LF escaped: " + message),
                     () -> assertFalse(message.contains("\r"), "no raw CR may reach the boot log"),
                     () -> assertFalse(message.contains("\n"), "no raw LF may reach the boot log"));
+        }
+    }
+
+    /**
+     * The refusal classes the egress guard's own shape check adds to the blank and {@code host:port}
+     * entries the gateway refused before it adopted that check. Each refused entry has a matched twin
+     * that differs from it only in the defect and is admitted, so the refusal is attributable to the
+     * defect; each refusal names the engine's reason and closes with the host-exact remedy.
+     */
+    @Nested
+    @DisplayName("every other entry the egress guard's shape check refuses")
+    class EngineRefusalClasses {
+
+        static Stream<Arguments> refusedEntries() {
+            return Stream.of(
+                    Arguments.of("a control character", "keycloak" + (char) 0x07, "must not contain control characters",
+                            "keycloak"),
+                    Arguments.of("inner whitespace", "key cloak", "must not contain whitespace", "keycloak"),
+                    Arguments.of("a non-ASCII character", "kéycloak", "must contain ASCII characters only",
+                            "keycloak"),
+                    Arguments.of("a URL", "https://keycloak", "must be a bare host, not a URL", "keycloak"),
+                    Arguments.of("user-info", "admin@keycloak", "must be a bare host, not a URL", "keycloak"),
+                    Arguments.of("a non-numeric port", "keycloak:https", "must be a bare host without a port",
+                            "keycloak"),
+                    Arguments.of("an unterminated IPv6 literal", "[fd00::1", "is not a valid IPv6 literal",
+                            "[fd00::1]"),
+                    Arguments.of("a label starting with a hyphen", "-keycloak",
+                            "is not a valid host name or IPv4 literal", "keycloak"),
+                    Arguments.of("an IPv4 octet above 255", "10.0.0.256",
+                            "is not a valid host name or IPv4 literal", "10.0.0.255"));
+        }
+
+        @ParameterizedTest(name = "refuses {0}")
+        @MethodSource("refusedEntries")
+        void refusesTheEntry(String defect, String entry, String engineReason, String admittedTwin) {
+            List<ConfigError> errors = egressErrors(httpIssuer(issuerName(), List.of(entry)));
+
+            assertSingleRefusal(errors, GATEWAY_FILE, pointer(0), engineReason);
+            String message = errors.getFirst().message();
+            assertAll("the refusal of " + defect,
+                    () -> assertTrue(message.contains(HOST_EXACT), message),
+                    () -> assertTrue(message.contains("declare the bare host"), message));
+        }
+
+        @ParameterizedTest(name = "admits the twin of {0}")
+        @MethodSource("refusedEntries")
+        void admitsTheMatchedTwin(String defect, String entry, String engineReason, String admittedTwin) {
+            assertEquals(List.of(), egressErrors(httpIssuer(issuerName(), List.of(admittedTwin))),
+                    "the entry without " + defect + " is admitted");
         }
     }
 

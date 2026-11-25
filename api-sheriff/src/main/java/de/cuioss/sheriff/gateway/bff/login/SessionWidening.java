@@ -23,7 +23,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 
-
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow.LoginRedirect;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
@@ -46,8 +45,8 @@ import org.jspecify.annotations.Nullable;
  * so a request for less than {@code S} would silently narrow the session. A member of {@code S} the
  * IdP no longer grants does leave the session that way — that is the grant being truthful, not the
  * request being short. The request goes through the
- * {@link AuthorizationWidening} seam, bound at runtime to {@link ScopedEngineFlows#widen}, which
- * builds its engine flow per call because {@code S} is IdP-derived.
+ * {@link AuthorizationWidening} seam, bound at runtime to {@link ScopedEngineFlows#widen}, which names
+ * the set per call on the one engine flow and caches nothing, because {@code S} is IdP-derived.
  * <p>
  * <strong>Silent first, one interactive attempt.</strong> A widening starts as a
  * {@link Widening.Attempt#SILENT} ({@code prompt=none}) request, which the IdP can answer from its
@@ -56,11 +55,11 @@ import org.jspecify.annotations.Nullable;
  * {@link #redriveInteractive}; any refusal of that attempt is terminal.
  * <p>
  * <strong>Both attempts are pushed (ADR-0058).</strong> The runtime binds the
- * {@link AuthorizationWidening} seam to {@link ScopedEngineFlows#widen} followed by
- * {@link PushedAuthorizationRequests#push}, so the URL the seam yields — for the silent and for the
- * interactive attempt alike — carries {@code client_id} and {@code request_uri} and nothing else; the
- * scope set and the silent attempt's {@code prompt=none} travel in the pushed request. A failed push
- * propagates out of the seam as a {@code 502} refusal. Both entry points call the seam before they
+ * {@link AuthorizationWidening} seam to {@link ScopedEngineFlows#widen}, which has the engine push the
+ * request, so the URL the seam yields — for the silent and for the interactive attempt alike — carries
+ * {@code client_id} and {@code request_uri} and nothing else; the scope set and the silent attempt's
+ * {@code prompt=none} travel in the pushed request. A failed push propagates out of the seam as a
+ * {@code 502} refusal. Both entry points call the seam before they
  * store the pending record and before they set the binding cookie, so a refused push leaves nothing
  * half-started and the live session as it was.
  * <p>
@@ -109,8 +108,8 @@ public final class SessionWidening {
     /**
      * Assembles the widening coordinator with the engine authorization seam and the gateway-side stores.
      *
-     * @param authorization      the widening authorization seam (bound to {@link ScopedEngineFlows#widen}
-     *                           and the push of the request it renders)
+     * @param authorization      the widening authorization seam (bound to {@link ScopedEngineFlows#widen},
+     *                           which pushes the request and yields its redirect)
      * @param pendingStore       the single-use pending-authorization store
      * @param bindingCookieCodec the browser-binding cookie codec
      * @param gatewayOrigin      the gateway's own origin used to same-origin-validate the return URL
@@ -210,8 +209,8 @@ public final class SessionWidening {
 
     /**
      * The widening authorization seam. The session runtime binds it to
-     * {@code scopedEngineFlows.widen(providerMetadata, scopes, silent)} followed by the push of the
-     * request that call rendered; a test binds it to a hand-built redirect.
+     * {@code scopedEngineFlows.widen(providerMetadata, scopes, silent)}, which pushes the request and
+     * yields its redirect; a test binds it to a hand-built redirect.
      *
      * @author API Sheriff Team
      * @since 1.0

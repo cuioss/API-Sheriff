@@ -48,7 +48,7 @@ import org.junit.jupiter.api.Test;
  * the {@code redirect_uri} and the PKCE challenge travel in the pushed request and do not appear in
  * that redirect. What the pushed request contains is therefore not observable from this suite; it is
  * asserted at unit level against the request body a stub identity provider records
- * ({@code BffRuntimeProducerTest}, {@code PushedAuthorizationRequestsTest}).
+ * ({@code BffRuntimeProducerTest}, {@code ScopedEngineFlowsTest}).
  * <p>
  * With a live session the fold short-circuits {@code 302} to the same-origin-validated
  * {@code returnUrl} target rather than re-driving the IdP, so an already-authenticated browser is not

@@ -29,7 +29,6 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow.LoginRedirect;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
@@ -55,9 +54,9 @@ import org.jspecify.annotations.Nullable;
  * string and a raw {@code Cookie} header and returns a {@link CallbackOutcome} the edge renders),
  * so it carries no JAX-RS/Vert.x coupling and is unit-testable without a container.
  * <p>
- * <strong>Query-mode callback.</strong> The gateway drives the authorization request with
- * {@code response_mode=query} (see
- * {@link de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder}), so
+ * <strong>Query-mode callback.</strong> The gateway requests every authorization request with
+ * {@code response_mode=query} (the engine's per-call {@code ResponseMode.QUERY}, see
+ * {@link de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows}), so
  * after a successful login the IdP answers a {@code 302} that navigates the browser to the
  * {@code redirect_uri} with the {@code code}/{@code state} in the query string. That top-level GET
  * navigation is the only callback shape on which the browser sends the {@code SameSite=Lax}
@@ -89,8 +88,7 @@ import org.jspecify.annotations.Nullable;
  * gateway-held verifier), by the single-use, short-lived nature of the code at the token endpoint,
  * and by the binding-cookie + {@code state} double-check this endpoint performs below, which
  * rejects {@code 403} a code replayed from a different browser even while it is still live. The
- * full statement of the tradeoff and of how each mitigation was verified lives on
- * {@link de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequestBuilder}.
+ * full statement of the tradeoff lives on {@link de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows}.
  * <p>
  * <strong>Browser binding (D2b).</strong> The pending-authorization record is resolved by the
  * unguessable id carried in the {@link BindingCookieCodec browser-binding cookie}, not by the

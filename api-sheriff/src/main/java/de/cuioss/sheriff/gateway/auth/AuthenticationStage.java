@@ -16,10 +16,8 @@
 package de.cuioss.sheriff.gateway.auth;
 
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
-
 
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -27,6 +25,7 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.token.commons.http.BearerCredentials;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.context.AccessTokenRequest;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
@@ -97,7 +96,10 @@ import org.jspecify.annotations.Nullable;
  */
 public final class AuthenticationStage {
 
-    private static final String BEARER_PREFIX = "Bearer ";
+    /** The request header the bearer credential is read from (RFC 6750 section 2.1). */
+    private static final String AUTHORIZATION = "Authorization";
+
+    private static final String NO_TOKEN_DETAIL = "No bearer token presented";
 
     /** The challenge header every bearer rejection carries (RFC 6750 section 3). */
     private static final String WWW_AUTHENTICATE = "WWW-Authenticate";
@@ -189,8 +191,7 @@ public final class AuthenticationStage {
      * @return the raw token, once it has passed validation and the scope check
      */
     private String validateBearer(PipelineRequest request, Route route) {
-        String token = extractBearerToken(request)
-                .orElseThrow(() -> unauthorized(request, EventType.TOKEN_MISSING, "No bearer token presented"));
+        String token = extractBearerToken(request);
 
         AccessTokenContent content;
         try {
@@ -219,6 +220,12 @@ public final class AuthenticationStage {
      * {@code scope} attribute names only the scopes the token lacks, space-separated and sorted so
      * the challenge is deterministic. Every name is drawn from the route's boot-configured
      * {@code neededScopes} — never from the token — so the header carries no token material.
+     * <p>
+     * The header is composed here rather than by the library's {@code BearerChallenge} builder on
+     * purpose: that builder produces the same bytes for an ordinary scope set, but it throws
+     * {@link IllegalArgumentException} for more than {@code BearerChallenge.MAX_SCOPE_TOKENS} (64)
+     * scopes or for a name outside the RFC 6749 section 3.3 {@code scope-token} grammar — inputs this
+     * stage answers with the {@code 403} challenge, which the builder would turn into a server error.
      */
     private static GatewayException insufficientScope(PipelineRequest request, Route route,
             Set<String> missingScopes) {
@@ -229,11 +236,28 @@ public final class AuthenticationStage {
                 "Token missing a needed scope for route " + route.id());
     }
 
-    private static Optional<String> extractBearerToken(PipelineRequest request) {
-        return request.firstHeader("Authorization")
-                .filter(value -> value.regionMatches(true, 0, BEARER_PREFIX, 0, BEARER_PREFIX.length()))
-                .map(value -> value.substring(BEARER_PREFIX.length()).strip())
-                .filter(token -> !token.isEmpty());
+    /**
+     * Reads the {@code Bearer} token from {@code Authorization} through the library's
+     * {@link BearerCredentials} parser. The scheme is matched case-insensitively (RFC 9110 section
+     * 11.1) and the token is stripped. A header that is absent, names another scheme, or carries an
+     * empty token presents no token ({@link EventType#TOKEN_MISSING}). A token holding a space or a
+     * control character is not a {@code token68} and is refused as {@link EventType#TOKEN_INVALID} —
+     * the answer such a value received when it was handed to the validator and failed there.
+     *
+     * @return the stripped token
+     * @throws GatewayException 401 when no usable token is presented
+     */
+    private static String extractBearerToken(PipelineRequest request) {
+        BearerCredentials.Result credentials = BearerCredentials.extract(
+                request.firstHeader(AUTHORIZATION).orElse(null));
+        return switch (credentials.state()) {
+            case PRESENT -> credentials.token()
+                    .orElseThrow(() -> new IllegalStateException("A PRESENT bearer result carries a token"));
+            case MALFORMED -> throw credentials.isTokenEmpty()
+                    ? unauthorized(request, EventType.TOKEN_MISSING, NO_TOKEN_DETAIL)
+                    : unauthorized(request, EventType.TOKEN_INVALID, "Malformed bearer token");
+            case ABSENT -> throw unauthorized(request, EventType.TOKEN_MISSING, NO_TOKEN_DETAIL);
+        };
     }
 
     private static GatewayException unauthorized(PipelineRequest request, EventType eventType, String detail) {

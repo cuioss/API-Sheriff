@@ -49,10 +49,11 @@ authorization and end-session endpoints, unchanged.
 
 The gateway sends its own calls to `oidc.back_channel_origin` with path and query unchanged: discovery, the pushed authorization request, the token endpoint (code exchange and refresh) and
 RFC 7009 refresh-token revocation. The `ApiSheriff-138` boot record names the same list. The gateway never dials the identity provider's userinfo endpoint: its own `oidc.user_info.path`
-endpoint answers from the session's validated ID-token claims (`IdTokenClaimProjection`).
+endpoint answers from the session's validated ID-token claims, read in their native JSON types through the validation library's raw-claims view
+(`TokenValidator#getRawClaims`, token-sheriff 0.9.10).
 
 The mapping is the engine's single origin mapping, `token-sheriff-client`'s `backChannelOrigin` (introduced in 0.9.7, DPoP `htu` corrected in 0.9.8). The engine re-targets only an advertised
-endpoint on the issuer's own origin. The value goes to the one client configuration every scoped variant reuses (ADR-0048), so all scope sets share it.
+endpoint on the issuer's own origin. The value goes to the one client configuration every leg dials with, whatever scope set it names per call (ADR-0083), so all scope sets share it.
 
 JWKS stays on `token_validation.issuers[].jwks.url`, which names the reachable key-set address directly. The 0.9.8 discovery-issuer enforcement in the validation library has no effect here. The
 gateway sets the issuer identifier identically on the issuer configuration and the loader. Every JWKS source is a direct `jwks.url` or a file, never well-known discovery: `RetryingJwksLoader` reports its
@@ -219,7 +220,7 @@ without one, the realm settings first established on a throwaway 26.5.7 containe
 == Links
 
 * link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]: the back-channel TLS posture for the mapped host
-* link:0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]: the per-scope-set client configuration factory that carries the origin
+* link:0083-Per-request_OIDC_scope_is_named_per_call_on_one_engine_flow.adoc[ADR-0083]: the one client configuration that carries the origin for every scope set
 * link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]: the FAPI 2.0 controls, including the DPoP binding whose `htu` this record settles
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]: the reserved-path model the fronting variant respects
 * link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019]: the `Cookie` header-length relaxation the fronting variant declares

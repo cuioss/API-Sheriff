@@ -50,8 +50,9 @@ All BFF code is in the `api-sheriff` module under `de.cuioss.sheriff.gateway`:
 
 | `bff.login`
 | `LoginFlow` -- auth-code initiation over the engine's authorization seam;
-  `PushedAuthorizationRequests` -- the adapter that pushes every authorization request;
-  `ScopedEngineFlows` -- the per-scope-set engine flows;
+  `ScopedEngineFlows` -- the seam over the one engine flow: names the scope set, `response_mode=query`
+  and `prompt` per call, has the engine push every login and widening request, pushes the step-up
+  re-drive, and translates every push refusal into the `502`;
   `SessionWidening` -- the widening of a live session, silent attempt and interactive re-drive.
 
 | `bff.reserved`
@@ -238,8 +239,8 @@ removes a session, decide which of the two it is.
 
 == The engine seams the producer wires
 
-`BffRuntimeProducer` is the one place the client credential, the sender constraint and the
-pushed-request client are assembled
+`BffRuntimeProducer` is the one place the client credential, the sender constraint and the one
+authorization-code flow, which owns the engine's pushed-request client, are assembled
 (link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]).
 Each exists once per runtime. Know these seams before you touch the login, the refresh or a reserved
 handler.
@@ -298,30 +299,38 @@ survive, and neither side would log an error: the IdP records a failed delivery,
 unrouted path. The IT does not reproduce that failure, so `ReservedPathRegistryTest` pins the exemption with both arms
 (link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#backchannel-host[ADR-0018]).
 
-=== The PAR adapter
+=== The pushed-request seam
 
-`PushedAuthorizationRequests` adapts the engine's `ParClient`. It does not build a request: it takes
-the authorization URL the engine's builder rendered, splits it into its parameters, pushes them, and
-returns the authorization endpoint with `client_id` and `request_uri`. The engine's `FlowContext` is
-kept as it is. Every failure becomes a `GatewayException` with `UPSTREAM_ERROR` (`502`), recorded as
-`ApiSheriff-132` under a per-reason latch, because the login path is reachable without a credential.
-Every seam that builds an authorization request goes through it -- the login (`LoginFlow`), the
-session widening (`SessionWidening`, silent attempt and interactive re-drive) and the RFC 9470
-step-up re-drive; there is no other way to obtain a redirect to the identity provider. A new seam
-that renders an authorization URL must be wrapped the same way in `BffRuntimeProducer`, and must
-call its seam before it stores a pending record or sets a cookie, so that a refused push leaves
-nothing half-started.
+`ScopedEngineFlows` builds no request and splits no URL. It asks the engine for each request through
+the per-call `AuthorizationRequestOptions` of token-sheriff 0.9.10 -- the canonical scope set,
+`ResponseMode.QUERY` and, on a silent widening, `Prompt.NONE` -- and the login and the widening are
+pushed by the engine itself (`AuthorizationCodeFlow.authorizePushed`), which returns the
+authorization endpoint with `client_id` and `request_uri` and the `FlowContext` to persist. The
+RFC 9470 step-up re-drive is the one push the seam drives itself, because the engine offers no pushed
+step-up entry point: `StepUpHandler` mints the context carrying the challenge's `acr_values` and
+`max_age`, the engine's `AuthorizationRequestBuilder.parameters` returns that request's parameters,
+and an engine `ParClient` over the same configuration pushes them. Every refusal -- the engine's
+`PushedAuthorizationEndpointMissingException`, a `ClientProtocolException` for a request it cannot
+form, a `TransportException` for a failed push -- becomes a `GatewayException` with `UPSTREAM_ERROR`
+(`502`), recorded as `ApiSheriff-132` under a per-reason latch, because the login path is reachable
+without a credential. Every seam that starts an authorization request goes through it -- the login
+(`LoginFlow`), the session widening (`SessionWidening`, silent attempt and interactive re-drive) and
+the step-up re-drive; there is no other way to obtain a redirect to the identity provider. A new
+seam that starts an authorization request must go through `ScopedEngineFlows`, and must call it
+before it stores a pending record or sets a cookie, so that a refused push leaves nothing
+half-started.
 
 === The shared sender constraint
 
-One `SenderConstraint` is built from the sender-constraint key and handed to the base
-`AuthorizationCodeFlow` and to `ScopedEngineFlows`, which passes it to every per-scope login flow,
-every per-call widening flow and every refresh flow, near-expiry and scope-driven. A code exchange or a refresh sent without it would carry no proof, and
-the engine's token-endpoint client would then judge nothing about the binding of its response.
+One `SenderConstraint` is built from the sender-constraint key and handed to the one
+`AuthorizationCodeFlow` and the one `RefreshFlow` the runtime builds, so the code exchange of a login
+and of a widening and every refresh, near-expiry and scope-driven, present a proof signed with it. A
+code exchange or a refresh sent without it would carry no proof, and the engine's token-endpoint
+client would then judge nothing about the binding of its response.
 
 === The token-endpoint client and the binding check
 
-The runtime builds one plain `TokenEndpointClient` over the base back-channel configuration. Under the
+The runtime builds one plain `TokenEndpointClient` over the one back-channel configuration. Under the
 DPoP sender constraint every flow passes it, the engine accepts a response only when `token_type` is
 `DPoP` and, when the access token is a JWT, its `cnf.jkt` equals the proof key's thumbprint (the
 check is the engine's since token-sheriff 0.9.9; the gateway carried its own until then). An access
@@ -345,8 +354,8 @@ exception, and a refresh records the session end as `ApiSheriff-111` (`redeemed-
 
 === The step-up coordinator
 
-`StepUpCoordinator` is assembled with the same request builder and the same PAR adapter as the login
-leg, so its re-drive is a pushed request. *No edge code calls it.* The path is proven at unit level
+`StepUpCoordinator` is assembled over `ScopedEngineFlows.stepUp`, the same seam as the login leg, so
+its re-drive carries `response_mode=query` and is a pushed request. *No edge code calls it.* The path is proven at unit level
 and is not reachable in a running gateway
 (link:../fapi_status.adoc#_open_gaps_and_next_steps[FAPI status, open gaps]).
 
@@ -369,9 +378,9 @@ key-id re-fetch (entry 5) and identity-provider support for client-secret mode (
 were not observed on a running stack:
 
 * *`EdDSA`.* The engine's client-assertion signer supports the `RS`, `PS` and `ES` families only.
-* *No PAR path in the engine's flows.* Neither `AuthorizationCodeFlow.authorize` nor
-  `StepUpHandler.initiate` pushes. `ParClient` is a free-standing transport, which is why the
-  adapter of decision 11 exists.
+* *No PAR path in the engine's step-up handler.* `AuthorizationCodeFlow.authorizePushed` pushes the
+  login and the widening (token-sheriff 0.9.10), but `StepUpHandler.initiate` does not push, which is
+  why `ScopedEngineFlows` pushes the step-up re-drive through `ParClient` itself (decision 11).
 * *Proofs on the token legs only.* The engine's PAR and revocation clients attach no DPoP proof.
 * *The client secret on every authenticated leg.* The engine's `ClientSecretBasicAuth` decorates the
   pushed request, the token request and the revocation request alike.

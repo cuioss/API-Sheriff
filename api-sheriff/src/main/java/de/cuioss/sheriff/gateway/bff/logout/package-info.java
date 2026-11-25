@@ -35,12 +35,15 @@
  *       not revoked, and a failed revocation is a latched {@code WARN} that never stops the logout.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver} receives an OIDC
  *       back-channel {@code logout_token}: it signature-verifies the token through the engine's
- *       issuer/JWKS infrastructure, runs the claim residual, then destroys the affected sessions
- *       through the store's O(1) secondary index. It revokes nothing: the identity provider initiated
- *       that logout.</li>
+ *       signature-only entry point {@code TokenValidator#verifySignature}, runs the claim residual,
+ *       then destroys the affected sessions through the store's O(1) secondary index. It revokes
+ *       nothing: the identity provider initiated that logout.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator} is the pure OIDC
- *       back-channel-logout-token check pipeline the receiver applies after signature verification —
- *       the gateway-side residual the engine library does not carry.</li>
+ *       back-channel-logout-token check pipeline the receiver applies after signature verification,
+ *       and {@link de.cuioss.sheriff.gateway.bff.logout.LogoutTokenReplayGuard} lets each accepted
+ *       token act once. token-sheriff 0.9.10 ships its own logout-token validator; the gateway keeps
+ *       these two because that validator's {@code events} check refuses tokens this one accepts —
+ *       {@link de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator} records which.</li>
  * </ul>
  * The {@code reserved} package's {@code LogoutEndpoint} and {@code BackchannelLogoutEndpoint} own the
  * request/response edge and the session store; this package holds only the transport-free logic.

@@ -24,6 +24,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -62,17 +63,24 @@ import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.token.client.flow.CredentialRejectedException;
 import de.cuioss.sheriff.token.client.flow.InvalidScopeException;
 import de.cuioss.sheriff.token.client.flow.RedeemedResponseException;
 import de.cuioss.sheriff.token.client.flow.RedeemedScopeRefusalException;
 import de.cuioss.sheriff.token.client.flow.RefreshRedemption;
+import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
 import de.cuioss.sheriff.token.commons.error.TransportException;
+import de.cuioss.sheriff.token.validation.TokenType;
+import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
+import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
+import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
+import de.cuioss.sheriff.token.validation.test.generator.ClaimControlParameter;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.TestLoggerFactory;
@@ -118,7 +126,19 @@ class TokenRefreshCoordinatorTest {
     private static final String CURRENT_REFRESH = "refresh-current";
     private static final String ROTATED_ACCESS = "rotated-access-token";
     private static final String ROTATED_REFRESH = "rotated-refresh-token";
-    private static final String ROTATED_ID = "rotated-id-token";
+    /** The session's subject, carried by its record, the rotated access token and the rotated ID token. */
+    private static final String SUBJECT = "sub-1";
+    /**
+     * The signer of every rotated ID token: a really signed ID token of the test issuer, validated by
+     * {@link #ID_TOKEN_VALIDATION} exactly as the runtime validates a refreshed ID token.
+     */
+    private static final TestTokenHolder ID_TOKEN_SIGNER = new TestTokenHolder(TokenType.ID_TOKEN,
+            ClaimControlParameter.builder().build())
+            .withClaim(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
+    private static final String ROTATED_ID = ID_TOKEN_SIGNER.getRawToken();
+    /** The engine ID-token bridge over a validator that knows the test issuer, as the runtime binds it. */
+    private static final IdTokenValidationBridge ID_TOKEN_VALIDATION = new IdTokenValidationBridge(
+            TokenValidator.builder().issuerConfig(ID_TOKEN_SIGNER.getIssuerConfig()).build());
     /** The session's active scope set A: the static oidc.scopes united with an endpoint scope. */
     private static final Set<String> ACTIVE_SCOPES = Set.of("openid", "profile", "email", "orders:read");
     /** The session's granted scope set S: A plus a scope a widening added and a refresh narrowed away. */
@@ -204,10 +224,20 @@ class TokenRefreshCoordinatorTest {
     }
 
     private static RotationResult rotation(@Nullable String grantedScope, RotationResult.ScopeDelta delta) {
+        return rotationIssuing(ROTATED_ID, grantedScope, delta);
+    }
+
+    /**
+     * A processed rotation whose access token names the session's subject and the test issuer, carrying
+     * {@code rawIdToken} as the refreshed ID token ({@code null} when the response carried none).
+     */
+    private static RotationResult rotationIssuing(@Nullable String rawIdToken, @Nullable String grantedScope,
+            RotationResult.ScopeDelta delta) {
         Map<String, ClaimValue> claims = new HashMap<>();
-        claims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString("sub-1"));
+        claims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(SUBJECT));
+        claims.put(ClaimName.ISSUER.getName(), ClaimValue.forPlainString(ID_TOKEN_SIGNER.getIssuer()));
         AccessTokenContent rotatedAccess = new AccessTokenContent(claims, ROTATED_ACCESS);
-        return new RotationResult(rotatedAccess, ROTATED_REFRESH, ROTATED_ID, 300L, true, grantedScope, delta);
+        return new RotationResult(rotatedAccess, ROTATED_REFRESH, rawIdToken, 300L, true, grantedScope, delta);
     }
 
     private static void awaitRelease(CountDownLatch latch) {
@@ -236,15 +266,15 @@ class TokenRefreshCoordinatorTest {
     }
 
     private TokenRefreshCoordinator coordinator(Instant accessExpiry, RefreshExchange exchange) {
-        return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, binding, revoked::add, DIRECT,
-                EndedRefreshTokens.inert());
+        return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, ID_TOKEN_VALIDATION, binding,
+                revoked::add, DIRECT, EndedRefreshTokens.inert());
     }
 
     /** A coordinator over the real binding that marks ended refresh tokens into {@code marker}. */
     private TokenRefreshCoordinator coordinatorMarkingInto(EndedRefreshTokens marker, Instant accessExpiry,
             RefreshExchange exchange) {
-        return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, binding, revoked::add, DIRECT,
-                marker);
+        return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, ID_TOKEN_VALIDATION, binding,
+                revoked::add, DIRECT, marker);
     }
 
     private SessionRecord storedSession() {
@@ -265,7 +295,8 @@ class TokenRefreshCoordinatorTest {
     private void assertPersistFailureRevokesRotatedToken(SessionRecord live, RefreshExchange exchange,
             AtomicInteger calls) {
         TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange,
-                new PersistFailingBinding(binding), revoked::add, DIRECT, EndedRefreshTokens.inert());
+                ID_TOKEN_VALIDATION, new PersistFailingBinding(binding), revoked::add, DIRECT,
+                EndedRefreshTokens.inert());
 
         RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
@@ -529,8 +560,8 @@ class TokenRefreshCoordinatorTest {
             String cookieHeader = setCookie.substring(0, setCookie.indexOf(';'));
             SessionRecord live = cookieBinding.resolve(cookieHeader, NOW).orElseThrow();
             TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
-                    (_, _) -> rotation("openid", RotationResult.ScopeDelta.NARROWED), cookieBinding, revoked::add,
-                    DIRECT, EndedRefreshTokens.bounded());
+                    (_, _) -> rotation("openid", RotationResult.ScopeDelta.NARROWED), ID_TOKEN_VALIDATION,
+                    cookieBinding, revoked::add, DIRECT, EndedRefreshTokens.bounded());
 
             RefreshOutcome outcome = coordinator.refresh(live, cookieHeader, NOW);
 
@@ -702,16 +733,21 @@ class TokenRefreshCoordinatorTest {
             return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, (presented, _) -> {
                 calls.incrementAndGet();
                 throw OUTAGE;
-            }, saturationBinding, revoked::add, DIRECT, EndedRefreshTokens.inert());
+            }, ID_TOKEN_VALIDATION, saturationBinding, revoked::add, DIRECT, EndedRefreshTokens.inert());
         }
 
+        /**
+         * A stored session told apart from the others by its id and its tokens. Every one carries the
+         * {@link #SUBJECT} the rotation names, so a session that reaches a processed refresh passes the
+         * refresh-result verification and the back-off under test is the only thing that decides.
+         */
         private SessionRecord stored(String sessionId) {
             SessionRecord live = SessionRecord.builder()
                     .sessionId(sessionId)
                     .accessToken("access-" + sessionId)
                     .refreshToken("refresh-" + sessionId)
                     .idToken("id-" + sessionId)
-                    .sub("sub-" + sessionId)
+                    .sub(SUBJECT)
                     .expiresAt(NOW.plus(SESSION_TTL))
                     .build();
             create(saturationStore, live, NOW);
@@ -1029,8 +1065,8 @@ class TokenRefreshCoordinatorTest {
         }
 
         private TokenRefreshCoordinator coordinatorWith(Instant accessExpiry, RefreshExchange exchange) {
-            return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, saturationBinding,
-                    revoked::add, DIRECT, EndedRefreshTokens.inert());
+            return new TokenRefreshCoordinator(LEEWAY, unused -> accessExpiry, exchange, ID_TOKEN_VALIDATION,
+                    saturationBinding, revoked::add, DIRECT, EndedRefreshTokens.inert());
         }
 
         /**
@@ -1168,7 +1204,8 @@ class TokenRefreshCoordinatorTest {
             storedSession();
             SessionBinding persistFailing = new PersistFailingBinding(binding);
             TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
-                    (rt, _) -> rotation(), persistFailing, revoked::add, DIRECT, EndedRefreshTokens.inert());
+                    (rt, _) -> rotation(), ID_TOKEN_VALIDATION, persistFailing, revoked::add, DIRECT,
+                    EndedRefreshTokens.inert());
 
             RefreshOutcome outcome = coordinator.refresh(session(CURRENT_REFRESH), COOKIE_HEADER, NOW);
 
@@ -1192,7 +1229,7 @@ class TokenRefreshCoordinatorTest {
             TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
                     throwing(new RedeemedScopeRefusalException("granted a broader scope than requested",
                             RefreshRedemption.rotated(ROTATED_REFRESH))),
-                    binding, failingRevocation, DIRECT, EndedRefreshTokens.inert());
+                    ID_TOKEN_VALIDATION, binding, failingRevocation, DIRECT, EndedRefreshTokens.inert());
 
             RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
 
@@ -1383,7 +1420,7 @@ class TokenRefreshCoordinatorTest {
             TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, (rt, _) -> {
                 calls.incrementAndGet();
                 return rotation();
-            }, holdingLeader, revoked::add, DIRECT, EndedRefreshTokens.inert());
+            }, ID_TOKEN_VALIDATION, holdingLeader, revoked::add, DIRECT, EndedRefreshTokens.inert());
             FutureTask<RefreshOutcome> leader = new FutureTask<>(() -> coordinator.refresh(live, COOKIE_HEADER, NOW));
             FutureTask<RefreshOutcome> waiter = new FutureTask<>(() -> coordinator.refresh(live, reissuedCookie, NOW));
             Thread leading = new Thread(leader, "refresh-leader");
@@ -2267,7 +2304,7 @@ class TokenRefreshCoordinatorTest {
                 TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
                         throwing(new RedeemedScopeRefusalException("granted a broader scope than requested",
                                 RefreshRedemption.rotated(ROTATED_REFRESH))),
-                        binding, failingRevocation, executor, EndedRefreshTokens.inert());
+                        ID_TOKEN_VALIDATION, binding, failingRevocation, executor, EndedRefreshTokens.inert());
 
                 RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
                 boolean revocationAttempted = attempted.await(OUTCOME_WAIT_SECONDS, TimeUnit.SECONDS);
@@ -2301,7 +2338,7 @@ class TokenRefreshCoordinatorTest {
             TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
                     throwing(new RedeemedScopeRefusalException("granted a broader scope than requested",
                             RefreshRedemption.rotated(ROTATED_REFRESH))),
-                    wideBinding, revoked::add, parked::add, EndedRefreshTokens.inert());
+                    ID_TOKEN_VALIDATION, wideBinding, revoked::add, parked::add, EndedRefreshTokens.inert());
 
             for (int i = 0; i <= TokenRefreshCoordinator.MAX_CONCURRENT_REVOCATIONS; i++) {
                 endSession(coordinator, wideStore, "ending-" + i);
@@ -2366,7 +2403,7 @@ class TokenRefreshCoordinatorTest {
                     exchangeEntered.countDown();
                     awaitRelease(proceed);
                     return exchange.get();
-                }, sessionBinding, blockingRevocation, revocations, EndedRefreshTokens.inert());
+                }, ID_TOKEN_VALIDATION, sessionBinding, blockingRevocation, revocations, EndedRefreshTokens.inert());
 
                 Future<RefreshOutcome> leader = requests.submit(() -> coordinator.refresh(live, COOKIE_HEADER, NOW));
                 Awaits.connect(exchangeEntered, "the leader entered the engine refresh");
@@ -2451,8 +2488,8 @@ class TokenRefreshCoordinatorTest {
 
         private TokenRefreshCoordinator cookieCoordinator(RefreshExchange exchange, SessionBinding sessionBinding,
                 EndedRefreshTokens marker) {
-            return new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, sessionBinding, revoked::add, DIRECT,
-                    marker);
+            return new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, ID_TOKEN_VALIDATION, sessionBinding,
+                    revoked::add, DIRECT, marker);
         }
 
         @Test
@@ -2824,8 +2861,8 @@ class TokenRefreshCoordinatorTest {
             String cookieHeader = setCookie.substring(0, setCookie.indexOf(';'));
             SessionRecord live = cookieBinding.resolve(cookieHeader, NOW).orElseThrow();
             TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NOT_NEAR,
-                    (_, _) -> rotation(SHORT_SCOPE, RotationResult.ScopeDelta.NARROWED), cookieBinding, revoked::add,
-                    DIRECT, EndedRefreshTokens.bounded());
+                    (_, _) -> rotation(SHORT_SCOPE, RotationResult.ScopeDelta.NARROWED), ID_TOKEN_VALIDATION,
+                    cookieBinding, revoked::add, DIRECT, EndedRefreshTokens.bounded());
 
             RefreshOutcome outcome = coordinator.refreshForScopes(live, cookieHeader, REQUESTED, NOW);
 
@@ -3084,12 +3121,14 @@ class TokenRefreshCoordinatorTest {
             RefreshTokenRevocation revocation = revoked::add;
             EndedRefreshTokens marker = EndedRefreshTokens.inert();
 
-            assertThrows(NullPointerException.class,
-                    () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, null, DIRECT, marker));
-            assertThrows(NullPointerException.class,
-                    () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, revocation, null, marker));
-            assertThrows(NullPointerException.class,
-                    () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR, exchange, binding, revocation, DIRECT, null));
+            assertThrows(NullPointerException.class, () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
+                    exchange, null, binding, revocation, DIRECT, marker));
+            assertThrows(NullPointerException.class, () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
+                    exchange, ID_TOKEN_VALIDATION, binding, null, DIRECT, marker));
+            assertThrows(NullPointerException.class, () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
+                    exchange, ID_TOKEN_VALIDATION, binding, revocation, null, marker));
+            assertThrows(NullPointerException.class, () -> new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
+                    exchange, ID_TOKEN_VALIDATION, binding, revocation, DIRECT, null));
         }
 
         @Test
@@ -3289,6 +3328,171 @@ class TokenRefreshCoordinatorTest {
         @Override
         public List<String> clearingSetCookieHeaders() {
             return delegate.clearingSetCookieHeaders();
+        }
+    }
+
+    /**
+     * OIDC Core 12.2: a refresh response whose ID token names another subject or another issuer is not
+     * the session's identity, and the rotated record must never be persisted over it. The ID tokens here
+     * are really signed and validated through the engine's own ID-token pipeline, so the refusal is the
+     * engine's, not a stub's.
+     */
+    @Nested
+    @DisplayName("Refresh-result verification (OIDC Core 12.2)")
+    class RefreshResultVerification {
+
+        private static final String FOREIGN_SUBJECT = "sub-foreign";
+        private static final String FOREIGN_ISSUER = "https://foreign-issuer.example";
+        private static final String REFRESH_RESULT_REFUSED = "refresh-result-refused";
+        private static final String REFRESH_RESULT_REFUSED_ID =
+                BffLogMessages.WARN.REFRESH_RESULT_REFUSED.resolveIdentifierString();
+
+        private RotationResult rotationIssuing(@Nullable String rawIdToken) {
+            return TokenRefreshCoordinatorTest.rotationIssuing(rawIdToken, null, RotationResult.ScopeDelta.UNDECLARED);
+        }
+
+        private RefreshOutcome refreshReturning(RotationResult rotation) {
+            SessionRecord live = storedSession();
+            return coordinator(NEAR, (rt, _) -> rotation).refresh(live, COOKIE_HEADER, NOW);
+        }
+
+        private void assertSessionEndedByRefusal(RefreshOutcome outcome) {
+            assertAll("a refused refresh result ends the session and revokes the rotated token",
+                    () -> assertEquals(RefreshOutcome.Kind.FAILED, outcome.kind()),
+                    () -> assertNull(outcome.session(), "no rotated session is handed back"),
+                    () -> assertFalse(sessionResolvable(NOW), "the session is destroyed, not rotated"),
+                    () -> assertEquals(0, store.size(), "nothing of the refused rotation was persisted"),
+                    () -> assertEquals(List.of(ROTATED_REFRESH), revoked,
+                            "the rotated refresh token is revoked exactly once"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, REFRESH_RESULT_REFUSED);
+        }
+
+        private void assertRotatedAndPersisted(RefreshOutcome outcome, String expectedIdToken) {
+            SessionRecord rotated = outcome.session();
+            assertAll("a verified rotation is persisted",
+                    () -> assertEquals(RefreshOutcome.Kind.REFRESHED, outcome.kind()),
+                    () -> assertNotNull(rotated),
+                    () -> assertEquals(expectedIdToken, Objects.requireNonNull(rotated).idToken()),
+                    () -> assertEquals(SUBJECT, Objects.requireNonNull(rotated).sub(), "the subject is unchanged"),
+                    () -> assertEquals(ROTATED_ACCESS,
+                            resolveById(store, SESSION_ID, NOW).orElseThrow().accessToken(),
+                            "the store serves the rotated tokens"),
+                    () -> assertTrue(revoked.isEmpty(), "a verified rotation revokes nothing"));
+        }
+
+        @Test
+        @DisplayName("Should end the session when the refreshed ID token names another subject")
+        void shouldEndSessionOnForeignSubject() {
+            SessionRecord live = storedSession();
+            String foreignSubjectIdToken = new TestTokenHolder(TokenType.ID_TOKEN,
+                    ClaimControlParameter.builder().build())
+                    .withClaim(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(FOREIGN_SUBJECT))
+                    .getRawToken();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (rt, _) -> rotationIssuing(foreignSubjectIdToken));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertSessionEndedByRefusal(outcome);
+        }
+
+        @Test
+        @DisplayName("Should end the session when the refreshed ID token names another issuer")
+        void shouldEndSessionOnForeignIssuer() {
+            SessionRecord live = storedSession();
+            String foreignIssuerIdToken = new TestTokenHolder(TokenType.ID_TOKEN,
+                    ClaimControlParameter.builder().build())
+                    .withClaim(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString("sub-1"))
+                    .withClaim(ClaimName.ISSUER.getName(), ClaimValue.forPlainString(FOREIGN_ISSUER))
+                    .getRawToken();
+            TokenRefreshCoordinator coordinator = coordinator(NEAR, (rt, _) -> rotationIssuing(foreignIssuerIdToken));
+
+            RefreshOutcome outcome = coordinator.refresh(live, COOKIE_HEADER, NOW);
+
+            assertSessionEndedByRefusal(outcome);
+        }
+
+        @Test
+        @DisplayName("Should persist a conforming rotation with its verified ID token (matched control)")
+        void shouldPersistConformingRotation() {
+            RefreshOutcome outcome = refreshReturning(rotationIssuing(ROTATED_ID));
+
+            assertRotatedAndPersisted(outcome, ROTATED_ID);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, REFRESH_RESULT_REFUSED_ID);
+        }
+
+        @Test
+        @DisplayName("Should keep the previous ID token when the response carries none")
+        void shouldKeepPreviousIdTokenWhenAbsent() {
+            RefreshOutcome outcome = refreshReturning(rotationIssuing(null));
+
+            assertRotatedAndPersisted(outcome, "id-current");
+        }
+
+        @Test
+        @DisplayName("Should keep the previous ID token when the response carries a blank one")
+        void shouldKeepPreviousIdTokenWhenBlank() {
+            RefreshOutcome outcome = refreshReturning(rotationIssuing("  "));
+
+            assertRotatedAndPersisted(outcome, "id-current");
+        }
+
+        @Test
+        @DisplayName("Should end the session when the refreshed access token names another subject")
+        void shouldEndSessionOnForeignAccessTokenSubject() {
+            Map<String, ClaimValue> claims = new HashMap<>();
+            claims.put(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(FOREIGN_SUBJECT));
+            claims.put(ClaimName.ISSUER.getName(), ClaimValue.forPlainString(ID_TOKEN_SIGNER.getIssuer()));
+            RotationResult foreignAccess = new RotationResult(new AccessTokenContent(claims, ROTATED_ACCESS),
+                    ROTATED_REFRESH, null, 300L, true, null, RotationResult.ScopeDelta.UNDECLARED);
+
+            assertSessionEndedByRefusal(refreshReturning(foreignAccess));
+        }
+
+        @Test
+        @DisplayName("Should end the session when the verification fails in any other way")
+        void shouldEndSessionWhenVerifierThrows() {
+            SessionRecord live = storedSession();
+            IdTokenValidationBridge throwing = new IdTokenValidationBridge(
+                    TokenValidator.builder().issuerConfig(ID_TOKEN_SIGNER.getIssuerConfig()).build()) {
+                @Override
+                public IdTokenContent validateRefreshedIdToken(String idToken) {
+                    throw new IllegalStateException("verifier broke");
+                }
+            };
+            TokenRefreshCoordinator coordinator = new TokenRefreshCoordinator(LEEWAY, unused -> NEAR,
+                    (rt, _) -> rotation(), throwing, binding, revoked::add, DIRECT, EndedRefreshTokens.inert());
+
+            assertSessionEndedByRefusal(coordinator.refresh(live, COOKIE_HEADER, NOW));
+        }
+
+        @Test
+        @DisplayName("Should record the refusal without disclosing a subject, an issuer or a token")
+        void shouldRecordRefusalWithoutDisclosure() {
+            String foreignIssuerIdToken = new TestTokenHolder(TokenType.ID_TOKEN,
+                    ClaimControlParameter.builder().build())
+                    .withClaim(ClaimName.ISSUER.getName(), ClaimValue.forPlainString(FOREIGN_ISSUER))
+                    .withClaim(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(FOREIGN_SUBJECT))
+                    .getRawToken();
+
+            refreshReturning(rotationIssuing(foreignIssuerIdToken));
+
+            assertEquals(REFRESH_RESULT_REFUSED, TokenRefreshCoordinator.REASON_REFRESH_RESULT_REFUSED);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, REFRESH_RESULT_REFUSED_ID);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, REFRESH_FAILED_ID);
+            // Scoped to the coordinator's own records. The engine's validator names an unconfigured issuer in
+            // its TokenSheriff-114 record, written under the engine's own logger, which is not the gateway's.
+            List<String> coordinatorRecords = TestLoggerFactory.getTestHandler().getRecords().stream()
+                    .filter(written -> TokenRefreshCoordinator.class.getName().equals(written.getLoggerName()))
+                    .map(SheriffDebugCapture::rendered)
+                    .toList();
+            assertAll("the coordinator's records name neither the foreign identity nor a token",
+                    () -> assertFalse(coordinatorRecords.isEmpty(), "precondition: the coordinator wrote records"),
+                    () -> assertTrue(coordinatorRecords.stream().noneMatch(line -> line.contains(FOREIGN_ISSUER)),
+                            "no coordinator record names the refused issuer"),
+                    () -> assertTrue(coordinatorRecords.stream().noneMatch(line -> line.contains(FOREIGN_SUBJECT)),
+                            "no coordinator record names the refused subject"),
+                    () -> assertTrue(coordinatorRecords.stream().noneMatch(line -> line.contains(ROTATED_REFRESH)),
+                            "no coordinator record names the rotated refresh token"));
         }
     }
 }
