@@ -339,8 +339,9 @@ public final class DirectoryAssetSource implements AssetSource {
      * authoritative guard. That pairing is what survives a file which GROWS between the stat and the
      * read: an unbounded read would materialize it in full, bounding the read to {@code maxBytes + 1}
      * makes the in-memory ceiling hold regardless. It gives the directory source the same mid-flight
-     * guarantee {@code UpstreamAssetSource.CappedByteArrayBodySubscriber} gives the upstream source,
-     * so neither asset path can be outrun into an unbounded buffer.
+     * guarantee the truncating {@code BoundedBodyHandler} that {@code UpstreamAssetSource} reads its
+     * upstream body through gives the upstream source, so neither asset path can be outrun into an
+     * unbounded buffer.
      *
      * @param method the request verb, already narrowed to {@code GET} or {@code HEAD}
      * @param file   the confined request target, used for the content-type resolution only

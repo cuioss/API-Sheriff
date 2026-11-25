@@ -39,9 +39,9 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Exercises the SSRF-guarded {@linkplain UpstreamAssetSource#httpFetcher(Duration, Duration, long)
- * default transport fetcher} against a real in-process server so the streaming
- * {@code CappedByteArrayBodySubscriber} — header mapping, the mid-flight abort at the size
- * cap, and the read-timeout mapping — is covered end-to-end rather than through the
+ * default transport fetcher} against a real in-process server so the streamed, bounded body read —
+ * header mapping, the truncate-and-flag behaviour at the size cap, and the read-timeout mapping — is
+ * covered end-to-end rather than through the
  * injectable seam. The seam-level governance and ordering assertions live in
  * {@link UpstreamAssetSourceTest}.
  */
@@ -53,6 +53,7 @@ class UpstreamAssetSourceHttpFetcherTest {
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(2);
     private static final String SMALL_BODY = "hello-asset";
     private static final String OVERSIZED_BODY = "X".repeat(64);
+    private static final String EXACT_CAP_BODY = "Y".repeat((int) CAP);
 
     /**
      * Routes by request target: {@code /assets/large.*} serves an over-cap body,
@@ -77,6 +78,13 @@ class UpstreamAssetSourceHttpFetcherTest {
                             .code(200)
                             .addHeader("Content-Type", "application/octet-stream")
                             .body(OVERSIZED_BODY)
+                            .build());
+                }
+                if (target.contains("exact")) {
+                    return Optional.of(new MockResponse.Builder()
+                            .code(200)
+                            .addHeader("Content-Type", "application/octet-stream")
+                            .body(EXACT_CAP_BODY)
                             .build());
                 }
                 if (target.contains("slow")) {
@@ -134,22 +142,38 @@ class UpstreamAssetSourceHttpFetcherTest {
     }
 
     @Test
-    @DisplayName("Should abort the stream at the cap and cap the returned body at maxBytes + 1")
-    void shouldTrimBodyThatExceedsCap(URIBuilder uriBuilder) throws Exception {
+    @DisplayName("Should truncate an over-cap body at the cap and flag it as truncated")
+    void shouldTruncateAndFlagBodyThatExceedsCap(URIBuilder uriBuilder) throws Exception {
         // Arrange — the served body is far larger than the cap.
         URI target = uriBuilder.addPathSegments("assets", "large.bin").build();
 
         // Act
         UpstreamFetcher.Fetched fetched = fetcher(Duration.ofSeconds(5)).fetch(target);
 
-        // Assert — the mid-flight abort stops pulling and the backstop trims to a stable
-        // over-cap signal (maxBytes + 1) so serve() can reject it deterministically.
+        // Assert — the stream stops at the cap: exactly the bytes up to the cap are kept, and the
+        // truncation flag tells serve() the body is a prefix rather than the whole asset.
         assertAll(
                 () -> assertEquals(200, fetched.status()),
-                () -> assertTrue(fetched.body().length > CAP,
-                        "the over-cap signal is preserved for the serve() size check"),
-                () -> assertTrue(fetched.body().length <= CAP + 1,
-                        "the body never buffers past maxBytes + 1"));
+                () -> assertTrue(fetched.truncated(), "an over-cap body is flagged as truncated"),
+                () -> assertEquals(OVERSIZED_BODY.substring(0, (int) CAP),
+                        new String(fetched.body(), StandardCharsets.UTF_8),
+                        "the bytes up to the cap are kept, and nothing past it"));
+    }
+
+    @Test
+    @DisplayName("Should deliver a body exactly at the cap intact and unflagged")
+    void shouldNotFlagBodyExactlyAtCap(URIBuilder uriBuilder) throws Exception {
+        // Arrange — a body of exactly CAP bytes is the largest one that is not truncated.
+        URI target = uriBuilder.addPathSegments("assets", "exact.bin").build();
+
+        // Act
+        UpstreamFetcher.Fetched fetched = fetcher(Duration.ofSeconds(5)).fetch(target);
+
+        // Assert
+        assertAll(
+                () -> assertEquals(EXACT_CAP_BODY, new String(fetched.body(), StandardCharsets.UTF_8),
+                        "a body at the cap is delivered whole"),
+                () -> assertFalse(fetched.truncated(), "a body at the cap is not a prefix"));
     }
 
     @Test
