@@ -63,12 +63,15 @@ A gateway without an active BFF runtime has no discovery resolver. The probe the
 
 Before 0.9.10 the gateway's own memoized supplier kept the first resolved document for the lifetime of
 the process, so a changed provider endpoint was picked up only after a restart. The engine resolver
-serves a resolved document for a fixed time to live of one hour and refreshes it on the next engine use
-after that. A changed provider endpoint is therefore picked up within an hour, without a restart. While
-refreshes fail, the last document is still served for a grace period of 24 hours past its time to
-live. After that the resolution fails closed, and login and refresh stop until discovery succeeds
-again, 25 hours after the last successful resolution. After a failed refresh the next attempt waits at
-least 30 seconds. The values are fixed constants of `BffRuntimeProducer`, not configuration keys, and
+serves a resolved document for a fixed time to live of one hour. It runs no background refresh: it
+refreshes the document only when an engine use resolves the metadata after the time to live has
+expired. A changed provider endpoint therefore takes effect, without a restart, on the first resolution
+after the one-hour time to live expires, which is later than the hour mark when no engine use asks for
+the metadata in between. While refreshes fail, the last document is still served for a grace period
+of 24 hours past its time to live. The grace period is likewise evaluated only on a resolution: the
+first resolution at or after 25 hours past the last successful resolution fails closed, and login and
+refresh stay refused until a later resolution succeeds. After a failed refresh the next attempt waits
+at least 30 seconds. The values are fixed constants of `BffRuntimeProducer`, not configuration keys, and
 no jitter is applied. ADR-0084 records that decision.
 
 The datum keeps its meaning under the cache. `resolved` says the most recent refresh produced a

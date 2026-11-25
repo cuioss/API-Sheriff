@@ -159,7 +159,7 @@ class BackchannelLogoutSignatureSeamTest {
 
         @Test
         @DisplayName("Should verify a sid-only, azp-less logout token and surface its claims")
-        void shouldVerifySpecShapedLogoutToken() throws Exception {
+        void shouldVerifySpecShapedLogoutToken() {
             VerifiedLogoutToken verified = productionSeam(tokenValidator).verify(logoutToken.getRawToken());
 
             assertEquals(SID, verified.content().getClaims().get("sid").getOriginalString());
@@ -180,7 +180,7 @@ class BackchannelLogoutSignatureSeamTest {
 
         @Test
         @DisplayName("Should carry the verified claims into an accepted back-channel logout verdict")
-        void shouldReachAnAcceptedLogoutVerdict() throws Exception {
+        void shouldReachAnAcceptedLogoutVerdict() {
             LogoutTokenValidator.Verdict verdict = claimResidualFor(logoutToken)
                     .validate(productionSeam(tokenValidator).verify(logoutToken.getRawToken()), Instant.now());
 
@@ -201,7 +201,7 @@ class BackchannelLogoutSignatureSeamTest {
 
         @Test
         @DisplayName("Should apply no claim stage: an exp-less token verifies and the claim residual refuses it")
-        void shouldLeaveMissingExpiryToTheClaimResidual() throws Exception {
+        void shouldLeaveMissingExpiryToTheClaimResidual() {
             TestTokenHolder withoutExpiry = new TestTokenHolder(TokenType.ID_TOKEN,
                     ClaimControlParameter.builder()
                             .missingSubject(true)
@@ -225,7 +225,7 @@ class BackchannelLogoutSignatureSeamTest {
 
         @Test
         @DisplayName("Should count each signature-only verification as SIGNATURE_ONLY_VERIFIED")
-        void shouldCountSignatureOnlyVerification() throws Exception {
+        void shouldCountSignatureOnlyVerification() {
             SecurityEventCounter counter = tokenValidator.getSecurityEventCounter();
             long before = counter.getCount(SecurityEventCounter.EventType.SIGNATURE_ONLY_VERIFIED);
 
@@ -246,7 +246,7 @@ class BackchannelLogoutSignatureSeamTest {
 
         @Test
         @DisplayName("Should hand on the typ value of the token's protected header, absent as absent")
-        void shouldHandOnTheSignedHeaderType() throws Exception {
+        void shouldHandOnTheSignedHeaderType() {
             String raw = logoutToken.getRawToken();
             String header = new String(Base64.getUrlDecoder().decode(raw.substring(0, raw.indexOf('.'))),
                     StandardCharsets.UTF_8);
@@ -355,7 +355,7 @@ class BackchannelLogoutSignatureSeamTest {
 
         @Test
         @DisplayName("Should verify the same token against the same keys when the loader reports OK (matched control)")
-        void shouldVerifyTokenFromHealthyIssuer() throws Exception {
+        void shouldVerifyTokenFromHealthyIssuer() {
             StatusReportingLoader loader = new StatusReportingLoader(issuerConfig.getJwksLoader(), LoaderStatus.OK);
 
             VerifiedLogoutToken verified = productionSeam(validatorOver(loader)).verify(logoutToken.getRawToken());

@@ -1023,12 +1023,6 @@ class SheriffMetricsTest {
             assertNothingDisclosed(data);
         }
 
-        /**
-         * @return one case per (session mode, discovery state) pair, the states taken from
-         *         {@link State#values()} so a state added to the enum is covered without editing this
-         *         list — and turns {@code discoveryNeverChangesTheVerdict} red at the
-         *         {@code discovery(State)} precondition until that helper can drive it
-         */
         /** The pinned datum text per engine state: exactly the three tokens ADR-0079 defines. */
         private static final Map<State, String> DATUM_TOKENS = Map.of(State.NOT_ATTEMPTED, "not-attempted",
                 State.RESOLVED, "resolved", State.FAILED, "failed");
@@ -1042,6 +1036,12 @@ class SheriffMetricsTest {
             }
         }
 
+        /**
+         * @return one case per (session mode, discovery state) pair, the states taken from
+         *         {@link State#values()} so a state added to the enum is covered without editing this
+         *         list — and turns {@code discoveryNeverChangesTheVerdict} red at the
+         *         {@code discovery(State)} precondition until that helper can drive it
+         */
         static Stream<Arguments> modeAndDiscoveryState() {
             return Stream.of(OidcConfig.Session.MODE_SERVER, OidcConfig.Session.MODE_COOKIE)
                     .flatMap(mode -> Arrays.stream(State.values()).map(state -> Arguments.of(mode, state)));

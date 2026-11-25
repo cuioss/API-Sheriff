@@ -151,8 +151,12 @@ class ScopedEngineFlowsTest {
     private static final String REASON_INVALID_REQUEST = "invalid-request";
     private static final String REASON_PUSH_FAILED = "push-failed";
     /**
-     * Every authorization parameter an engine-built request carries. None of them may reach the browser
-     * location of a pushed request; each of them is in the push.
+     * The authorization parameters the engine-built request of every leg carries. None of them may reach
+     * the browser location of a pushed request; each of them is in the push. The leg-specific parameters
+     * ({@code prompt} of the silent widening, {@code acr_values} and {@code max_age} of the step-up) are
+     * not listed: their own tests pin them, and the location assertion compares the whole parameter set
+     * with exactly {@code client_id} and {@code request_uri}, so any of them leaking into the location
+     * fails it.
      */
     private static final List<String> AUTHORIZATION_PARAMETERS = List.of("response_type", "redirect_uri",
             PARAM_SCOPE, PARAM_STATE, PARAM_NONCE, PARAM_CODE_CHALLENGE, "code_challenge_method",
@@ -762,9 +766,10 @@ class ScopedEngineFlowsTest {
     @Test
     @DisplayName("Record: the text names the shared consequence and no caller")
     void shouldRecordTheSharedConsequence() {
+        ScopedEngineFlows flows = flows();
         ProviderMetadata withoutEndpoint = metadata((String) null);
 
-        assertThrows(GatewayException.class, () -> Leg.STEP_UP.start(flows(), withoutEndpoint, SCOPED));
+        assertThrows(GatewayException.class, () -> Leg.STEP_UP.start(flows, withoutEndpoint, SCOPED));
 
         String recorded = String.valueOf(refusalRecords().getFirst().getMessage());
         assertTrue(recorded.endsWith("Pushed authorization request refused: " + REASON_NO_PAR_ENDPOINT
@@ -781,10 +786,11 @@ class ScopedEngineFlowsTest {
         String requestUri = REQUEST_URI_PREFIX + Generators.letterStrings(16, 24).next();
         scripted.add(PushFailure.SERVER_ERROR.answer());
         scripted.add(accepted(requestUri));
+        List<String> malformedScopes = List.of("orders read");
 
         GatewayException failed = assertThrows(GatewayException.class, () -> flows.authorize(metadata, SCOPED));
         GatewayException invalid = assertThrows(GatewayException.class,
-                () -> flows.authorize(metadata, List.of("orders read")));
+                () -> flows.authorize(metadata, malformedScopes));
         Started accepted = Leg.SILENT_WIDENING.start(flows, metadata, SCOPED);
 
         assertEquals(requestUri, locationQuery(accepted.location()).get(PARAM_REQUEST_URI), "the second push was accepted");
@@ -824,9 +830,10 @@ class ScopedEngineFlowsTest {
     void shouldRefreshWithoutScopeForTheEmptySet(URIBuilder uriBuilder) {
         ScopedEngineFlows flows = flows();
         ProviderMetadata metadata = metadata(uriBuilder);
+        List<String> openid = List.of("openid");
 
         assertThrows(TransportException.class, () -> flows.refresh(metadata, "first-refresh-token", List.of()));
-        assertThrows(TransportException.class, () -> flows.refresh(metadata, "second-refresh-token", List.of("openid")));
+        assertThrows(TransportException.class, () -> flows.refresh(metadata, "second-refresh-token", openid));
 
         assertAll("one grant per refresh",
                 () -> assertEquals(2, grants.size()),
@@ -838,11 +845,12 @@ class ScopedEngineFlowsTest {
 
     @Test
     @DisplayName("Refresh: two scope sets present proofs signed with the one shared key")
-    void shouldSignEveryRefreshGrantWithTheSharedKey(URIBuilder uriBuilder) throws Exception {
+    void shouldSignEveryRefreshGrantWithTheSharedKey(URIBuilder uriBuilder) {
         ScopedEngineFlows flows = flows();
         ProviderMetadata metadata = metadata(uriBuilder);
+        List<String> openid = List.of("openid");
 
-        assertThrows(TransportException.class, () -> flows.refresh(metadata, "base-refresh-token", List.of("openid")));
+        assertThrows(TransportException.class, () -> flows.refresh(metadata, "base-refresh-token", openid));
         assertThrows(TransportException.class, () -> flows.refresh(metadata, "scoped-refresh-token", SCOPED));
 
         assertEquals(2, grants.size(), "each refresh grant reached the token endpoint");

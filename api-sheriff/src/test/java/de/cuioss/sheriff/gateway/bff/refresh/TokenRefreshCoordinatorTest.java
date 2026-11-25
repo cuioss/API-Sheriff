@@ -3479,8 +3479,8 @@ class TokenRefreshCoordinatorTest {
             assertEquals(REFRESH_RESULT_REFUSED, TokenRefreshCoordinator.REASON_REFRESH_RESULT_REFUSED);
             LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, REFRESH_RESULT_REFUSED_ID);
             LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, REFRESH_FAILED_ID);
-            // Scoped to the coordinator's own records: the engine's validator records the issuer it has no
-            // configuration for (TokenSheriff-114) under its own logger, which is not the gateway's record.
+            // Scoped to the coordinator's own records. The engine's validator names an unconfigured issuer in
+            // its TokenSheriff-114 record, written under the engine's own logger, which is not the gateway's.
             List<String> coordinatorRecords = TestLoggerFactory.getTestHandler().getRecords().stream()
                     .filter(written -> TokenRefreshCoordinator.class.getName().equals(written.getLoggerName()))
                     .map(SheriffDebugCapture::rendered)
