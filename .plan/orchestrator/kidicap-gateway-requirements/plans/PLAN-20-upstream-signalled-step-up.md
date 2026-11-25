@@ -165,18 +165,40 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
    and `insufficient_user_authentication`, and route it into `StepUpCoordinator` — the caller that does
    not exist today. Decide and record whether the existing `session.step_up` (RFC 9470) configuration
    governs both kinds or gains a sibling key.
+   - Skills: pm-dev-java:java-core, plan-marshall:ref-code-quality, pm-dev-java:java-quarkus
+   - Persona: implementer
 2. Refresh-first scope step-up with replay: refresh with `A ∪ {s}`; on a token response whose `scope`
    contains `s`, replay the original request exactly once with the new mediated bearer — all methods,
    request body buffered within the route's filter body cap, identical headers.
+   **Re-scoped 2026-11-25 (verdict `contradicted`, claim 4):** no bounded replay buffer exists at `5b95b60b`
+   (`DispatchStage` :72 "streamed, never buffered", :299 a streamed request cannot be replayed once a body byte
+   crossed). The interception point does exist (`TerminalDispatch` :255). The outline must decide FIRST between
+   (a) building a bounded pre-dispatch buffer within the route's filter body cap, which conflicts with the
+   ADR-0006/0008/0060/0066 stream-never-materialize stance, and (b) degrading: replay only bodyless methods and
+   requests whose body was not yet streamed, and send every other request to the browser step-up. That is the
+   operator decision this plan already owed at outline.
+   - Skills: pm-dev-java:java-core, plan-marshall:ref-code-quality, pm-dev-java:java-quarkus
+   - Persona: implementer
 3. Browser step-up for API calls: a step-up URL (a reserved path or a parameter of `oidc.login.path`)
    that starts the authorization request with `S ∪ {s}`, runs `prompt=none` first, and reports completion
    or refusal to the opener (same-origin `postMessage`). The existing re-drive to the request URL stays
    for top-level navigations.
+   - Skills: pm-dev-java:java-core, plan-marshall:ref-code-quality, pm-dev-java:java-quarkus
+   - Persona: implementer
 4. Callback error handling during a step-up: an authorization error on the callback (`invalid_scope`,
    `login_required`) leaves the existing session untouched and is signalled as a refusal.
+   **Re-grounded 2026-11-25:** `PushedAuthorizationRequests` was deleted by #663; the PAR push and the step-up
+   re-drive are now `ScopedEngineFlows.pushed()` / `stepUp(...)` (:298, :234-254) over the engine's `authorizePushed`,
+   and the ApiSheriff-132 refusal is still catalogued in `LogMessages`. Handle the refusal at that seam.
+   - Skills: pm-dev-java:java-core, plan-marshall:ref-code-quality, pm-dev-java:java-quarkus
+   - Persona: implementer
 5. Loop guard: at most one refresh attempt and one browser step-up per scope per request, then `403`.
+   - Skills: pm-dev-java:java-core, plan-marshall:ref-code-quality
+   - Persona: implementer
 6. Silent-satisfaction seam: replace the `Optional.empty()` binding (or document why it stays) so a
    challenge that the session can already satisfy does not re-drive through the browser.
+   - Skills: pm-dev-java:java-core, plan-marshall:ref-code-quality, pm-dev-java:java-quarkus
+   - Persona: implementer
 7. Tests: unit tests for challenge parsing, the replay and the loop guard; integration tests for the three
    acceptance rows against an echo upstream and Keycloak, including the iframe-silent path; an IT that
    pins the boot behaviour chosen in deliverable 1.
@@ -184,10 +206,14 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
    exist today), `doc/user/bff-session.adoc` (the backend contract and the UI's part), the backend-facing
    contract for `403 insufficient_scope` before any side effect, `doc/security-threat-model.adoc` (replay
    and step-up surface), `doc/LogMessages.adoc`, and an ADR for the step-up model.
+   - Skills: pm-documents:ref-asciidoc, pm-documents:ref-documentation, pm-documents:ref-narrative-styles
+   - Persona: documenter
 9. ⛔ **DROPPED 2026-10-02** — the ADR-0053 renumber this deliverable carried was resolved by PR #367
    (`fix(adr): resolve ordinal 0053 collision and add contract guards`). `doc/adr/` carries one 0053 and a
    contract test against a repeat. Nothing to do; left in place as a numbered record of the fold and its
    retirement rather than silently deleted.
+   - Skills: none
+   - Persona: implementer
 
 > **Folded 2026-10-12 from `kidicap-gateway-downstream-013.md`** (the downstream on 0.2.4, measured against
 > Keycloak 26.7.4). Two observations bear on this plan and on no other:
@@ -206,24 +232,72 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
 >
 > Neither adds a file surface: both land in files this spec already declares.
 
+> ➕ **CARRIED 2026-11-25 (cleanup, operator: "distribute the open aspects / leftover sensibly over the remaining plans").**
+> Four leftovers of the epic ledger are owned by this plan because it already edits their files; none adds a deliverable (the
+> plan is already past the split guard), and each is dropped at outline with its reason recorded when the outline refutes it.
+> The rest of the backlog is PLAN-35's, not this plan's.
+> - **Into deliverable 1's boot-rule edit (`ReservedPathRules`, ADR-0071 concern class):** the canonical-form boot check does not
+>   cover the callback, logout, logout-return and back-channel-logout reserved paths (ADR-0018 as amended by #592 says so), and no
+>   boot rule refuses duplicate reserved paths. Add both in the same edit as the step-up key refusal, so `ReservedPathRules` is
+>   touched once. Source: `landings/PLAN-26.md` (second finding), `landings/PLAN-23.md` (third audit item).
+> - **Into deliverable 8's documentation pass:** the cookie-size figure in `doc/user/bff-cookie.adoc` and
+>   `doc/development/bff-cookie.adoc` was measured on the nine-field sealed payload and PLAN-14 made it ten fields; PLAN-20 touches
+>   `SessionRecord` again, so re-measure at the final field count. Source: `plan-14-session-and-scopes-006.md`.
+> - **Outline question (decide, do not assume):** the default `oidc.client_authentication.jwks_path` (`/auth/jwks`) lies outside a
+>   build-time context path, like `login.default_return_url`'s default, and with a pushed request Keycloak adds a `302` to its own
+>   `login-actions` address before the form. Whether the new step-up path inherits the same defect is settled when its default is
+>   chosen. Source: `kidicap-gateway-downstream-013.md`.
+> - **Outline question (decide, do not assume):** the refresh-first leg lives in `TokenRefreshCoordinator`, where PLAN-33's layer-3
+>   leads sit. (L3-4) the loser of a refresh-versus-widening race abandons its rotated refresh token unrevoked (operator-accepted
+>   residual, a reasoning and not a test); (L3-5) a refresh that loses to a widening gets `NO_SESSION`. The refresh-first leg must
+>   state which of the two outcomes it produces for an upstream-signalled scope, and a test must pin it. Also the PLAN-23 audit
+>   item that a widening does not revoke the superseded refresh token. Source: `landings/PLAN-33.md` L3-4, L3-5; `landings/PLAN-23.md`.
+
 ## Claim Labels
 
 - OBSERVED: `BffRuntime.stepUpCoordinator()` has no production caller — the only references are `BffRuntimeProducerTest`; grep over `api-sheriff/src/main` at 93a4b3e finds the accessor's declaration and nothing else — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/BffRuntime.java` § `stepUpCoordinator`
-  - verdict: corroborated | checked_at: 226d9f3a | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntime.stepUpCoordinator() :247 declares the accessor; the only other hits are BffRuntimeProducerTest (5); producer comment BffRuntimeProducer :705-707 says no edge code drives the coordinator
+  - verdict: corroborated | checked_at: 5b95b60bda60a6f64fccd394d3e849fce84ebeb6 | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: BffRuntime.java:247 accessor; only BffRuntimeProducer (:784,:859) and its test reference it; producer comment :776-778 says no edge code drives it
 - OBSERVED: `StepUpCoordinator` is RFC 9470 shaped, driven by a parsed upstream challenge — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/refresh/StepUpCoordinator.java` § `coordinate`
-  - verdict: corroborated | checked_at: 226d9f3a | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: StepUpCoordinator :38-48 and :146-158 handle insufficient_user_authentication only, parsed by the engine StepUpChallengeParser (import :31); no insufficient_scope handling in main
+  - verdict: corroborated | checked_at: 5b95b60bda60a6f64fccd394d3e849fce84ebeb6 | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: StepUpCoordinator.java:38-48,:153-158 handle only insufficient_user_authentication via the engine StepUpChallengeParser; no insufficient_scope handling in main
 - HYPOTHESIS: the silent-satisfaction seam is bound to `(sessionRecord, challenge, now) -> Optional.empty()` at the construction site — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § step-up construction (verify-at-outline)
-  - verdict: corroborated | checked_at: 226d9f3a | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer :716-717 binds (sessionRecord, challenge, now) -> Optional.empty(); construction block moved from :713-714 to :716-720
+  - verdict: corroborated | checked_at: 5b95b60bda60a6f64fccd394d3e849fce84ebeb6 | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: seam now at BffRuntimeProducer.java:784-787 (moved from :716-717 by #663); still Optional.empty(); re-drive pushed via scopedFlows.stepUp (:786)
 - HYPOTHESIS: `doc/configuration.adoc`'s `step_up.*` rows describe the honouring of an upstream challenge as present behaviour — confirm/refute at `doc/configuration.adoc` § `step_up` (verify-at-outline)
-  - verdict: corroborated | checked_at: 226d9f3a | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: false step_up claims remain: authentication-and-oidc.adoc :839-842, user/bff-session.adoc :544-545, StepUpCoordinator :83-84; the two keys are still in OidcConfig.StepUp :524 and gateway.schema.json :632-633, so the 2026-10-26 deletion has not landed
+  - verdict: corroborated | checked_at: 5b95b60bda60a6f64fccd394d3e849fce84ebeb6 | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: false claim moved to doc/configuration/authentication-and-oidc.adoc:868-871, doc/user/bff-session.adoc:548-549, schema :637/:640; inert keys still in OidcConfig.StepUp:524, asserted at ConfigModelContractTest:744 and ConfigLoaderTest:2075
 - HYPOTHESIS: the upstream response path can reach a step-up decision before the response is relayed, and the request body can be buffered for a replay within the route's filter body cap — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/ResponseStage.java` and the dispatch path (verify-at-outline)
-  - verdict: contradicted | checked_at: 226d9f3a | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: seam half holds (TerminalDispatch.dispatchAndRelay :231, dispatch :255-256, relayOnEventLoop :269); buffer half still false: DispatchStage :72 streamed, never buffered, :298-309 one-shot inbound body; DispatchStage grew by 1881 lines since ad00807d (#600, #620, #627) and has no replay buffer
+  - verdict: contradicted | checked_at: 5b95b60bda60a6f64fccd394d3e849fce84ebeb6 | by: kidicap-gateway-requirements/analyze | rescoped: yes | evidence: seam half holds (TerminalDispatch dispatchAndRelay:231, relayOnEventLoop:269) but the buffer half is false: DispatchStage.java:72 says streamed never buffered, :299 says a streamed request cannot be replayed once a body byte crossed; no replay buffer exists; spec re-scoped 2026-11-25 to make building the bounded replay buffer an outline decision
 - HYPOTHESIS: the Keycloak behaviours the flow rests on (a refresh never adds a scope outside the grant; a narrowed refresh keeps the grant in the refresh token) hold for the integration realm as measured downstream — confirm/refute with an IT against the integration Keycloak (verify-at-outline)
-  - verdict: unverifiable | checked_at: 226d9f3a | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: live Keycloak behaviour is not readable from the repository; TokenRefreshCoordinator :59-81 documents SCOPE_REFUSED and BffSessionScopeParityIT exists
+  - verdict: unverifiable | checked_at: 5b95b60bda60a6f64fccd394d3e849fce84ebeb6 | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: live Keycloak behaviour is not readable from the repo; BffSessionScopeParityIT exists; TokenRefreshCoordinator.java:73-107 documents SCOPE_REFUSED
 - Verify-first clause: settle the replay seam first (deliverable 2) — where in the response path a challenge can be intercepted, and whether a body can be buffered and re-sent without breaking streaming or the body cap. If a replay cannot be done safely for all methods, loop back and re-scope: the flow degrades to the browser step-up with no replay, which changes the acceptance rows.
-  - verdict: unverifiable | checked_at: 226d9f3a | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: process rule; interception point exists, bounded pre-dispatch buffer is unbuilt and conflicts with ADR-0006/0008 streaming; #600 gRPC per-message bounds (DispatchStage :150-162) hold no message so give no replay buffer
+  - verdict: unverifiable | checked_at: 5b95b60bda60a6f64fccd394d3e849fce84ebeb6 | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: process rule; interception point exists at TerminalDispatch:255 but no bounded pre-dispatch buffer (DispatchStage:72,:299)
 
 ## Expected Surface
+
+> ⚠ **Re-grounded 2026-11-25 against `5b95b60b` (analyze, after PLAN-34 merged as #663; this banner supersedes every
+> anchor, ordinal and "next free" figure in the banners below).** The premise is intact: `BffRuntime.stepUpCoordinator()`
+> :247 still has no production caller, the seam is still `Optional.empty()` (now `BffRuntimeProducer` :784-787, moved by
+> #663's rewrite) and no replay buffer exists; **one claim is contradicted and re-scoped** (deliverable 2: the buffer
+> half, see there). #663 intersects this surface in 17 live paths plus the deleted `PushedAuthorizationRequests`:
+> `BffLogMessages`, `LoginFlow`, `ScopedEngineFlows` (test +1201 lines), `SessionWidening`, `TokenRefreshCoordinator`,
+> `CallbackEndpoint`, `StepUpEndpoint`, `BffRuntimeProducer`, `doc/LogMessages.adoc`, ADR-0018, ADR-0057,
+> `doc/architecture/authentication-and-bff.adoc`, `doc/configuration.adoc`, `doc/configuration/authentication-and-oidc.adoc`,
+> `doc/development/bff-session.adoc`, `doc/fapi_status.adoc` and `doc/security-threat-model.adoc`. **Locate everything by
+> symbol; every line anchor below is stale.**
+> - **Ordinals:** the next free ADR is **0085** (0083 = per-request OIDC scope on one engine flow, which SUPERSEDES ADR-0048,
+>   the `ScopedEngineFlows` seam this spec cites; 0084 = the refresh-result verification) and the next free WARN id is **154**
+>   (153 is "token refresh result refused"). Read ADR-0083, ADR-0084 and ADR-0058 before outline.
+> - **Engine:** the pin is 0.9.10. `TokenRefreshCoordinator` Javadoc :86 now says `SCOPE_REFUSED` IS told apart from
+>   `PRE_REDEMPTION`; the older "still says it is not told apart" statements are stale.
+> - **The false `step_up.*` statements moved** to `doc/configuration/authentication-and-oidc.adoc` :868-871,
+>   `doc/user/bff-session.adoc` :548-549, `gateway.schema.json` :637/:640 and the `StepUpCoordinator` Javadoc :83 (which names
+>   the wrong block). `doc/configuration.adoc` :595-597 is only the YAML example. The two inert keys are still in
+>   `OidcConfig.StepUp` :524 and the schema, and asserted at `ConfigModelContractTest` :744 and `ConfigLoaderTest` :2075.
+> - **Surface corrections applied in this act:** `PushedAuthorizationRequests.java` (deleted by #663) is replaced by
+>   `ScopedEngineFlows` below; `doc/architecture.adoc` (absent, split into `doc/architecture/*.adoc`) and `doc/quality-report/`
+>   (deleted by #575) are void. Added below: the two test files the inert-key deletion edits, `OidcClientRules` and
+>   `OidcSessionRules` (a new `step_up` boot rule may live there, ADR-0071), ADR-0083 and the #663-rewritten tests.
+> - **Overlap with PLAN-35** (the due fix plan, now emittable): both edit `BffLogMessages`, `SessionBinding`, `doc/LogMessages.adoc`,
+>   `doc/security-threat-model.adoc`, `doc/user/bff-session.adoc` and `doc/adr/`. Sequence one after the other; the cheaper
+>   reading is PLAN-20 first only if its outline decision lands quickly, otherwise PLAN-35 first.
 
 > ⚠ **Re-grounded 2026-11-22 (cleanup at `226d9f3a`, 48 commits after `ad00807d`; this banner supersedes the ordinals and
 > anchors below).** The premise is intact and the seven verdicts are unchanged: `BffRuntime.stepUpCoordinator()` :247 still has
@@ -332,7 +406,11 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
 > `StreamResetException` drop, guard-keyed breaker) but added no replay buffer and no interception point.
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/refresh/StepUpCoordinator.java`
-- OBSERVED (added 2026-10-14): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/PushedAuthorizationRequests.java` — the PAR fold says deliverable 4 handles the refusal at the push
+- OBSERVED (added 2026-11-25): `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/model/ConfigModelContractTest.java` — deliverable 1's deletion of the two inert keys edits it (:744)
+- OBSERVED (added 2026-11-25): `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/load/ConfigLoaderTest.java` — likewise (:2075)
+- HYPOTHESIS (added 2026-11-25): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/OidcClientRules.java` and `OidcSessionRules.java` — a new `step_up` boot rule may live in one of them (ADR-0071)
+- OBSERVED (added 2026-11-25): `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/bff/login/ScopedEngineFlowsTest.java` — rewritten by #663 (+1201), the real overlap with PLAN-34
+- OBSERVED (added 2026-11-25): `doc/adr/0083-Per-request_OIDC_scope_is_named_per_call_on_one_engine_flow.adoc` — supersedes ADR-0048, read-only
 - OBSERVED (added 2026-10-14): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/SessionWidening.java` — deliverable 4 reuses its refusal-leaves-session-untouched pattern
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/BffRuntime.java`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java`
@@ -406,6 +484,7 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
 - OBSERVED (added 2026-11-22): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/csrf/CsrfDefence.java` (a browser step-up endpoint or iframe or popup flow is judged against it)
 - OBSERVED (added 2026-11-22): `doc/configuration/validation-rules.adoc` (names `step_up`; updated when the keys are deleted)
 - OBSERVED (added 2026-11-22): `doc/user/endpoint-routes.adoc` (names `step_up`; updated when the keys are deleted)
+- OBSERVED (added 2026-11-25, carried cookie-size re-measure): `doc/user/bff-cookie.adoc` and `doc/development/bff-cookie.adoc` (the sealed-payload size figure, measured on nine fields, now ten)
 
 ## Dependencies and Sequencing
 
