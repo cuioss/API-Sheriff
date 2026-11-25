@@ -543,6 +543,12 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * the lookup is not handed to the refresh: whether a refresh is published depends on the key ids
      * it fetched and on that basis (see {@link #settleRefresh}), never on the key id that asked for
      * it. Runs on the calling request thread and performs no fetch and no blocking wait.
+     * <p>
+     * Nothing here reaches the request thread as a failure: capturing the basis and handing the
+     * refresh to the scheduler are shielded together. A scheduler that refuses the task stays
+     * {@code DEBUG}; any other runtime failure — a delegate failing to report its key ids — records
+     * {@link ConfigLogMessages.WARN#JWKS_REFRESH_FAILED} once, bounded like the claim itself. Either way
+     * the in-flight flag, if this call took it, is released, and the window's refresh is spent.
      */
     private void onUnknownKeyId() {
         if (closed.get()) {
@@ -562,18 +568,31 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         if (!refreshEnabled) {
             return;
         }
-        // Captured before the in-flight flag is taken, so nothing between taking and handing it to
-        // the scheduler can leave it set. Both delegates are read off one snapshot.
-        Snapshot current = snapshot.get();
-        RefreshBasis basis = RefreshBasis.of(current.delegate(), answeringRetired(current));
-        if (refreshInFlight.compareAndSet(false, true)) {
-            try {
+        // The lookup is answered from the held key sets whatever happens below, so nothing below may
+        // surface on the request thread: capturing the basis reads the delegates' key ids, which is a
+        // call into the library, and the scheduler may refuse the task.
+        boolean claimed = false;
+        boolean scheduled = false;
+        try {
+            // Captured before the in-flight flag is taken; both delegates are read off one snapshot.
+            Snapshot current = snapshot.get();
+            RefreshBasis basis = RefreshBasis.of(current.delegate(), answeringRetired(current));
+            claimed = refreshInFlight.compareAndSet(false, true);
+            if (claimed) {
                 scheduler.execute(() -> runRefresh(basis));
-            } catch (RejectedExecutionException rejected) {
-                // The scheduler is shutting down. The lookup is answered from the held key sets either
-                // way, so the refusal must not surface on the request thread.
+                scheduled = true;
+            }
+        } catch (RejectedExecutionException rejected) {
+            // The scheduler is shutting down.
+            LOGGER.debug(rejected, "JWKS refresh for issuer '%s' could not be scheduled", issuerName);
+        } catch (RuntimeException failure) {
+            // A failure nobody anticipated, most likely a delegate failing to report its key ids. The
+            // claimed window then refreshes nothing, and nothing else reports that. The record names
+            // the issuer only: the throwable's message is not under the gateway's control.
+            LOGGER.warn(ConfigLogMessages.WARN.JWKS_REFRESH_FAILED, issuerName);
+        } finally {
+            if (claimed && !scheduled) {
                 refreshInFlight.set(false);
-                LOGGER.debug(rejected, "JWKS refresh for issuer '%s' could not be scheduled", issuerName);
             }
         }
     }
@@ -672,21 +691,56 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * settled, and a key set that brings back only those is left to a later window. The check and the
      * publication in {@link #publishRefreshed} are a check-then-act without a lock; what remains open
      * is the few instructions between the two, not the duration of the fetch.
+     * <p>
+     * Settling runs as a completion stage of the fresh delegate's load, whose own future nobody reads,
+     * so a failure escaping here would be recorded nowhere. Every exit therefore ends the refresh from
+     * one {@code finally}: the fresh delegate is closed unless it is the published one — a failure
+     * after the publication keeps it, because it is answering lookups — and the in-flight flag is
+     * released. An exit that is neither a discard nor a completed publication records
+     * {@link ConfigLogMessages.WARN#JWKS_REFRESH_FAILED} once, as {@link #runRefresh} does for a
+     * failure before the load, so a refresh yields at most one record.
      *
      * @param fresh  the refresh's delegate, loaded off to the side and never published before this
      * @param status the load's status, or {@code null} when it completed exceptionally
      * @param basis  the comparison basis captured when the refresh's window was claimed
      */
     private void settleRefresh(JwksLoader fresh, @Nullable LoaderStatus status, RefreshBasis basis) {
+        // True on a discard and on a completed publication; only a failure nobody anticipated leaves it
+        // false.
+        boolean accountedFor = false;
         try {
             if (closed.get() || status != LoaderStatus.OK
                     || basis.holdsAll(fresh.getKeyIds())
                     || !basis.isCurrent(snapshot.get().delegate())) {
                 LOGGER.debug("JWKS refresh for issuer '%s' discarded (status %s)", issuerName, status);
-                closeDelegate(fresh);
+                accountedFor = true;
                 return;
             }
             publishRefreshed(fresh);
+            accountedFor = true;
+        } finally {
+            if (!accountedFor) {
+                LOGGER.warn(ConfigLogMessages.WARN.JWKS_REFRESH_FAILED, issuerName);
+            }
+            // The flag is still held, so only this refresh can have made fresh the current delegate.
+            endRefresh(fresh, snapshot.get().delegate() != fresh);
+        }
+    }
+
+    /**
+     * Ends one settled refresh: closes {@code fresh} when it was not published, then releases the
+     * in-flight flag. The flag is released even when closing fails, so a delegate that cannot be
+     * closed cannot switch the refresh off for the issuer.
+     *
+     * @param fresh      the refresh's delegate
+     * @param closeFresh whether {@code fresh} is to be closed, which is exactly when it is not the
+     *                   current delegate
+     */
+    private void endRefresh(JwksLoader fresh, boolean closeFresh) {
+        try {
+            if (closeFresh) {
+                closeDelegate(fresh);
+            }
         } finally {
             loadingRefresh.compareAndSet(fresh, null);
             refreshInFlight.set(false);
