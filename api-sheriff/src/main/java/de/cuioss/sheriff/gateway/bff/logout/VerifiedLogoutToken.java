@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.bff.logout;
 
 import java.util.Objects;
 
-
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.SignatureVerifiedToken;
 import de.cuioss.sheriff.token.validation.domain.token.TokenContent;

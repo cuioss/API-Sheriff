@@ -26,7 +26,6 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint.ClaimSource;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint.UserInfoOutcome;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionIdentity;

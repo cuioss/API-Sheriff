@@ -31,7 +31,6 @@ import java.util.logging.LogRecord;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver.BackchannelResult;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -418,9 +417,9 @@ class BackchannelLogoutSignatureSeamTest {
                     () -> assertTrue(gateway.stream().noneMatch(captured -> captured.getThrown() != null),
                             "no gateway record attaches the library exception with its raw message"),
                     () -> assertTrue(gateway.stream().map(SheriffDebugCapture::rendered).noneMatch(
-                            rendered -> rendered.contains("\r") || rendered.contains("\n" + marker)
-                                    || rendered.contains(LINE_SEPARATOR) || rendered.contains(PARAGRAPH_SEPARATOR)
-                                    || rendered.contains(RIGHT_TO_LEFT_OVERRIDE)),
+                                    rendered -> rendered.contains("\r") || rendered.contains("\n" + marker)
+                                            || rendered.contains(LINE_SEPARATOR) || rendered.contains(PARAGRAPH_SEPARATOR)
+                                            || rendered.contains(RIGHT_TO_LEFT_OVERRIDE)),
                             "no gateway record carries a raw line break or bidi control"),
                     () -> assertTrue(gateway.stream()
                                     .filter(captured -> captured.getLevel().intValue() > Level.FINE.intValue())
