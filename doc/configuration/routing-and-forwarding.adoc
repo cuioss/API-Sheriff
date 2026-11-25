@@ -563,7 +563,9 @@ link:../user/endpoint-routes.adoc#_upstream_path[Endpoint Routes -- Upstream pat
 
 | `retry.enabled`
 | Gates retry for the route, overriding link:#_upstream_defaults[`upstream_defaults`]. The policy is
-  fixed: two retries 100 ms apart, idempotent methods only (`GET`, `HEAD`, `OPTIONS`, `PUT`,
+  fixed: two retries, each after a nominal 100 ms delay that SmallRye Fault Tolerance randomises with
+  its default jitter of 200 ms (the gateway sets no jitter of its own, so the wait is not a fixed
+  gap), idempotent methods only (`GET`, `HEAD`, `OPTIONS`, `PUT`,
   `DELETE`; never `POST` or `PATCH`), and only while no attempt has subscribed the one-shot request
   body, even if none of its bytes reached the upstream (a bodyless request never subscribes it). A
   fixed 30 s timeout bounds each attempt.
