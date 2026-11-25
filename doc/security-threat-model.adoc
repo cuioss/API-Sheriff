@@ -3525,8 +3525,9 @@ anything, so the logout revokes the refresh token of the record it resolved; a t
 already spent is answered with success (RFC 7009, section 2.2), so that revocation is harmless.
 The request runs synchronously, so a slow provider delays the logout answer, bounded by the engine's
 connect and read timeouts; the session is already gone during that wait. A failed revocation never
-turns the logout into an error: the first failure per runtime is the `WARN`
-link:LogMessages.adoc#apisheriff-147[`ApiSheriff-147`], every later one a `DEBUG` line.
+turns the logout into an error: the first failure of each reason per runtime is the `WARN`
+link:LogMessages.adoc#apisheriff-147[`ApiSheriff-147`], carrying a bounded reason token
+(`provider-discovery` or `revocation-request`), and every later failure of that reason a `DEBUG` line.
 
 *Status:* COVERED in server mode. Both channels, the logout-token checks -- `typ`, `iss`, `aud`,
 `iat`, `exp`, `events`, `nonce`, `sub`/`sid`, `jti` and the single use of a token -- and the
@@ -3649,7 +3650,8 @@ removed, rotated material included, and nothing when the session was already gon
 (`InMemorySessionStoreTest`, `ServerSessionBindingTest`); the cookie binding returns the record the
 request presented, never a re-sealed successor (`CookieSessionBindingTest`). The seam runs before the
 end-session redirect is built and also when none can be built, and a failing revocation is recorded
-as `ApiSheriff-147` once over repeated logouts and at `DEBUG` afterwards (`RpInitiatedLogoutTest`).
+as `ApiSheriff-147` once per reason over repeated logouts, carrying the reason token, and at `DEBUG`
+afterwards (`RpInitiatedLogoutTest`).
 No record at any level carries the refresh token, also when the failing seam puts it into its
 exception's message and its cause's: the `DEBUG` line names only the exception types of the cause
 chain (`RpInitiatedLogoutTest`, `shouldKeepATokenCarryingRevocationFailureOutOfTheLog`), and a cause

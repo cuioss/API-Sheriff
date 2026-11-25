@@ -663,8 +663,9 @@ link:#_oidc_client_authentication[Client authentication].
   valid at a resource server until it expires. No request is sent when the session holds no refresh
   token (`session.refresh.enabled: false`, or the IdP granted none) or when the IdP publishes no
   `revocation_endpoint`; the latter is logged at `DEBUG` only. A failed revocation never changes the
-  logout's answer: the first failure is `WARN` `ApiSheriff-147`, once per runtime, and every failure
-  is a `DEBUG` line. See
+  logout's answer: the first failure of each reason is `WARN` `ApiSheriff-147`, once per reason per
+  runtime and carrying the bounded reason token (`provider-discovery` or `revocation-request`), and
+  every failure is a `DEBUG` line. See
   link:../adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080].
 
   Without a usable `end_session_endpoint` (none, blank, or not an absolute `https` URI with a

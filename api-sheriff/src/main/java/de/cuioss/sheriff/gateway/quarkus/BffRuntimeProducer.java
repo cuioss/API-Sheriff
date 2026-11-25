@@ -44,7 +44,6 @@ import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenReplayGuard;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
-import de.cuioss.sheriff.gateway.bff.logout.VerifiedLogoutToken;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
@@ -823,8 +822,10 @@ public class BffRuntimeProducer {
         // seam hands it the token's typ header beside the claims, and the replay guard lets each token
         // act once. The library's own logout.LogoutTokenValidator is not adopted: its events check does
         // not reproduce this one (see LogoutTokenValidator).
+        // The engine binding also reads the issuer status after a refusal, so a configured issuer
+        // whose key source is down is recorded as key-source-unavailable, not as a signature failure.
         BackchannelLogoutReceiver backchannelReceiver = new BackchannelLogoutReceiver(
-                rawLogoutToken -> VerifiedLogoutToken.of(validator.verifySignature(rawLogoutToken)),
+                BackchannelLogoutReceiver.LogoutTokenVerifier.engine(validator, issuer),
                 new LogoutTokenValidator(issuer, clientId, BACKCHANNEL_FRESHNESS_WINDOW),
                 sessionBinding,
                 new LogoutTokenReplayGuard(LOGOUT_TOKEN_REPLAY_CAPACITY));
@@ -1348,11 +1349,13 @@ public class BffRuntimeProducer {
      * and no request is sent. A provider that declares no {@code revocation_endpoint} sends nothing
      * either (see {@link #revokeRefreshToken}). The access token is never revoked.
      * <p>
-     * The provider metadata is read here, per logout, and not when the logout endpoint is assembled, so
-     * a discovery failure surfaces to the caller as the {@link RuntimeException} the supplier raises,
-     * exactly like a transport failure or a non-success answer of the revocation endpoint. The caller,
-     * {@link RpInitiatedLogout#initiate}, reports such a failure and completes the logout anyway. No log
-     * line written here carries the token value.
+     * The provider metadata is read here, per logout, and not when the logout endpoint is assembled. A
+     * failure of the metadata supplier is wrapped into
+     * {@link RpInitiatedLogout.RevocationDiscoveryException}, so the caller can tell a discovery failure
+     * from a failure of the revocation request itself — a transport failure, an egress refusal or a
+     * non-success answer of the revocation endpoint, which propagate unwrapped. The caller,
+     * {@link RpInitiatedLogout#initiate}, reports either and completes the logout anyway. No log line
+     * written here carries the token value.
      *
      * @param revocationClient     the runtime's one engine revocation client, on the pinned back-channel
      *                             posture
@@ -1368,7 +1371,16 @@ public class BffRuntimeProducer {
             LOGGER.debug("RP-initiated logout for a session without a refresh token — nothing to revoke at the identity provider");
             return;
         }
-        revokeRefreshToken(revocationClient, metadata.get(), refreshToken, clientAuthentication);
+        ProviderMetadata providerMetadata;
+        // The supplier reaches provider discovery, whose failure types are not part of this contract;
+        // every failure of it is the one reason the marker names.
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
+        try {
+            providerMetadata = metadata.get();
+        } catch (RuntimeException discoveryFailure) {
+            throw new RpInitiatedLogout.RevocationDiscoveryException(discoveryFailure);
+        }
+        revokeRefreshToken(revocationClient, providerMetadata, refreshToken, clientAuthentication);
     }
 
     /**

@@ -177,7 +177,8 @@ public final class BffLogMessages {
          * only — never the raw logout token, the subject, or the IdP {@code sid}. The accepted set of
          * dispositions is closed and enumerated by
          * {@code de.cuioss.sheriff.gateway.bff.logout.LogoutRejection}: {@code no-idp-destruction-capability},
-         * {@code missing-logout-token}, {@code signature-rejected}, {@code type-mismatch},
+         * {@code missing-logout-token}, {@code signature-rejected}, {@code key-source-unavailable},
+         * {@code type-mismatch},
          * {@code issuer-mismatch}, {@code audience-mismatch}, {@code iat-outside-window},
          * {@code expired}, {@code events-missing}, {@code nonce-present}, {@code no-sub-or-sid},
          * {@code jti-missing}, {@code replayed}, {@code replay-memory-full}.
@@ -348,23 +349,26 @@ public final class BffLogMessages {
          * The gateway's own session was already ended and the logout completed as usual; the refresh
          * token stays valid at the identity provider until it expires.
          * <p>
-         * The template takes no substitution and is logged without a throwable, so it carries no
-         * value at all — never the refresh token, the session id, the subject, or the identity
-         * provider's answer, whose text is not sanitised. A {@code DEBUG} line
-         * written beside it names the exception types of the failure's cause chain and carries
-         * neither the throwable nor any exception message.
+         * The only substitution is the reason, a closed set: {@code provider-discovery} (the provider
+         * metadata the request needs could not be obtained) or {@code revocation-request} (the
+         * revocation request itself failed — a transport failure, an egress refusal or a non-success
+         * answer). The record is logged without a throwable, so it carries no other value — never the
+         * refresh token, the session id, the subject, or the identity provider's answer, whose text is
+         * not sanitised. A {@code DEBUG} line written beside it names the exception types of the
+         * failure's cause chain and carries neither the throwable nor any exception message.
          * <p>
-         * <strong>Latched.</strong> A caller can repeat a logout at will and must not be able to set
-         * the volume of {@code WARN} lines it produces (ADR-0051), so the record is emitted on its
-         * FIRST occurrence per logout instance — once per runtime — and every repeat drops to
-         * {@code DEBUG}; see {@code de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout}. A session
-         * without a refresh token and a provider without a {@code revocation_endpoint} send no
-         * request and are not recorded here.
+         * <strong>Latched per reason.</strong> A caller can repeat a logout at will and must not be
+         * able to set the volume of {@code WARN} lines it produces (ADR-0051), so the record is emitted
+         * on the FIRST occurrence of each reason per logout instance — once per reason per runtime — and
+         * every repeat of that reason drops to {@code DEBUG}; see
+         * {@code de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout}. A session without a refresh
+         * token and a provider without a {@code revocation_endpoint} send no request and are not
+         * recorded here.
          */
         public static final LogRecord LOGOUT_REVOCATION_FAILED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(147)
-                .template("Logout could not revoke the session's refresh token at the identity provider — the gateway session is ended and the refresh token stays valid at the provider until it expires; further failures stay at DEBUG")
+                .template("Logout could not revoke the session's refresh token at the identity provider (%s) — the gateway session is ended and the refresh token stays valid at the provider until it expires; further failures with this reason stay at DEBUG")
                 .build();
 
         /**

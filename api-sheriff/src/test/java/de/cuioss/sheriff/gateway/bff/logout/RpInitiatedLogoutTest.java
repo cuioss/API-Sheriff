@@ -61,8 +61,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Covered: the initiate leg (the token-revocation seam, handed the logged-out session once and before
  * the end-session redirect is built, engine end-session redirect carrying
  * {@code id_token_hint}/{@code post_logout_redirect_uri}/{@code state}, and the single-use
- * {@code __Host-sheriff-logout} cookie), a failing seam reported as the latched {@code ApiSheriff-147}
- * {@code WARN} without stopping the logout (a cause chain that loops back on itself included), the
+ * {@code __Host-sheriff-logout} cookie), a failing seam reported as the {@code ApiSheriff-147}
+ * {@code WARN} latched per reason without stopping the logout (a cause chain that loops back on itself
+ * included), the
  * logout-state cookie round-trip through
  * {@link RpInitiatedLogout#completeReturn}, the open-redirect rejection of an unregistered
  * {@code post_logout_redirect_uri}, and the cases in which no end-session redirect is built at all.
@@ -85,8 +86,12 @@ class RpInitiatedLogoutTest {
     private static final EndSessionEndpointSource PUBLISHED = () -> Optional.of(END_SESSION);
     /** The text of the DEBUG line every failed revocation leaves, the first one included. */
     private static final String REVOCATION_FAILED_DEBUG = "Refresh-token revocation failed during RP-initiated logout";
-    /** The part of the DEBUG line only a repeated failure leaves. */
-    private static final String REVOCATION_FAILED_AGAIN_DEBUG = "already reported once";
+    /** The part of the DEBUG line only a repeated failure of one reason leaves. */
+    private static final String REVOCATION_FAILED_AGAIN_DEBUG = "has already been reported once";
+    /** The ApiSheriff-147 reason token of a failure to obtain the provider metadata. */
+    private static final String PROVIDER_DISCOVERY = "provider-discovery";
+    /** The ApiSheriff-147 reason token of a failure of the revocation request itself. */
+    private static final String REVOCATION_REQUEST = "revocation-request";
 
     private List<SessionRecord> revocations;
     private EndSessionFlow endSessionFlow;
@@ -144,6 +149,16 @@ class RpInitiatedLogoutTest {
     private static List<LogRecord> revocationFailureWarnings() {
         return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.WARN,
                 BffLogMessages.WARN.LOGOUT_REVOCATION_FAILED.resolveIdentifierString());
+    }
+
+    /** The rendered messages of the captured {@code ApiSheriff-147} records, in the order they were written. */
+    private static List<String> revocationFailureWarningMessages() {
+        return revocationFailureWarnings().stream().map(LogRecord::getMessage).toList();
+    }
+
+    /** The {@code ApiSheriff-147} message as it is written for the reason {@code token}. */
+    private static String revocationFailureWarning(String token) {
+        return BffLogMessages.WARN.LOGOUT_REVOCATION_FAILED.format(token);
     }
 
     private static List<LogRecord> debugLinesContaining(String part) {
@@ -250,8 +265,9 @@ class RpInitiatedLogoutTest {
         /**
          * A caller can repeat a logout at will, so the volume of {@code WARN} lines it produces must not
          * be its to set (ADR-0051). The first failure is the {@code ApiSheriff-147} {@code WARN}, which
-         * carries no value and no throwable; every failure leaves a {@code DEBUG} line naming the
-         * exception type — never the throwable itself — and a repeat leaves that line only.
+         * carries the reason token and no other value and no throwable; every failure leaves a
+         * {@code DEBUG} line naming the exception type — never the throwable itself — and a repeat of the
+         * same reason leaves that line only.
          */
         @Test
         @DisplayName("Should report a failed revocation once as ApiSheriff-147 over two failing logouts, the second at DEBUG only")
@@ -275,6 +291,10 @@ class RpInitiatedLogoutTest {
                     () -> assertEquals(1, warningsAfterFirst, "the first failure is the WARN"),
                     () -> assertEquals(0, repeatLinesAfterFirst, "the first failure is not reported as a repeat"),
                     () -> assertEquals(1, warnings.size(), "the WARN is recorded exactly once over two failures"),
+                    () -> assertEquals(List.of(revocationFailureWarning(REVOCATION_REQUEST)),
+                            revocationFailureWarningMessages(),
+                            "a failure the seam raised outside discovery is reported as revocation-request, "
+                                    + "and the token is the WARN's only value"),
                     () -> assertNull(warnings.getFirst().getThrown(),
                             "the WARN carries no throwable, whose message may hold the provider's answer"),
                     () -> assertEquals(2, debugLines.size(), "every failure leaves a DEBUG line"),
@@ -286,6 +306,55 @@ class RpInitiatedLogoutTest {
                     () -> assertEquals(1, debugLinesContaining(REVOCATION_FAILED_AGAIN_DEBUG).size(),
                             "the second failure is a DEBUG line only"));
             assertNoRecordCarries(refreshToken, "refresh token");
+        }
+
+        /**
+         * The latch is kept per reason, so a transient failure of one reason does not hide a later
+         * failure of the other: a discovery failure followed by a failure of the revocation request is
+         * two {@code ApiSheriff-147} {@code WARN}s, each carrying its own reason token, and a repeat of
+         * either reason stays at {@code DEBUG}. Collapsed back into one latch, the second reason would
+         * be swallowed at {@code DEBUG} and this case goes red.
+         */
+        @Test
+        @DisplayName("Should report the first failure of each reason as its own ApiSheriff-147 and a repeat of a reason at DEBUG only")
+        void shouldLatchTheRevocationFailureWarningPerReason() {
+            List<RuntimeException> failures = List.of(
+                    new RpInitiatedLogout.RevocationDiscoveryException(new IllegalStateException("discovery unreachable")),
+                    new IllegalStateException("revocation endpoint answered 503"),
+                    new RpInitiatedLogout.RevocationDiscoveryException(new IllegalStateException("discovery unreachable")),
+                    new IllegalStateException("revocation endpoint answered 503"));
+            AtomicInteger attempts = new AtomicInteger();
+            RpInitiatedLogout resilient = logoutRevokingWith(ended -> {
+                throw failures.get(attempts.getAndIncrement());
+            }, PUBLISHED);
+
+            List<Integer> warningsAfterEachLogout = new CopyOnWriteArrayList<>();
+            List<Optional<LogoutRedirect>> redirects = new CopyOnWriteArrayList<>();
+            for (int logoutNumber = 0; logoutNumber < failures.size(); logoutNumber++) {
+                redirects.add(resilient.initiate(session));
+                warningsAfterEachLogout.add(revocationFailureWarnings().size());
+            }
+
+            List<LogRecord> warnings = revocationFailureWarnings();
+            assertAll("a discovery failure, a request failure, and a repeat of each",
+                    () -> assertEquals(failures.size(), attempts.get(), "the seam was called once per logout"),
+                    () -> assertTrue(redirects.stream()
+                                    .allMatch(redirect -> redirect.orElseThrow().location().startsWith(END_SESSION)),
+                            "every logout still redirects"),
+                    () -> assertEquals(List.of(1, 2, 2, 2), warningsAfterEachLogout,
+                            "the first failure of each reason is a WARN, a repeat of either is not"),
+                    () -> assertEquals(List.of(revocationFailureWarning(PROVIDER_DISCOVERY),
+                                    revocationFailureWarning(REVOCATION_REQUEST)), revocationFailureWarningMessages(),
+                            "each WARN carries its own reason token, the discovery failure's first"),
+                    () -> assertTrue(warnings.stream().allMatch(warning -> warning.getThrown() == null),
+                            "no WARN carries a throwable"),
+                    () -> assertEquals(2, debugLinesContaining(REVOCATION_FAILED_AGAIN_DEBUG).size(),
+                            "the repeat of each reason is a DEBUG line only"),
+                    () -> assertEquals(1, debugLinesContaining("again (" + PROVIDER_DISCOVERY + ":").size(),
+                            "one repeat of the discovery reason"),
+                    () -> assertEquals(1, debugLinesContaining("again (" + REVOCATION_REQUEST + ":").size(),
+                            "one repeat of the request reason"));
+            assertNoRecordCarries("discovery unreachable", "message of the discovery failure");
         }
 
         /**
@@ -356,9 +425,10 @@ class RpInitiatedLogoutTest {
                             "the logout still redirects"),
                     () -> assertEquals(1, revocationFailureWarnings().size(), "the failure is reported"),
                     () -> assertEquals(1, debugLines.size(), "and leaves one DEBUG line"),
-                    () -> assertTrue(debugLines.getFirst().getMessage().contains("(" + IllegalStateException.class.getName()
-                                    + " caused by " + IllegalArgumentException.class.getName() + ")"),
-                            "the DEBUG line names each type of the loop once, outermost first: "
+                    () -> assertTrue(debugLines.getFirst().getMessage().contains("(" + REVOCATION_REQUEST + ": "
+                                    + IllegalStateException.class.getName() + " caused by "
+                                    + IllegalArgumentException.class.getName() + ")"),
+                            "the DEBUG line names the reason and each type of the loop once, outermost first: "
                                     + debugLines.getFirst().getMessage()),
                     () -> assertNull(debugLines.getFirst().getThrown(), "the DEBUG line carries no throwable"));
         }

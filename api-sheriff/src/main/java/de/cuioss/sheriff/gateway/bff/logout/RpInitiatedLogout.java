@@ -26,6 +26,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.StringJoiner;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 
@@ -61,13 +62,20 @@ import org.jspecify.annotations.Nullable;
  * harmless (RFC 7009, section 2.2). A session without a refresh token sends nothing. The access token
  * is not revoked: it stays valid at a resource server until it expires.
  * <p>
- * <strong>A failed revocation is a latched {@code WARN}.</strong> A {@link RuntimeException} the seam
- * raises — a transport failure, a non-success answer, provider metadata that cannot be obtained — is
- * recorded once per instance as {@code ApiSheriff-147}, which carries no value and no throwable; every
- * failure, the first included, also leaves a {@code DEBUG} line that names the exception types of the
- * failure's cause chain and nothing else — neither the throwable nor any exception message is logged,
- * because a message may carry the identity provider's unsanitised answer or the refresh token itself.
- * The logout proceeds in every case: the local session destruction is the authoritative logout.
+ * <strong>A failed revocation is a {@code WARN} latched per reason.</strong> A {@link RuntimeException}
+ * the seam raises is classified into one {@linkplain RevocationFailureReason reason} of a closed set
+ * by its type, never by its message: {@code provider-discovery} when the seam raised a
+ * {@link RevocationDiscoveryException} — the provider metadata the request needs could not be
+ * obtained — and {@code revocation-request} for every other failure, which is a failure of the
+ * revocation request itself (a transport failure, an egress refusal or a non-success answer; the
+ * engine reports all of them through one exception type, so they are one reason here). The first
+ * failure of each reason per instance is recorded as {@code ApiSheriff-147} carrying that reason's
+ * bounded token and no throwable; every failure, the first included, also leaves a {@code DEBUG} line
+ * that names the exception types of the failure's cause chain and nothing else — neither the throwable
+ * nor any exception message is logged, because a message may carry the identity provider's unsanitised
+ * answer or the refresh token itself. A transient failure of one reason therefore does not hide a
+ * later failure of the other. The logout proceeds in every case: the local session destruction is the
+ * authoritative logout.
  * <p>
  * <strong>The end-session request is a redirect.</strong> {@link #initiate} hands out the URL the
  * engine built on the provider's {@code end_session_endpoint}; its query carries the
@@ -87,8 +95,9 @@ import org.jspecify.annotations.Nullable;
  * {@code final_redirect}. A missing or mismatched {@code state} is rejected {@code 400} — a forged
  * logout-return cannot land the browser anywhere.
  * <p>
- * Thread-safe: the collaborators are safe for concurrent use and the only mutable state is two
- * atomic latches; one instance serves every request.
+ * Thread-safe: the collaborators are safe for concurrent use and the only mutable state is the
+ * atomic missing-endpoint latch and the concurrent set of revocation-failure reasons already
+ * reported; one instance serves every request.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -118,7 +127,7 @@ public final class RpInitiatedLogout {
     private final String finalRedirect;
     private final Duration stateCookieTtl;
     private final AtomicBoolean missingEndpointReported = new AtomicBoolean();
-    private final AtomicBoolean revocationFailureReported = new AtomicBoolean();
+    private final Set<RevocationFailureReason> reportedRevocationFailures = ConcurrentHashMap.newKeySet();
 
     /**
      * Assembles the RP-initiated logout with the engine end-session flow and the gateway-side settings.
@@ -163,9 +172,10 @@ public final class RpInitiatedLogout {
      * {@code post_logout_redirect_uri}, and the {@code state}.
      * <p>
      * The seam is called first and in every case, also when no redirect can be built. A
-     * {@link RuntimeException} it raises does not stop the logout: the first one per instance is
-     * recorded as {@code ApiSheriff-147} and every one leaves a {@code DEBUG} line naming the
-     * exception types of its cause chain — never the throwable or an exception message.
+     * {@link RuntimeException} it raises does not stop the logout: the first one of each
+     * {@linkplain RevocationFailureReason reason} per instance is recorded as {@code ApiSheriff-147}
+     * with that reason's token, and every one leaves a {@code DEBUG} line naming the exception types
+     * of its cause chain — never the throwable or an exception message.
      * <p>
      * The result is empty — and the caller completes the logout locally — when the session holds no ID
      * token, when the end-session endpoint cannot be resolved, or when the provider publishes none
@@ -198,7 +208,7 @@ public final class RpInitiatedLogout {
         } catch (RuntimeException revocationFailure) {
             // The authoritative, immediately-effective step is the local session destruction the caller
             // has already performed, so the logout proceeds. The failure is still a failed security
-            // control and is reported, latched.
+            // control and is reported, latched per reason.
             reportRevocationFailure(revocationFailure);
         }
         if (session.idToken().isBlank()) {
@@ -244,24 +254,28 @@ public final class RpInitiatedLogout {
     }
 
     /**
-     * Reports a failed refresh-token revocation. The first failure per instance is the
-     * {@code ApiSheriff-147} {@code WARN}, which carries no substitution and no throwable, because the
-     * throwable's message may carry the identity provider's unsanitised answer. Every failure, the
-     * first included, leaves a {@code DEBUG} line that names the exception types of the failure's cause
-     * chain and nothing more: the throwable is not attached and no exception message is printed, because
-     * a seam may put the refresh token itself into a message or a cause, and a {@code DEBUG} line is
-     * still a log line. The latch keeps the caller, who can repeat a logout at will, from setting the
-     * volume of {@code WARN} lines (ADR-0051).
+     * Reports a failed refresh-token revocation. The failure is classified into its
+     * {@linkplain RevocationFailureReason reason} by type alone, and the first failure of each reason
+     * per instance is the {@code ApiSheriff-147} {@code WARN}, whose only substitution is that reason's
+     * bounded token and which carries no throwable, because the throwable's message may carry the
+     * identity provider's unsanitised answer. Every failure, the first included, leaves a {@code DEBUG}
+     * line that names the exception types of the failure's cause chain and nothing more: the throwable
+     * is not attached and no exception message is printed, because a seam may put the refresh token
+     * itself into a message or a cause, and a {@code DEBUG} line is still a log line. The per-reason
+     * latch keeps the caller, who can repeat a logout at will, from setting the volume of {@code WARN}
+     * lines (ADR-0051), while a failure of one reason never hides a later failure of the other.
      */
     private void reportRevocationFailure(RuntimeException revocationFailure) {
+        RevocationFailureReason reason = RevocationFailureReason.of(revocationFailure);
         String failureTypes = exceptionTypes(revocationFailure);
-        if (revocationFailureReported.compareAndSet(false, true)) {
-            LOGGER.warn(BffLogMessages.WARN.LOGOUT_REVOCATION_FAILED);
-            LOGGER.debug("Refresh-token revocation failed during RP-initiated logout (%s) — proceeding with the logout",
-                    failureTypes);
+        if (reportedRevocationFailures.add(reason)) {
+            LOGGER.warn(BffLogMessages.WARN.LOGOUT_REVOCATION_FAILED, reason.token());
+            LOGGER.debug("Refresh-token revocation failed during RP-initiated logout (%s: %s) — proceeding with the logout",
+                    reason.token(), failureTypes);
         } else {
-            LOGGER.debug("Refresh-token revocation failed during RP-initiated logout again (%s) — already "
-                    + "reported once, stays at DEBUG for the rest of the process", failureTypes);
+            LOGGER.debug("Refresh-token revocation failed during RP-initiated logout again (%s: %s) — this "
+                    + "reason has already been reported once and stays at DEBUG for the rest of the process",
+                    reason.token(), failureTypes);
         }
     }
 
@@ -396,11 +410,82 @@ public final class RpInitiatedLogout {
          *
          * @param session the session being logged out — as it stood when the caller destroyed it, or as
          *                the caller resolved it when another path had already ended it
-         * @throws RuntimeException when the revocation cannot be completed — metadata that cannot be
-         *                          obtained, a transport failure or a non-success answer; the caller
-         *                          reports it and completes the logout
+         * @throws RevocationDiscoveryException when the provider metadata the request needs cannot be
+         *                                      obtained; the caller reports it as
+         *                                      {@code provider-discovery} and completes the logout
+         * @throws RuntimeException             when the revocation request itself fails — a transport
+         *                                      failure, an egress refusal or a non-success answer; the
+         *                                      caller reports it as {@code revocation-request} and
+         *                                      completes the logout
          */
         void revoke(SessionRecord session);
+    }
+
+    /**
+     * The gateway-side marker a {@link TokenRevocation} binding raises when the provider metadata the
+     * revocation request needs could not be obtained, so the logout can tell a discovery failure from a
+     * failure of the revocation request by type rather than by reading an exception message. The
+     * failure it wraps is kept as its cause and is never logged; the marker's own message is fixed and
+     * carries no value.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    public static final class RevocationDiscoveryException extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * Wraps the failure that kept the provider metadata from being obtained.
+         *
+         * @param cause the discovery failure; kept as the cause and never logged
+         */
+        public RevocationDiscoveryException(Throwable cause) {
+            super("Provider metadata for the revocation request could not be obtained",
+                    Objects.requireNonNull(cause, "cause"));
+        }
+    }
+
+    /**
+     * The closed set of reasons a failed refresh-token revocation is recorded with in
+     * {@code ApiSheriff-147}. Every member carries a fixed lower-case {@linkplain #token() token} and
+     * nothing else. The reason is derived from the failure's type alone, never from its message.
+     */
+    enum RevocationFailureReason {
+
+        /** The provider metadata the revocation request needs could not be obtained. */
+        PROVIDER_DISCOVERY("provider-discovery"),
+
+        /**
+         * The revocation request itself failed: a transport failure, an egress refusal or a non-success
+         * answer of the revocation endpoint. The engine reports all of them through one exception type,
+         * so they are not told apart.
+         */
+        REVOCATION_REQUEST("revocation-request");
+
+        private final String token;
+
+        RevocationFailureReason(String token) {
+            this.token = token;
+        }
+
+        /**
+         * @return the fixed lower-case token this reason is recorded with
+         */
+        String token() {
+            return token;
+        }
+
+        /**
+         * Classifies a failure of the revocation seam by its type.
+         *
+         * @param failure the failure the seam raised
+         * @return {@link #PROVIDER_DISCOVERY} for a {@link RevocationDiscoveryException},
+         *         {@link #REVOCATION_REQUEST} for every other failure
+         */
+        static RevocationFailureReason of(RuntimeException failure) {
+            return failure instanceof RevocationDiscoveryException ? PROVIDER_DISCOVERY : REVOCATION_REQUEST;
+        }
     }
 
     /**

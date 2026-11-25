@@ -4226,12 +4226,49 @@ class BffRuntimeProducerTest {
             List<String> carried = messagesOfTheChain(raised.get());
             assertAll("what the raised throwable carries to the caller: " + carried.size() + " message(s)",
                     () -> assertFalse(carried.isEmpty(), "precondition: a throwable was raised"),
+                    () -> assertFalse(raised.get() instanceof RpInitiatedLogout.RevocationDiscoveryException,
+                            "a failure of the revocation request is not the discovery marker, so the logout "
+                                    + "reports it as revocation-request: " + raised.get().getClass().getName()),
                     () -> assertEquals(List.of(), carried.stream()
                                     .filter(message -> message.contains(session.refreshToken())).toList(),
                             "no message of the chain carries the refresh token"),
                     () -> assertEquals(List.of(), carried.stream()
                                     .filter(message -> message.contains(session.accessToken())).toList(),
                             "no message of the chain carries the access token"));
+        }
+
+        /**
+         * The logout tells a discovery failure from a failure of the revocation request by type alone,
+         * so the binding wraps every failure of the metadata supplier into the gateway-side marker,
+         * keeps the supplier's failure as its cause and sends nothing. The case above is the matched
+         * control: a failure of the revocation request itself is not the marker.
+         */
+        @Test
+        @DisplayName("Should surface a failing metadata supplier as the discovery marker and send no revocation request")
+        void shouldSurfaceAFailingMetadataSupplierAsTheDiscoveryMarker() {
+            BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
+            RevocationClient revocationClient = revocationClientOf(runtime);
+            ClientAuthentication authentication = clientAuthenticationOf(runtime);
+            SessionRecord session = loggedOutSession(token());
+            IllegalStateException discoveryFailure = new IllegalStateException("discovery unreachable");
+            Supplier<ProviderMetadata> failingMetadata = () -> {
+                throw discoveryFailure;
+            };
+
+            RpInitiatedLogout.RevocationDiscoveryException raised = assertThrows(
+                    RpInitiatedLogout.RevocationDiscoveryException.class,
+                    () -> BffRuntimeProducer.revokeOnLogout(revocationClient, failingMetadata, authentication, session),
+                    "a failure of the metadata supplier reaches the caller as the discovery marker");
+
+            List<String> carried = messagesOfTheChain(raised);
+            assertAll("a logout whose provider metadata cannot be obtained",
+                    () -> assertSame(discoveryFailure, raised.getCause(),
+                            "the supplier's failure is kept as the marker's cause"),
+                    () -> assertEquals(List.of(), stub.received(StubIdentityProvider.Endpoint.REVOCATION),
+                            "no revocation request is sent without the provider metadata"),
+                    () -> assertEquals(List.of(), carried.stream()
+                                    .filter(message -> message.contains(session.refreshToken())).toList(),
+                            "no message of the chain carries the refresh token"));
         }
 
         /** The message of {@code thrown} and of every cause it chains, in chain order. */
