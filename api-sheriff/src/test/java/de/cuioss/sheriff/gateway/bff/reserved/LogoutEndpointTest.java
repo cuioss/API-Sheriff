@@ -675,12 +675,11 @@ class LogoutEndpointTest {
      * the session between the logout's resolve and its destruction, and none of those paths revokes
      * anything. The destruction hands back nothing, so the logout revokes the resolve-time record's
      * refresh token; left unrevoked it would stay valid at the identity provider after an explicit
-     * logout. (The method keeps its original name; what it asserts is that the resolve-time token IS
-     * revoked.)
+     * logout.
      */
     @Test
-    @DisplayName("Should revoke the resolved refresh token and still send the browser to the provider when the session was gone at destruction")
-    void shouldRevokeNothingWhenTheSessionWasGoneAtDestruction() {
+    @DisplayName("Should revoke the resolved refresh token once, clear the cookie and still send the browser to the provider when the session was gone at destruction")
+    void shouldRevokeTheResolvedRefreshTokenWhenTheSessionWasGoneAtDestruction() {
         SessionRecord stored = store.resolve(COOKIE_HANDLE, NOW).orElseThrow();
         assertEquals(SessionStore.ReplaceOutcome.REPLACED,
                 store.replaceIfCurrent(stored, withRefreshToken(stored, RESOLVED_REFRESH_TOKEN)),

@@ -4312,6 +4312,40 @@ class BffRuntimeProducerTest {
         }
 
         /**
+         * The cookie-mode wiring case. The stateless binding holds nothing server-side, so the session
+         * the logout ends is the one sealed in the cookie the request presents, and the revocation request
+         * that reaches the identity provider names the refresh token sealed in it — sent through the
+         * runtime's one revocation client and with its one client authentication, as in server mode.
+         */
+        @Test
+        @DisplayName("Should revoke the refresh token sealed in the presented cookie when a cookie-mode runtime's logout ends the session")
+        void shouldRevokeThroughTheProducedLogoutInCookieMode() throws Exception {
+            BffRuntime runtime = stubProducer(stubOidc()
+                    .session(OidcConfig.Session.builder().mode("cookie").ttlSeconds(3600).build())
+                    .build()).bffRuntime();
+            String refreshToken = token();
+            String sessionCookie = bind(runtime, loggedOutSession(refreshToken));
+            AtomicReference<BffRuntime.ReservedHttpResponse> answered = new AtomicReference<>();
+
+            StubIdentityProvider.ReceivedRequest request = receivedBy(StubIdentityProvider.Endpoint.REVOCATION,
+                    () -> answered.set(logout(runtime, sessionCookie)));
+
+            String revocationLegKeyId = keyIdOf(drive(Leg.REVOCATION, runtime));
+            assertAll("the logout of the produced cookie-mode runtime",
+                    () -> assertInstanceOf(CookieSessionBinding.class, sessionBindingOf(runtime),
+                            "precondition: the runtime holds its sessions in the sealed cookie"),
+                    () -> assertEquals(302, answered.get().status(), "the logout completes"),
+                    () -> assertEquals(refreshToken, request.form().get("token"),
+                            "the refresh token sealed in the presented cookie is revoked"),
+                    () -> assertEquals("refresh_token", request.form().get("token_type_hint")),
+                    () -> assertEquals(revocationLegKeyId, keyIdOf(request),
+                            "with the runtime's one client authentication"),
+                    () -> assertEquals(0, recordsContaining(TestLogLevel.WARN,
+                            BffLogMessages.WARN.LOGOUT_REVOCATION_FAILED.resolveIdentifierString()),
+                            "a revocation the provider accepted is not reported as failed"));
+        }
+
+        /**
          * Dispatches the reserved logout path on a browser presenting {@code sessionCookie}, with the
          * same-origin proof the logout leg demands before it ends a session.
          */

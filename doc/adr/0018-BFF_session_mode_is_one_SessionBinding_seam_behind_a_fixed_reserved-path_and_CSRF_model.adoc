@@ -86,7 +86,10 @@ still matched by a request that encodes the `;` as `%3B`. The canonical-path gua
 path. The registry matches the decoded one. That encoded URL is not the one an operator registers,
 so the refusal rests on the configured spelling alone.
 
-`ReservedPathRules` refuses such a value at boot. It judges four keys: `oidc.user_info.path`,
+`ReservedPathRules` refuses such a value at boot. It is the reserved-path concern class of the boot
+validator, registered as entries of its one ordered rule list
+(link:0071-Boot_validation_rules_live_in_concern_classes_on_the_ValidationRule_seam_and_ConfigValidator_runs_one_ordered_list.adoc[ADR-0071]).
+It judges four keys: `oidc.user_info.path`,
 `oidc.login.path`, `oidc.step_up.path` and `oidc.client_authentication.jwks_path`.
 
 *The shape check (`validateReservedPath`).* The first three keys must each be an absolute gateway
@@ -493,3 +496,4 @@ silent and shows only in the deployments least equipped to diagnose it.
 * link:../security-threat-model.adoc#bff-09[BFF-09] and link:../security-threat-model.adoc#bff-21[BFF-21] -- the accepted cookie-mode residuals.
 * `SessionBinding`, `ServerSessionBinding`, `CookieSessionBinding`, `ReservedPathRegistry`, `ScopedEngineFlows` -- the implementation; `BffReservedPathPrecedenceIT`, `BffBackchannelLogoutIT`, `BffSessionIdleTimeoutIT` -- the integration tests.
 * `ReservedPathRules` and `ReservedPathRulesTest` -- the boot refusals of the reserved-path amendment.
+* link:0071-Boot_validation_rules_live_in_concern_classes_on_the_ValidationRule_seam_and_ConfigValidator_runs_one_ordered_list.adoc[ADR-0071 -- Boot validation concern classes] -- where `ReservedPathRules` lives and how its refusals join the one ordered rule list.

@@ -57,10 +57,14 @@ import org.jspecify.annotations.Nullable;
  * local session by then. The caller hands {@link #initiate} the record its destruction removed, so the
  * token revoked is the one the session held when it was destroyed. When something else had already
  * ended the session before the caller's destruction — so the destruction removed nothing — the caller
- * hands over the record it resolved instead, and that record's refresh token is revoked: no other path
- * that ends a session revokes anything, and revoking a token that is already spent or invalid is
- * harmless (RFC 7009, section 2.2). A session without a refresh token sends nothing. The access token
- * is not revoked: it stays valid at a resource server until it expires.
+ * hands over the record it resolved instead, and that record's refresh token is revoked: the paths that
+ * end a session ahead of a logout — a concurrent login evicting the subject's oldest session, the
+ * expiry sweep, an eviction on resolve — revoke nothing, and revoking a token that is already spent or
+ * invalid is harmless (RFC 7009, section 2.2). The one other revoking path is the transparent refresh:
+ * {@code TokenRefreshCoordinator} revokes the still-live refresh token of a session the refresh itself
+ * ended, through the same {@code BffRuntimeProducer.revokeRefreshToken} helper this logout's binding
+ * delegates to. A session without a refresh token sends nothing. The access token is not revoked: it
+ * stays valid at a resource server until it expires.
  * <p>
  * <strong>A failed revocation is a {@code WARN} latched per reason.</strong> A {@link RuntimeException}
  * the seam raises is classified into one {@linkplain RevocationFailureReason reason} of a closed set

@@ -48,7 +48,7 @@ public final class BffLogMessages {
     private static final String PREFIX = "ApiSheriff";
 
     /**
-     * Info-level messages (INFO range 1-99; this catalogue owns 10-16, 20 and 21).
+     * Info-level messages (INFO range 1-99).
      */
     @UtilityClass
     public static final class INFO {
@@ -151,8 +151,7 @@ public final class BffLogMessages {
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 111-114, 127, 130-132, 135, 145,
-     * 147 and 153).
+     * Warn-level messages (WARN range 100-199).
      */
     @UtilityClass
     public static final class WARN {

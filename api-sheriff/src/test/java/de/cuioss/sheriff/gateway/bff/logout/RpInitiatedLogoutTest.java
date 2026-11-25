@@ -88,6 +88,11 @@ class RpInitiatedLogoutTest {
     private static final String REVOCATION_FAILED_DEBUG = "Refresh-token revocation failed during RP-initiated logout";
     /** The part of the DEBUG line only a repeated failure of one reason leaves. */
     private static final String REVOCATION_FAILED_AGAIN_DEBUG = "has already been reported once";
+    /**
+     * The identifier of the failed-revocation {@code WARN}, built from the literal number the log
+     * catalogue documents, never resolved through the record.
+     */
+    private static final String REVOCATION_FAILED_IDENTIFIER = "ApiSheriff-147";
     /** The ApiSheriff-147 reason token of a failure to obtain the provider metadata. */
     private static final String PROVIDER_DISCOVERY = "provider-discovery";
     /** The ApiSheriff-147 reason token of a failure of the revocation request itself. */
@@ -146,9 +151,14 @@ class RpInitiatedLogoutTest {
                 .resolveLogMessagesContaining(TestLogLevel.WARN, "ApiSheriff-135").size();
     }
 
+    /**
+     * The captured {@code ApiSheriff-147} records, found by the literal identifier rather than by the
+     * one the record resolves for itself, so a renumbered record goes red here instead of moving the
+     * expectation along with it.
+     */
     private static List<LogRecord> revocationFailureWarnings() {
         return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.WARN,
-                BffLogMessages.WARN.LOGOUT_REVOCATION_FAILED.resolveIdentifierString());
+                REVOCATION_FAILED_IDENTIFIER);
     }
 
     /** The rendered messages of the captured {@code ApiSheriff-147} records, in the order they were written. */
