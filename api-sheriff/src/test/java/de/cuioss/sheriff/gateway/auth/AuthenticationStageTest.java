@@ -27,7 +27,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
-
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.http.forwarded.ForwardedResolverConfig;
 import de.cuioss.http.security.config.SecurityConfiguration;
@@ -571,7 +570,7 @@ class AuthenticationStageTest {
             TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
             AuthenticationStage stage = stageFor(holder);
             PipelineRequest request = request(AuthConfig.builder().require(Require.BEARER)
-                    .sessionFallback(Boolean.TRUE).build(), Set.of(),
+                            .sessionFallback(Boolean.TRUE).build(), Set.of(),
                     Map.of("authorization", List.of("Bearer    " + holder.getRawToken() + "   ")));
 
             // Act

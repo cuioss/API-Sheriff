@@ -32,7 +32,6 @@ import java.util.Objects;
 import java.util.Optional;
 import javax.net.ssl.SSLContext;
 
-
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
