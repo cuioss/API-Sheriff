@@ -108,7 +108,7 @@ class ReservedEndpointLogHygieneTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new InMemoryPendingAuthorizationStore(PENDING_CAPACITY);
+        pendingStore = new InMemoryPendingAuthorizationStore(PENDING_CAPACITY, _ -> { });
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         sessionBinding = new ServerSessionBinding(
                 new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {

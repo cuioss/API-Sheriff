@@ -20,10 +20,12 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.stream.IntStream;
@@ -50,7 +52,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for the D2b pending-authorization primitives: the bounded single-use
  * {@link InMemoryPendingAuthorizationStore} and its fair admission (expired records purged first, a
- * per-source cap with own-oldest eviction, refusal instead of foreign eviction at saturation), the
+ * per-source cap with own-oldest eviction, refusal instead of foreign eviction at saturation), its
+ * own-oldest eviction signal (every eviction counted, one {@code WARN} per eviction episode, ADR-0085), the
  * {@link PendingAuthorizationRecord} contract (single-use enforcement, TTL expiry, same-origin
  * return-URL validation, the login-versus-widening marker, the quota key), and the
  * security-critical cross-browser callback rejection (a valid {@code state} presented in a
@@ -66,6 +69,15 @@ class PendingAuthorizationStoreTest {
     private static final String SOURCE_B = "198.51.100.20";
     private static final String SOURCE_C = "203.0.113.30";
     private static final int PER_SOURCE = InMemoryPendingAuthorizationStore.MAX_PENDING_PER_SOURCE;
+
+    /** The event counter of a store whose test does not read the store's own events. */
+    private static final Consumer<EventType> IGNORED_EVENTS = _ -> {
+    };
+
+    /** A store bounded to {@code maxEntries} whose own events this test does not read. */
+    private static InMemoryPendingAuthorizationStore newStore(int maxEntries) {
+        return new InMemoryPendingAuthorizationStore(maxEntries, IGNORED_EVENTS);
+    }
 
     private static FlowContext flow() {
         return FlowContext.create(GATEWAY_ORIGIN + "/callback");
@@ -100,7 +112,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should resolve a stored record exactly once (single-use consumption)")
         void shouldConsumeStoredRecordExactlyOnce() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(16);
+            InMemoryPendingAuthorizationStore store = newStore(16);
             PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored, T0);
 
@@ -115,7 +127,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should refuse a record consumed after its TTL has elapsed")
         void shouldRefuseExpiredRecord() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(16);
+            InMemoryPendingAuthorizationStore store = newStore(16);
             PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored, T0);
 
@@ -126,7 +138,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should resolve a record consumed within its TTL")
         void shouldResolveRecordWithinTtl() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(16);
+            InMemoryPendingAuthorizationStore store = newStore(16);
             PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored, T0);
 
@@ -136,7 +148,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should reject a null record or a null reference instant")
         void shouldRejectNullStoreArguments() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(4);
+            InMemoryPendingAuthorizationStore store = newStore(4);
             PendingAuthorizationRecord pending = pendingRecord("/app", T0);
 
             assertThrows(NullPointerException.class, () -> store.store(null, T0));
@@ -147,15 +159,21 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should return empty for an unknown record id")
         void shouldReturnEmptyForUnknownId() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(4);
+            InMemoryPendingAuthorizationStore store = newStore(4);
             assertTrue(store.consume("nonexistent", T0).isEmpty());
         }
 
         @Test
         @DisplayName("Should reject a non-positive capacity bound")
         void shouldRejectNonPositiveCapacity() {
-            assertThrows(IllegalArgumentException.class, () -> new InMemoryPendingAuthorizationStore(0));
-            assertThrows(IllegalArgumentException.class, () -> new InMemoryPendingAuthorizationStore(-1));
+            assertThrows(IllegalArgumentException.class, () -> newStore(0));
+            assertThrows(IllegalArgumentException.class, () -> newStore(-1));
+        }
+
+        @Test
+        @DisplayName("Should reject a missing event counter")
+        void shouldRejectNullEventCounter() {
+            assertThrows(NullPointerException.class, () -> new InMemoryPendingAuthorizationStore(4, null));
         }
     }
 
@@ -167,7 +185,7 @@ class PendingAuthorizationStoreTest {
         @DisplayName("Should keep source B's live record through a source-A flood beyond the global bound")
         void shouldKeepOtherSourceRecordThroughFlood() {
             int capacity = PER_SOURCE + 44;
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(capacity);
+            InMemoryPendingAuthorizationStore store = newStore(capacity);
             PendingAuthorizationRecord victim = pendingFrom(SOURCE_B, T0);
             store.store(victim, T0);
 
@@ -183,7 +201,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should purge every expired record before admitting a new one")
         void shouldPurgeExpiredRecordsFirst() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(3);
+            InMemoryPendingAuthorizationStore store = newStore(3);
             // The two older records are still live when the third is stored and expired by T0.
             Instant longAgo = T0.minus(PendingAuthorizationRecord.FIXED_TTL).minusSeconds(10);
             Instant recently = T0.minusSeconds(20);
@@ -205,7 +223,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should purge an expired record stored behind a younger live one")
         void shouldPurgeExpiredRecordBehindYoungerLiveOne() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(2);
+            InMemoryPendingAuthorizationStore store = newStore(2);
             // createdAt is stamped before the push and the record is stored after it, so a login started
             // earlier can be stored later: insertion order is not createdAt order.
             Instant startedLater = T0.plusSeconds(60);
@@ -228,7 +246,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should keep every index consistent when a record id is stored again")
         void shouldStayConsistentWhenIdIsStoredAgain() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(10_000);
+            InMemoryPendingAuthorizationStore store = newStore(10_000);
             PendingAuthorizationRecord earlier = pendingFrom(SOURCE_A, T0);
             Instant restoredAt = T0.plusSeconds(60);
             PendingAuthorizationRecord reused = PendingAuthorizationRecord.builder()
@@ -261,7 +279,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should refuse a net-new record at capacity and leave every live record in place")
         void shouldRefuseAtSaturation() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(3);
+            InMemoryPendingAuthorizationStore store = newStore(3);
             PendingAuthorizationRecord fromA = pendingFrom(SOURCE_A, T0);
             PendingAuthorizationRecord fromB = pendingFrom(SOURCE_B, T0);
             PendingAuthorizationRecord fromC = pendingFrom(SOURCE_C, T0);
@@ -285,7 +303,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should let a source over its quota evict only its own oldest record")
         void shouldEvictOwnOldestOverQuota() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(10_000);
+            InMemoryPendingAuthorizationStore store = newStore(10_000);
             PendingAuthorizationRecord other = pendingFrom(SOURCE_B, T0);
             store.store(other, T0);
             List<PendingAuthorizationRecord> own = storeFrom(store, SOURCE_A, PER_SOURCE, T0);
@@ -303,7 +321,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should let a source at its quota replace its own oldest record while the store is saturated")
         void shouldReplaceOwnOldestAtSaturation() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(PER_SOURCE + 1);
+            InMemoryPendingAuthorizationStore store = newStore(PER_SOURCE + 1);
             PendingAuthorizationRecord other = pendingFrom(SOURCE_B, T0);
             store.store(other, T0);
             List<PendingAuthorizationRecord> own = storeFrom(store, SOURCE_A, PER_SOURCE, T0);
@@ -321,7 +339,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should release a source's slot when one of its records is consumed")
         void shouldReleaseSlotOnConsume() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(PER_SOURCE + 1);
+            InMemoryPendingAuthorizationStore store = newStore(PER_SOURCE + 1);
             PendingAuthorizationRecord other = pendingFrom(SOURCE_B, T0);
             store.store(other, T0);
             List<PendingAuthorizationRecord> own = storeFrom(store, SOURCE_A, PER_SOURCE, T0);
@@ -346,7 +364,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should keep a refused source free to store again once a record frees up")
         void shouldAdmitAgainAfterConsume() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(1);
+            InMemoryPendingAuthorizationStore store = newStore(1);
             PendingAuthorizationRecord first = pendingFrom(SOURCE_A, T0);
             store.store(first, T0);
             PendingAuthorizationRecord refused = pendingFrom(SOURCE_B, T0);
@@ -384,7 +402,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should log the WARN once per saturation episode and again for the next episode")
         void shouldLogOncePerEpisode() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(1);
+            InMemoryPendingAuthorizationStore store = newStore(1);
             PendingAuthorizationRecord held = pendingFrom(SOURCE_A, T0);
             store.store(held, T0);
 
@@ -409,7 +427,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should re-arm the WARN only after the store drained below half its capacity")
         void shouldReArmOnlyBelowHalfCapacity() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(4);
+            InMemoryPendingAuthorizationStore store = newStore(4);
             List<PendingAuthorizationRecord> held = new ArrayList<>(storeFrom(store, SOURCE_A, 4, T0));
             PendingAuthorizationRecord firstRefused = pendingFrom(SOURCE_B, T0);
             assertThrows(GatewayException.class, () -> store.store(firstRefused, T0));
@@ -448,7 +466,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should log neither the quota key, the state, the nonce nor the record id")
         void shouldLogNoRequestData() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(1);
+            InMemoryPendingAuthorizationStore store = newStore(1);
             PendingAuthorizationRecord held = pendingFrom(SOURCE_A, T0);
             store.store(held, T0);
             PendingAuthorizationRecord refused = pendingFrom(SOURCE_B, T0);
@@ -476,13 +494,162 @@ class PendingAuthorizationStoreTest {
     }
 
     @Nested
+    @DisplayName("Own-oldest eviction signal — counted every time, one WARN per episode, no request data")
+    class OwnOldestEvictionSignal {
+
+        private static final int OVER_SHARE = 3;
+        private static final int BELOW_HALF_SHARE = PER_SOURCE / 2 - 1;
+
+        private List<LogRecord> evictionWarnings() {
+            String identifier = BffLogMessages.WARN.PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED.resolveIdentifierString();
+            return SheriffDebugCapture.capturedRecords().stream()
+                    .filter(captured -> Level.WARNING.equals(captured.getLevel()))
+                    .filter(captured -> SheriffDebugCapture.rendered(captured).contains(identifier))
+                    .toList();
+        }
+
+        private List<LogRecord> storeRecords() {
+            return SheriffDebugCapture.capturedRecords().stream()
+                    .filter(captured -> InMemoryPendingAuthorizationStore.class.getName()
+                            .equals(captured.getLoggerName()))
+                    .toList();
+        }
+
+        private long evictionDebugLines() {
+            return storeRecords().stream()
+                    .filter(captured -> Level.FINE.equals(captured.getLevel()))
+                    .filter(captured -> SheriffDebugCapture.rendered(captured).contains("oldest record was evicted"))
+                    .count();
+        }
+
+        /** Stores one more record of the full source {@code held} belongs to, which evicts its oldest. */
+        private void evictOwnOldest(InMemoryPendingAuthorizationStore store, List<PendingAuthorizationRecord> held) {
+            assertEquals(PER_SOURCE, held.size(), "precondition: the source holds its full share");
+            PendingAuthorizationRecord incoming = pendingFrom(held.getFirst().quotaKey(), T0);
+            store.store(incoming, T0);
+            held.removeFirst();
+            held.add(incoming);
+        }
+
+        /** Consumes the oldest of {@code held} until {@code remaining} records are left. */
+        private void consumeDownTo(InMemoryPendingAuthorizationStore store, List<PendingAuthorizationRecord> held,
+                int remaining) {
+            while (held.size() > remaining) {
+                assertTrue(store.consume(held.removeFirst().id(), T0).isPresent(), "precondition: the record is live");
+            }
+        }
+
+        @Test
+        @DisplayName("Should count every own-oldest eviction and log the WARN once, DEBUG for the rest")
+        void shouldCountEveryEvictionAndWarnOnce() {
+            List<EventType> counted = new ArrayList<>();
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(10_000, counted::add);
+            storeFrom(store, SOURCE_A, PER_SOURCE, T0);
+            List<EventType> countedUpToShare = List.copyOf(counted);
+            int warningsUpToShare = evictionWarnings().size();
+
+            storeFrom(store, SOURCE_A, OVER_SHARE, T0);
+
+            assertAll("each eviction is counted, the episode warns once",
+                    () -> assertEquals(List.of(), countedUpToShare,
+                            "filling a source's share up to the cap evicts nothing, so nothing is counted"),
+                    () -> assertEquals(0, warningsUpToShare, "no eviction, no WARN"),
+                    () -> assertEquals(
+                            Collections.nCopies(OVER_SHARE, EventType.PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED),
+                            counted, "every own-oldest eviction is counted once, under its own event"),
+                    () -> assertEquals(1, evictionWarnings().size(), "the evictions of one episode log the WARN once"),
+                    () -> assertEquals(OVER_SHARE - 1, evictionDebugLines(),
+                            "the further evictions of the episode stay at DEBUG"),
+                    () -> assertEquals(PER_SOURCE, store.size(), "the evictions caused no net growth"));
+        }
+
+        @Test
+        @DisplayName("Should count nothing when a net-new record is refused at saturation")
+        void shouldCountNothingOnSaturationRefusal() {
+            List<EventType> counted = new ArrayList<>();
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(1, counted::add);
+            store.store(pendingFrom(SOURCE_A, T0), T0);
+            PendingAuthorizationRecord refused = pendingFrom(SOURCE_B, T0);
+
+            assertThrows(GatewayException.class, () -> store.store(refused, T0));
+
+            assertTrue(counted.isEmpty(), "a refusal is the saturation event, not an own-oldest eviction");
+            assertEquals(0, evictionWarnings().size(), "a refusal logs no eviction WARN");
+        }
+
+        @Test
+        @DisplayName("Should keep the episode open while any source holds half its share, and re-arm once none does")
+        void shouldReArmOnlyOnceNoSourceHoldsHalfItsShare() {
+            List<EventType> counted = new ArrayList<>();
+            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(10_000, counted::add);
+            List<PendingAuthorizationRecord> fromA = new ArrayList<>(storeFrom(store, SOURCE_A, PER_SOURCE, T0));
+            evictOwnOldest(store, fromA);
+            int afterFirstEviction = evictionWarnings().size();
+
+            consumeDownTo(store, fromA, PER_SOURCE - 1);
+            fromA.addAll(storeFrom(store, SOURCE_A, 1, T0));
+            evictOwnOldest(store, fromA);
+            int afterOneFreedSlot = evictionWarnings().size();
+
+            List<PendingAuthorizationRecord> fromB = new ArrayList<>(storeFrom(store, SOURCE_B, PER_SOURCE / 2, T0));
+            consumeDownTo(store, fromA, BELOW_HALF_SHARE);
+            fromA.addAll(storeFrom(store, SOURCE_A, PER_SOURCE - fromA.size(), T0));
+            evictOwnOldest(store, fromA);
+            int whileOtherSourceHoldsHalf = evictionWarnings().size();
+
+            consumeDownTo(store, fromB, BELOW_HALF_SHARE);
+            consumeDownTo(store, fromA, BELOW_HALF_SHARE);
+            fromA.addAll(storeFrom(store, SOURCE_A, PER_SOURCE - fromA.size(), T0));
+            evictOwnOldest(store, fromA);
+            int afterNoSourceHeldHalf = evictionWarnings().size();
+
+            assertAll("the eviction latch re-arms by hysteresis over every source's share",
+                    () -> assertEquals(1, afterFirstEviction, "the first eviction of the episode warns"),
+                    () -> assertEquals(1, afterOneFreedSlot,
+                            "a source freeing one slot and refilling it stays in the episode, so no second WARN"),
+                    () -> assertEquals(1, whileOtherSourceHoldsHalf,
+                            "another source still holds half its share, so the episode stays open"),
+                    () -> assertEquals(2, afterNoSourceHeldHalf,
+                            "once no source holds half its share the episode ends, so the next eviction warns"),
+                    () -> assertEquals(4, counted.size(), "every eviction is counted, whether it warned or not"));
+        }
+
+        @Test
+        @DisplayName("Should log neither the quota key, the state, the nonce nor a record id on eviction")
+        void shouldLogNoRequestDataOnEviction() {
+            InMemoryPendingAuthorizationStore store = newStore(10_000);
+            List<PendingAuthorizationRecord> fromA = new ArrayList<>(storeFrom(store, SOURCE_A, PER_SOURCE, T0));
+            PendingAuthorizationRecord firstEvicted = fromA.getFirst();
+            evictOwnOldest(store, fromA);
+            PendingAuthorizationRecord secondEvicted = fromA.getFirst();
+            evictOwnOldest(store, fromA);
+            PendingAuthorizationRecord incoming = fromA.getLast();
+
+            assertEquals(1, evictionWarnings().size(), "precondition: the eviction WARN was logged");
+            assertEquals(1, evictionDebugLines(), "precondition: the further eviction was logged at DEBUG");
+            List<String> lines = storeRecords().stream().map(SheriffDebugCapture::rendered).toList();
+            Map<String, String> requestData = Map.of(
+                    "quota key", SOURCE_A,
+                    "state", incoming.flowContext().state(),
+                    "nonce", incoming.flowContext().nonce(),
+                    "first evicted record id", firstEvicted.id(),
+                    "second evicted record id", secondEvicted.id(),
+                    "incoming record id", incoming.id());
+            assertAll("no request data in an eviction log record of any level", requestData.entrySet().stream()
+                    .map(datum -> (Executable) () -> assertEquals(0,
+                            lines.stream().filter(line -> line.contains(datum.getValue())).count(),
+                            "log records carrying the " + datum.getKey())));
+        }
+    }
+
+    @Nested
     @DisplayName("Cross-browser callback rejection (binding cookie required)")
     class CrossBrowserRejection {
 
         @Test
         @DisplayName("Should refuse a callback that carries no binding cookie even with a stored record")
         void shouldRefuseCallbackWithoutBindingCookie() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(8);
+            InMemoryPendingAuthorizationStore store = newStore(8);
             BindingCookieCodec codec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
             PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored, T0);
@@ -499,7 +666,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should resolve the record for the originating browser that carries the binding cookie")
         void shouldResolveForOriginatingBrowser() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(8);
+            InMemoryPendingAuthorizationStore store = newStore(8);
             BindingCookieCodec codec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
             PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored, T0);
@@ -543,7 +710,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should retain the requested scope set through the store")
         void shouldRetainRequestedScopesThroughStore() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(4);
+            InMemoryPendingAuthorizationStore store = newStore(4);
             PendingAuthorizationRecord stored = pendingRecord("/app", T0);
             store.store(stored, T0);
 
@@ -669,7 +836,7 @@ class PendingAuthorizationStoreTest {
         @Test
         @DisplayName("Should round-trip a widening record through the store with its subject and attempt")
         void shouldRoundTripWideningRecord() {
-            InMemoryPendingAuthorizationStore store = new InMemoryPendingAuthorizationStore(4);
+            InMemoryPendingAuthorizationStore store = newStore(4);
             FlowContext flow = flow();
             PendingAuthorizationRecord stored = PendingAuthorizationRecord.createWidening(flow, "/orders",
                     REQUESTED_SCOPES, SUBJECT, Widening.Attempt.SILENT, SOURCE_C, T0);

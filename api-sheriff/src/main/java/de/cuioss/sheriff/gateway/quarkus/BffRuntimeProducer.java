@@ -204,7 +204,10 @@ import org.jspecify.annotations.Nullable;
  * requester source, so one source's login flood cannot evict another user's live login. The source a
  * pending record is counted under is derived by one {@link PendingQuotaKeys}, built from the global
  * {@code forwarded.trusted_proxies} exactly as the edge's forward stage reads them, and handed to the
- * session stage and to the runtime, which puts it on every reserved-path request.
+ * session stage and to the runtime, which puts it on every reserved-path request. The store's event
+ * counter is bound to {@link SheriffMetrics#recordSessionEvent}, so every eviction of a source's own
+ * oldest record is counted on {@value SheriffMetrics#SESSION_EVENTS_TOTAL} under
+ * {@link EventType#PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED} (ADR-0085).
  * <p>
  * <strong>Response mode.</strong> Every authorization request — login, widening and the step-up
  * re-drive — is requested from the engine with {@code response_mode=query} through
@@ -397,6 +400,8 @@ public class BffRuntimeProducer {
     private final ExecutorService virtualThreadExecutor;
     private final GatewayJson gatewayJson;
     private final Vertx vertx;
+    /** The metrics adapter the pending-authorization store's own events are counted on. */
+    private final SheriffMetrics sheriffMetrics;
     /**
      * The id of the periodic session-sweep timer, {@link #NO_SWEEP_TIMER} while none is registered —
      * always so in cookie mode and on a bearer-only gateway. Held so shutdown can cancel the timer.
@@ -438,6 +443,8 @@ public class BffRuntimeProducer {
      *                              through
      * @param vertx                 the Quarkus-managed Vert.x instance the periodic session-sweep timer
      *                              is registered on, in server mode only
+     * @param sheriffMetrics        the metrics adapter the pending-authorization store's own-oldest
+     *                              evictions are counted on, under {@value SheriffMetrics#SESSION_EVENTS_TOTAL}
      */
     // Each parameter is one independently injected collaborator of the runtime assembly; a parameter
     // object would only regroup CDI injection points without removing one.
@@ -445,7 +452,8 @@ public class BffRuntimeProducer {
     public BffRuntimeProducer(GatewayConfig gatewayConfig, RouteTable routeTable,
             @GatewayValidator Instance<TokenValidator> tokenValidator,
             JwksTrustProfileResolver trustProfileResolver,
-            @VirtualThreads ExecutorService virtualThreadExecutor, GatewayJson gatewayJson, Vertx vertx) {
+            @VirtualThreads ExecutorService virtualThreadExecutor, GatewayJson gatewayJson, Vertx vertx,
+            SheriffMetrics sheriffMetrics) {
         this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
         this.routeTable = Objects.requireNonNull(routeTable, "routeTable");
         this.tokenValidator = Objects.requireNonNull(tokenValidator, "tokenValidator");
@@ -453,6 +461,7 @@ public class BffRuntimeProducer {
         this.virtualThreadExecutor = Objects.requireNonNull(virtualThreadExecutor, "virtualThreadExecutor");
         this.gatewayJson = Objects.requireNonNull(gatewayJson, "gatewayJson");
         this.vertx = Objects.requireNonNull(vertx, "vertx");
+        this.sheriffMetrics = Objects.requireNonNull(sheriffMetrics, "sheriffMetrics");
         EgressTlsConfig declaredEgressTls = gatewayConfig.egressTls();
         this.egressTls = declaredEgressTls == null ? EgressTlsConfig.defaults() : declaredEgressTls;
     }
@@ -669,7 +678,11 @@ public class BffRuntimeProducer {
             // Server mode only: cookie mode holds no session to sweep.
             registerSessionSweep(sessionStore, clock);
         }
-        PendingAuthorizationStore pendingStore = new InMemoryPendingAuthorizationStore(DEFAULT_MAX_PENDING);
+        // The store counts each eviction of a source's own oldest record on the session-events series
+        // (ADR-0085); the recorder only increments a cached meter, so calling it under the store's
+        // monitor neither blocks nor re-enters the store.
+        PendingAuthorizationStore pendingStore =
+                new InMemoryPendingAuthorizationStore(DEFAULT_MAX_PENDING, sheriffMetrics::recordSessionEvent);
 
         // Resolved once: the login flow, the login-initiation endpoint (through the flow), the session
         // widening, the step-up endpoint and the RFC 9470 step-up re-drive all fall back to the same

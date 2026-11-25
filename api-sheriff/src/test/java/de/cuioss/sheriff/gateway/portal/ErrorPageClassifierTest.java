@@ -87,6 +87,8 @@ class ErrorPageClassifierTest {
         table.put(EventType.SOURCE_BLOCKED, KEEP_SHAPE);
         // Answers the browser navigation that starts a login, so a refused navigation can land on the page.
         table.put(EventType.PENDING_AUTHORIZATION_SATURATED, HTML_ELIGIBLE);
+        // Never answers a request: the login start whose store call evicted is admitted.
+        table.put(EventType.PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED, KEEP_SHAPE);
         // Never rendered as itself: the answer is NO_ROUTE_MATCHED's, which negotiates on its own row.
         table.put(EventType.PRE_TRUST_INTERNAL_FAILURE, KEEP_SHAPE);
         return table;

@@ -105,7 +105,7 @@ class StepUpEndpointTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new InMemoryPendingAuthorizationStore(PENDING_CAPACITY);
+        pendingStore = new InMemoryPendingAuthorizationStore(PENDING_CAPACITY, _ -> { });
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         FlowContext flowContext = FlowContext.create(GATEWAY_ORIGIN + "/auth/callback");
         AuthorizationCodeFlow.AuthorizationRedirect redirect =

@@ -342,6 +342,28 @@ public final class BffLogMessages {
                 .build();
 
         /**
+         * A source that already held its full per-source share of the pending-authorization store
+         * started one more login, step-up or widening, so the store evicted that source's own oldest
+         * pending record to admit the new one (ADR-0085). No other source's record was touched and the
+         * new start was admitted; the evicted login's callback will find no pending record. The template
+         * takes no substitution and therefore carries no request data — never a source address, quota
+         * key, {@code state}, nonce or record id.
+         * <p>
+         * <strong>Latched per eviction episode.</strong> The login-initiation path is reachable without a
+         * credential, and a caller must not be able to set the volume of {@code WARN} lines it produces
+         * (ADR-0051). The record is therefore emitted on the first own-oldest eviction, and every further
+         * eviction of the same episode drops to {@code DEBUG}. The episode is store-wide and ends only once
+         * no source holds half its per-source share or more — see
+         * {@code de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore}. The eviction
+         * rate is {@code sheriff_session_events_total} under {@code PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED}.
+         */
+        public static final LogRecord PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(154)
+                .template("A source reached its share of the pending-authorization store and its own oldest pending login was evicted to admit a new one — no other source's login was touched; further evictions in this episode stay at DEBUG")
+                .build();
+
+        /**
          * An RP-initiated logout could not revoke the session's refresh token at the identity provider
          * (RFC 7009): the revocation request failed in transport, the revocation endpoint answered
          * with a non-success status, or the provider metadata the request needs could not be obtained.

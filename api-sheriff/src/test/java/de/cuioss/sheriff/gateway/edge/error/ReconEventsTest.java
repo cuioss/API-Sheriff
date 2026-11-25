@@ -103,6 +103,8 @@ class ReconEventsTest {
         table.put(EventType.PENDING_AUTHORIZATION_SATURATED,
                 "a capacity refusal of the pending-authorization store: it describes how many logins are in flight, "
                         + "not which addresses exist");
+        table.put(EventType.PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED,
+                "an admitted login that displaced its own source's oldest pending record: not a rejection of a request");
         table.put(EventType.PRE_TRUST_INTERNAL_FAILURE,
                 "an operator-side failure is not caller behaviour and carries no detection weight");
         return table;

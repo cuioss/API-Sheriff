@@ -101,6 +101,7 @@ import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
+import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.refresh.BoundedEndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
@@ -152,6 +153,7 @@ import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.dpop.DpopProofGenerator;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.CredentialRejectedException;
+import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.sheriff.token.client.flow.ParClient;
 import de.cuioss.sheriff.token.client.flow.RefreshFailureClassification;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
@@ -177,6 +179,7 @@ import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.TestLoggerFactory;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import jakarta.enterprise.inject.Instance;
@@ -2478,7 +2481,7 @@ class BffRuntimeProducerTest {
         RecordingProducer(GatewayConfig gatewayConfig, TokenValidator tokenValidator) {
             super(gatewayConfig, new RouteTable(List.of()), new SingletonInstance<>(tokenValidator),
                     new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()), REVOCATION_EXECUTOR,
-                    new GatewayJson(new ObjectMapper()), new RecordingTimers().vertx());
+                    new GatewayJson(new ObjectMapper()), new RecordingTimers().vertx(), unreadMetrics());
         }
 
         @Override
@@ -5352,7 +5355,7 @@ class BffRuntimeProducerTest {
             return new BffRuntimeProducer(gatewayConfig, new RouteTable(List.of()),
                     new SingletonInstance<>(TOKEN_VALIDATOR),
                     new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()), REVOCATION_EXECUTOR,
-                    new GatewayJson(new ObjectMapper()), new RecordingTimers().vertx()).bffRuntime();
+                    new GatewayJson(new ObjectMapper()), new RecordingTimers().vertx(), unreadMetrics()).bffRuntime();
         }
 
         private static PipelineRequest request(String peer) {
@@ -5410,7 +5413,7 @@ class BffRuntimeProducerTest {
             BffRuntime runtime = new BffRuntimeProducer(gatewayConfig, new RouteTable(List.of()),
                     new SingletonInstance<>(TOKEN_VALIDATOR),
                     new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()), REVOCATION_EXECUTOR,
-                    new GatewayJson(new ObjectMapper()), new RecordingTimers().vertx()).bffRuntime();
+                    new GatewayJson(new ObjectMapper()), new RecordingTimers().vertx(), unreadMetrics()).bffRuntime();
             ForwardedTrust edgeTrust = ForwardedTrust.of(gatewayConfig);
             List<PipelineRequest> requests = List.of(
                     request(FORWARDER, FORWARDED_CLIENT),
@@ -5478,7 +5481,50 @@ class BffRuntimeProducerTest {
         GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build();
         return new BffRuntimeProducer(gatewayConfig, routeTable, new SingletonInstance<>(TOKEN_VALIDATOR),
                 new JwksTrustProfileResolver(registry),
-                REVOCATION_EXECUTOR, new GatewayJson(new ObjectMapper()), timers.vertx());
+                REVOCATION_EXECUTOR, new GatewayJson(new ObjectMapper()), timers.vertx(), unreadMetrics());
+    }
+
+    /** A metrics adapter over a registry of its own, for a producer whose test reads no meter. */
+    private static SheriffMetrics unreadMetrics() {
+        return new SheriffMetrics(new SimpleMeterRegistry());
+    }
+
+    /**
+     * The pending-authorization store the producer builds counts each eviction of a source's own oldest
+     * record on {@value SheriffMetrics#SESSION_EVENTS_TOTAL} (ADR-0085). The store is reached through the
+     * object graph and filled past one source's share directly, so the assertion is on the producer's
+     * binding alone: with the store's counter bound to anything but the injected metrics adapter, the
+     * series stays absent.
+     */
+    @Nested
+    @DisplayName("Pending-store own-oldest evictions are counted on the session-events meter")
+    class PendingStoreEvictionMetric {
+
+        @Test
+        @DisplayName("Should count each own-oldest eviction under sheriff_session_events_total{event}")
+        void shouldCountOwnOldestEvictionsOnSessionEvents() {
+            SimpleMeterRegistry meters = new SimpleMeterRegistry();
+            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(serverModeOidc()).build();
+            BffRuntime runtime = new BffRuntimeProducer(gatewayConfig, new RouteTable(List.of()),
+                    new SingletonInstance<>(TOKEN_VALIDATOR),
+                    new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()), REVOCATION_EXECUTOR,
+                    new GatewayJson(new ObjectMapper()), new RecordingTimers().vertx(), new SheriffMetrics(meters))
+                    .bffRuntime();
+            InMemoryPendingAuthorizationStore store = single(
+                    reachableInstancesOf(runtime, InMemoryPendingAuthorizationStore.class), "pending store");
+            Instant now = Instant.parse("2026-07-25T10:00:00Z");
+            int overShare = 2;
+
+            for (int i = 0; i < InMemoryPendingAuthorizationStore.MAX_PENDING_PER_SOURCE + overShare; i++) {
+                store.store(PendingAuthorizationRecord.create(FlowContext.create(REDIRECT_URI), "/app",
+                        List.of("openid"), QUOTA_KEY, now), now);
+            }
+
+            var evicted = meters.find(SheriffMetrics.SESSION_EVENTS_TOTAL)
+                    .tags("event", EventType.PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED.name()).counter();
+            assertNotNull(evicted, "the producer binds the store's event counter to the session-events meter");
+            assertEquals(overShare, evicted.count(), 0.0, "one count per own-oldest eviction");
+        }
     }
 
     /**
