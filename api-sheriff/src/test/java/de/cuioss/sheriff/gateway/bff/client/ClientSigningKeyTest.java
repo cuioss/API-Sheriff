@@ -23,12 +23,14 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
+import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PSSParameterSpec;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -540,6 +542,29 @@ class ClientSigningKeyTest {
                     + TestSigningKeys.publicBlock(keyPair.getPublic()) + padding);
 
             assertContentRefusal(keyFile, "names a file larger than the 16384 byte limit");
+        }
+
+        /**
+         * The public members are rendered by the engine ({@code JwkPublicMembers.of}), which refuses an
+         * EC point that is not on P-256 with its own text. The JDK key factory accepts such a point —
+         * asserted first, so the case cannot pass on a factory refusal — which leaves the engine's
+         * renderer as what refuses the file. The refusal must still name the field of the purpose and
+         * carry neither the path nor the key.
+         */
+        @Test
+        @DisplayName("Should refuse a PUBLIC KEY block whose EC point is not on P-256, naming the field")
+        void shouldRefuseAnOffCurvePublicPoint() throws Exception {
+            Base64.Decoder decoder = Base64.getMimeDecoder();
+            byte[] offCurvePublic = decoder.decode(PinnedKeyId.EC_PUBLIC_DER);
+            offCurvePublic[offCurvePublic.length - 1] ^= 0x01;
+            Path keyFile = TestSigningKeys.writeContent(directory,
+                    TestSigningKeys.pemBlock(TestSigningKeys.PRIVATE_KEY_LABEL, decoder.decode(PinnedKeyId.EC_PRIVATE_DER))
+                            + TestSigningKeys.pemBlock(TestSigningKeys.PUBLIC_KEY_LABEL, offCurvePublic));
+
+            assertDoesNotThrow(() -> KeyFactory.getInstance("EC").generatePublic(new X509EncodedKeySpec(offCurvePublic)),
+                    "the JDK key factory should accept the off-curve point, so the engine renderer is what refuses it");
+            assertContentRefusal(keyFile, Purpose.SENDER_CONSTRAINT, SENDER_CONSTRAINT_FIELD,
+                    "holds a PUBLIC KEY block whose public point is not valid for its key");
         }
 
         @Test

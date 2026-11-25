@@ -148,7 +148,7 @@ public final class ClientSigningKey {
         this.privateKey = privateKey;
         this.publicKey = publicKey;
         this.algorithm = requireSupportedKey(purpose, privateKey, publicKey);
-        Map<String, Object> publicMembers = publicMembersOf(publicKey);
+        Map<String, Object> publicMembers = publicMembersOf(purpose, publicKey);
         Map<String, Object> thumbprintInput = new LinkedHashMap<>();
         thumbprintInput.put(KTY, algorithm.getKeyType());
         thumbprintInput.putAll(publicMembers);
@@ -174,8 +174,10 @@ public final class ClientSigningKey {
      *                               or oversize, does not hold exactly one unencrypted PKCS#8
      *                               {@code PRIVATE KEY} block and one {@code PUBLIC KEY} block, holds
      *                               a key that is neither RSA of at least
-     *                               {@value #RSA_MINIMUM_MODULUS_BITS} bits nor EC on curve P-256, or
-     *                               holds two halves that do not belong together
+     *                               {@value #RSA_MINIMUM_MODULUS_BITS} bits nor EC on curve P-256,
+     *                               holds a public key whose members cannot be rendered (an EC point
+     *                               that is not on P-256), or holds two halves that do not belong
+     *                               together
      */
     public static ClientSigningKey resolve(@Nullable String keyFile, Purpose purpose) {
         Objects.requireNonNull(purpose, "purpose must not be null");
@@ -496,9 +498,20 @@ public final class ClientSigningKey {
      * JWK and the engine's DPoP {@code jwk} header cannot render one key differently. The engine
      * returns the members unordered and with {@code kty}; only the order — and the omission of
      * {@code kty}, which the callers place first — is the gateway's.
+     * <p>
+     * The engine refuses a public key it cannot render — an EC point that is not on P-256, or a
+     * member wider than its fixed width — with an {@link IllegalArgumentException} of its own. The JDK
+     * key factory accepts such a point, so this is where a provided file holding one is refused, and
+     * the refusal names the field of the purpose like every other one.
      */
-    private static Map<String, Object> publicMembersOf(PublicKey publicKey) {
-        Map<String, Object> rendered = JwkPublicMembers.of(publicKey);
+    private static Map<String, Object> publicMembersOf(Purpose purpose, PublicKey publicKey) {
+        Map<String, Object> rendered;
+        try {
+            rendered = JwkPublicMembers.of(publicKey);
+        } catch (IllegalArgumentException _) {
+            // The engine's text is derived from the key — name the field, never chain or log the cause.
+            throw refusal(purpose, "holds a PUBLIC KEY block whose public point is not valid for its key");
+        }
         List<String> order = publicKey instanceof RSAPublicKey ? RSA_MEMBER_ORDER : EC_MEMBER_ORDER;
         Map<String, Object> members = new LinkedHashMap<>();
         order.forEach(member -> members.put(member, rendered.get(member)));
