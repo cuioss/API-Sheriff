@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.edge.error;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -113,7 +114,9 @@ import org.junit.jupiter.params.provider.EnumSource;
  * no weight on the recon ledger — and under {@code delay}, for a tripped source, held for the delay as
  * its recon rejection would be; everywhere else the opaque {@code 500}. And the threat feed: a handled
  * rejection is handed to it once, under its true event and after the recon feed, without changing the
- * answer, and an unexpected internal failure never is.
+ * answer, and an unexpected internal failure never is. And {@code Vary: Accept}: a negotiable exit names
+ * {@code Accept} in {@code Vary} on the HTML page and on the problem document alike, merged into an
+ * existing {@code Vary}, while an exit that cannot negotiate does not.
  */
 @EnableGeneratorController
 @DisplayName("ErrorResponseWriter — Retry-After of an open circuit and the trust-boundary branch")
@@ -615,6 +618,94 @@ class ErrorResponseWriterTest {
 
         private String unexpectedMessage() {
             return Generators.letterStrings(5, 20).next();
+        }
+
+        /**
+         * {@code Vary: Accept} on a negotiable exit. With the uniform {@code 404} off, a verb refusal keeps
+         * its {@code 405} and the staged {@code Vary: X-Tenant}, so the same rejection can be answered as the
+         * HTML page or as the problem document and the merge with an existing {@code Vary} is observable.
+         */
+        @Nested
+        @DisplayName("a negotiable exit names Accept in Vary on both variants")
+        class AcceptVariance {
+
+            private static final String ACCEPT = "Accept";
+            private static final String STAGED_VARY = "X-Tenant";
+
+            @Test
+            @DisplayName("the HTML error page of a negotiable exit carries Vary: Accept")
+            void htmlVariantVariesOnAccept() throws Exception {
+                Response response = reject(writer(false, errorPagesPortal()), Protocol.HTTP, List.of("text/html"),
+                        EventType.METHOD_NOT_ALLOWED);
+
+                assertAll("the page is one of two answers Accept chooses between",
+                        () -> assertEquals(ErrorPageClassifier.Classification.HTML_ELIGIBLE,
+                                ErrorPageClassifier.classify(EventType.METHOD_NOT_ALLOWED),
+                                "precondition: the verb refusal is HTML-eligible"),
+                        () -> assertEquals(405, response.status()),
+                        () -> assertTrue(response.body().startsWith("<!DOCTYPE html>"),
+                                "precondition: the HTML page answered"),
+                        () -> assertTrue(varies(response, ACCEPT), String.valueOf(response.headers())));
+            }
+
+            @Test
+            @DisplayName("the problem+json fallback of a negotiable exit carries Vary: Accept")
+            void jsonVariantVariesOnAccept() throws Exception {
+                Response response = reject(writer(false, errorPagesPortal()), Protocol.HTTP,
+                        List.of("application/json"), EventType.METHOD_NOT_ALLOWED);
+
+                assertAll("the problem document is the other answer Accept chooses between",
+                        () -> assertEquals(405, response.status()),
+                        () -> assertEquals(PROBLEM_JSON, response.headers().get(CONTENT_TYPE),
+                                "precondition: the problem document answered"),
+                        () -> assertTrue(varies(response, ACCEPT), String.valueOf(response.headers())));
+            }
+
+            @Test
+            @DisplayName("an existing Vary is merged with Accept on both variants, never displaced")
+            void existingVaryIsMergedNotDisplaced() throws Exception {
+                Response html = reject(writer(false, errorPagesPortal()), Protocol.HTTP, List.of("text/html"),
+                        EventType.METHOD_NOT_ALLOWED);
+                Response json = reject(writer(false, errorPagesPortal()), Protocol.HTTP,
+                        List.of("application/json"), EventType.METHOD_NOT_ALLOWED);
+
+                assertAll("the staged Vary survives beside Accept",
+                        () -> assertTrue(varies(html, STAGED_VARY), String.valueOf(html.headers())),
+                        () -> assertTrue(varies(html, ACCEPT), String.valueOf(html.headers())),
+                        () -> assertTrue(varies(json, STAGED_VARY), String.valueOf(json.headers())),
+                        () -> assertTrue(varies(json, ACCEPT), String.valueOf(json.headers())));
+            }
+
+            @Test
+            @DisplayName("control: an exit that cannot negotiate carries no Accept in Vary")
+            void nonNegotiableExitDoesNotVaryOnAccept() throws Exception {
+                Response pagesOff = reject(writer(false, PortalEndpoint.inert()), Protocol.HTTP,
+                        List.of("text/html"), EventType.METHOD_NOT_ALLOWED);
+                Response notEligible = reject(writer(false, errorPagesPortal()), Protocol.HTTP,
+                        List.of("text/html"), EventType.TOKEN_MISSING);
+                ErrorResponseWriter withoutRequest = writer(false, errorPagesPortal());
+                handler.set(ctx -> withoutRequest.renderProblem(ctx, null, EventType.NO_ROUTE_MATCHED));
+                Response noRequest = send();
+
+                assertAll("only a negotiable exit announces Accept",
+                        () -> assertEquals(405, pagesOff.status(), "precondition: error pages off keep the shape"),
+                        () -> assertTrue(varies(pagesOff, STAGED_VARY), "control: the staged Vary is still written"),
+                        () -> assertFalse(varies(pagesOff, ACCEPT), String.valueOf(pagesOff.headers())),
+                        () -> assertNotEquals(ErrorPageClassifier.Classification.HTML_ELIGIBLE,
+                                ErrorPageClassifier.classify(EventType.TOKEN_MISSING),
+                                "precondition: the bearer 401 is not HTML-eligible"),
+                        () -> assertEquals(401, notEligible.status()),
+                        () -> assertFalse(varies(notEligible, ACCEPT), String.valueOf(notEligible.headers())),
+                        () -> assertEquals(404, noRequest.status()),
+                        () -> assertFalse(varies(noRequest, ACCEPT), String.valueOf(noRequest.headers())));
+            }
+
+            /** Whether the answer's {@code Vary} names {@code field}, compared by trimmed, case-insensitive name. */
+            private boolean varies(Response response, String field) {
+                String vary = response.headers().get(VARY);
+                return vary != null && Arrays.stream(vary.split(",")).map(String::trim)
+                        .anyMatch(field::equalsIgnoreCase);
+            }
         }
 
         @Test
