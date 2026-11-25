@@ -545,14 +545,59 @@ class RetryingJwksLoaderTest {
             refreshScheduler.runCapturedRefresh();
 
             // Assert — the issuer cache, which reads the status, re-admits the issuer at once; readiness,
-            // which reads the recorded attempt, waits for the wrapper's own retry, so it never reports
-            // UP for a delegate the retry is about to replace
+            // which reads the recorded attempt, waits for the wrapper's own retry, which then records the
+            // recovery instead of replacing the delegate
             assertEquals(LoaderStatus.OK, built.getFirst().getLoaderStatus(), "precondition: the library recovered");
             assertEquals(LoaderStatus.OK, loader.getLoaderStatus(), "the recovered delegate's OK is reported as it is");
             assertEquals(KeySetState.FAILED, loader.keySetState(), "the recorded outcome is the last completed attempt");
             assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent(),
                     "the recovered delegate answers from the keys it installed");
             assertTrue(loader.retryPending(), "the wrapper's retry sequence is still live");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a retry that finds a failed first load recovered by the library's own refresh keeps that "
+                + "delegate and ends the retry sequence")
+        void retryKeepsADelegateTheLibraryRecovered() throws Exception {
+            // Arrange — the first fetch fails and the wrapper's fast retry is scheduled. The test holds
+            // the scheduler's one thread, so the retry cannot run before the library's own background
+            // refresh has recovered the delegate
+            failuresBeforeSuccess.set(1);
+            List<HttpJwksLoader> built = new CopyOnWriteArrayList<>();
+            RetryingJwksLoader loader = loader(() -> {
+                HttpJwksLoader delegate = new HttpJwksLoader(capturedRefreshConfig(null));
+                built.add(delegate);
+                return delegate;
+            }, REFRESH_INTERVAL, FAST);
+            CountDownLatch release = new CountDownLatch(1);
+            scheduler.submit(() -> release.await(AWAIT_SECONDS, TimeUnit.SECONDS));
+            try {
+                assertNotEquals(LoaderStatus.OK, initialise(loader), "precondition: the first load failed");
+                assertTrue(loader.retryPending(), "precondition: the wrapper's retry is scheduled");
+                refreshScheduler.runCapturedRefresh();
+                assertEquals(LoaderStatus.OK, built.getFirst().getLoaderStatus(),
+                        "precondition: the library recovered the delegate by its own refresh");
+            } finally {
+                release.countDown();
+            }
+
+            // Act — the wrapper's retry runs against the recovered delegate
+            Awaits.until(() -> !loader.retryPending(), "the wrapper's retry to run", Awaits.CONNECT_CEILING_SECONDS);
+            drainScheduler(FAST.multipliedBy(4));
+
+            // Assert — the recovered delegate is kept: replacing it would close a delegate holding usable
+            // keys and report a fresh one's LOADING, so the issuer cache would refuse a healthy issuer
+            // for the length of a fetch, and for longer whenever that fetch failed
+            assertEquals(1, built.size(), "the retry builds no fresh delegate over a recovered one");
+            assertEquals(LoaderStatus.OK, built.getFirst().getLoaderStatus(), "the recovered delegate is not closed");
+            assertEquals(LoaderStatus.OK, loader.getLoaderStatus());
+            assertEquals(KeySetState.LOADED, loader.keySetState(),
+                    "the recovery is recorded, so readiness counts the issuer loaded");
+            assertFalse(loader.retryPending(), "the retry sequence ends at the recovered key set");
+            assertEquals(2, server.getRequestCount(),
+                    "the failed first load and the library's own refresh; the retry fetched nothing");
+            awaitLog(TestLogLevel.INFO, "JWKS key set for issuer '" + ISSUER_NAME + "' loaded after 0 retry attempt(s)");
             loader.close();
         }
 
@@ -1290,9 +1335,12 @@ class RetryingJwksLoaderTest {
         }
 
         @Test
-        @DisplayName("a degraded issuer can still claim a refresh, and a published key set re-admits it")
+        @DisplayName("a lookup reaching the wrapper over a degraded delegate can still claim a refresh, and a published "
+                + "key set reports OK")
         void degradedIssuerIsReadmittedByAPublishedRefresh() throws Exception {
-            // Arrange — a loaded delegate that has stopped reporting its key set usable
+            // Arrange — a loaded delegate that has stopped reporting its key set usable. In production no
+            // lookup reaches the wrapper for such an issuer: the library's issuer cache refuses its tokens
+            // first (ADR-0063). This pins the wrapper's own mechanics, which do not depend on that
             SwitchableStatusLoader degraded = new SwitchableStatusLoader();
             AtomicInteger builds = new AtomicInteger();
             RetryingJwksLoader loader = loader(() -> builds.incrementAndGet() == 1 ? degraded : trackedDelegate());

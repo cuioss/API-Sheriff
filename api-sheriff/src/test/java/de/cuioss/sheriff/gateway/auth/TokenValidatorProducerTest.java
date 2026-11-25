@@ -1292,6 +1292,40 @@ class TokenValidatorProducerTest {
                     "the degraded loader still holds the key the token is signed with");
         }
 
+        @Test
+        @DisplayName("an issuer admitted by a validated token is refused once its loader degrades, and admitted again once it recovers")
+        void loaderDegradedAfterAdmissionRejectsTheNextValidTokenFailClosed() throws Exception {
+            // Arrange — a validator built over a loader that reports its key set usable, and two distinct
+            // valid tokens of the same issuer, so the second is not one the validator has seen before
+            TestTokenHolder admitting = TestTokenGenerators.accessTokens().next();
+            TestTokenHolder next = TestTokenGenerators.accessTokens().next();
+            assertEquals(admitting.getIssuer(), next.getIssuer(), "precondition: both tokens name one issuer");
+            String admittingToken = admitting.getRawToken();
+            String nextToken = next.getRawToken();
+            assertNotEquals(admittingToken, nextToken, "precondition: the second token is a different token");
+            AccessTokenRequest admittingRequest = AccessTokenRequest.of(admittingToken);
+            AccessTokenRequest nextRequest = AccessTokenRequest.of(nextToken);
+            Path jwks = Files.writeString(jwksDir.resolve("jwks.json"), InMemoryKeyMaterialHandler.createDefaultJwks());
+            DegradableLoader delegate = new DegradableLoader(jwks);
+            TokenValidator validator = validatorOver(admitting, delegate);
+            assertDoesNotThrow(() -> validator.createAccessToken(admittingRequest),
+                    "precondition: the issuer is admitted while its loader reports the key set usable");
+
+            // Act — the loader degrades after the issuer was admitted
+            delegate.degraded = true;
+            TokenValidationException refused = assertThrows(TokenValidationException.class,
+                    () -> validator.createAccessToken(nextRequest),
+                    "an admitted issuer is not admitted for good: the issuer cache re-reads the loader status per validation");
+            delegate.degraded = false;
+
+            // Assert — the refusal is the missing-issuer verdict, and the matched control shows it came from
+            // the degradation alone: the same token validates once the loader reports its keys usable again
+            assertEquals(SecurityEventCounter.EventType.NO_ISSUER_CONFIG, refused.getEventType(),
+                    "a degraded issuer is refused as unconfigured, before any key is looked up");
+            assertDoesNotThrow(() -> validator.createAccessToken(nextRequest),
+                    "the control: the same token validates once the loader recovers");
+        }
+
         /**
          * A gateway-owned loader over {@code delegate}, already loaded, assembled into a validator the way
          * the producer assembles one: through the library's public {@code jwksLoader(..)} seam.
