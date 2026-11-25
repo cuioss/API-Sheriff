@@ -30,6 +30,8 @@ import java.util.stream.Stream;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.cuioss.sheriff.gateway.config.load.ConfigError;
+import de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Named;
@@ -38,6 +40,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -2296,6 +2299,99 @@ class ConfigModelContractTest {
                     () -> assertTrue(rendered.contains("idleTimeoutSeconds=120"), rendered),
                     () -> assertTrue(rendered.contains("keyFile=" + SESSION_KEY_FILE),
                             "the key file is a location and is rendered as it is: " + rendered));
+        }
+    }
+
+    /**
+     * The {@code IssuerConfig.Jwks} record binds every key on every source, so the {@code source: http}
+     * restrictions its Javadoc states are not enforced by the record: each is traced here to the reader
+     * that enforces it, and proven to act there. A JWKS refresh key declared on a {@code source: file}
+     * issuer is refused by {@link TokenValidationRules#validateJwksRefresh}, and an
+     * {@code allowed_egress_hosts} list on a {@code source: file} issuer is ignored by
+     * {@link TokenValidationRules#validateJwksEgressHosts}, because no egress guard reads it. Each case
+     * has an {@code http} twin that differs from it only in the source, so the outcome is attributable to
+     * the source alone, and each goes red when the restriction it traces is deleted.
+     */
+    @Nested
+    @DisplayName("IssuerConfig.Jwks — the source: file restrictions act in their production reader")
+    class JwksFileSourceRestriction {
+
+        private static final String JWKS_FILE = "/etc/sheriff/jwks.json";
+        private static final String JWKS_URL = "https://idp.example/jwks";
+
+        /** An {@code allowed_egress_hosts} entry the egress guard refuses: a host:port pair names no host. */
+        private static final String HOST_PORT_ENTRY = "idp.example:443";
+
+        private static IssuerConfig.Jwks.JwksBuilder fileJwks() {
+            return IssuerConfig.Jwks.builder().source("file").file(JWKS_FILE);
+        }
+
+        private static IssuerConfig.Jwks.JwksBuilder httpJwks() {
+            return IssuerConfig.Jwks.builder().source("http").url(JWKS_URL);
+        }
+
+        /** Declares {@code value} for {@code key}; exhaustive, so a key production gains fails to compile here. */
+        private static IssuerConfig.Jwks.JwksBuilder declaring(IssuerConfig.Jwks.JwksBuilder builder,
+                TokenValidationRules.JwksRefreshKey key, int value) {
+            return switch (key) {
+                case REFRESH_INTERVAL -> builder.refreshIntervalSeconds(value);
+                case KEY_ROTATION_GRACE_PERIOD -> builder.keyRotationGracePeriodSeconds(value);
+                case UNKNOWN_KID_REFRESH_WINDOW -> builder.unknownKidRefreshWindowSeconds(value);
+                case MAX_STALENESS -> builder.maxStalenessSeconds(value);
+            };
+        }
+
+        private static GatewayConfig gatewayWith(IssuerConfig.Jwks jwks) {
+            IssuerConfig issuer = IssuerConfig.builder().name("primary").issuer("https://idp.example").jwks(jwks)
+                    .build();
+            return GatewayConfig.builder().version(1).tokenValidation(new TokenValidationConfig(List.of(issuer)))
+                    .build();
+        }
+
+        private static List<ConfigError> refreshErrors(IssuerConfig.Jwks jwks) {
+            List<ConfigError> errors = new ArrayList<>();
+            TokenValidationRules.validateJwksRefresh(gatewayWith(jwks), errors);
+            return errors;
+        }
+
+        private static List<ConfigError> egressErrors(IssuerConfig.Jwks jwks) {
+            List<ConfigError> errors = new ArrayList<>();
+            TokenValidationRules.validateJwksEgressHosts(gatewayWith(jwks), errors);
+            return errors;
+        }
+
+        @ParameterizedTest(name = "{0} on a file source is refused at its own pointer")
+        @EnumSource(TokenValidationRules.JwksRefreshKey.class)
+        void refusesARefreshKeyOnAFileSource(TokenValidationRules.JwksRefreshKey key) {
+            List<ConfigError> errors = refreshErrors(declaring(fileJwks(), key, key.minimum()).build());
+
+            assertEquals(List.of("/token_validation/issuers/0/jwks/" + key.key()),
+                    errors.stream().map(ConfigError::pointer).toList(),
+                    () -> "a refresh key on a file source would parse and never act, so it must be refused: "
+                            + errors);
+        }
+
+        @ParameterizedTest(name = "{0} on an http source, the matched twin, is admitted")
+        @EnumSource(TokenValidationRules.JwksRefreshKey.class)
+        void admitsTheSameRefreshKeyOnAnHttpSource(TokenValidationRules.JwksRefreshKey key) {
+            assertEquals(List.of(), refreshErrors(declaring(httpJwks(), key, key.minimum()).build()),
+                    "the same key and value on an http source is in range, so only the source refuses the twin");
+        }
+
+        @Test
+        @DisplayName("an allowed_egress_hosts list on a file source is ignored, on its http twin it is checked")
+        void ignoresTheEgressAllowlistOnAFileSource() {
+            List<ConfigError> fileErrors = egressErrors(fileJwks().allowedEgressHosts(List.of(HOST_PORT_ENTRY))
+                    .build());
+            List<ConfigError> httpErrors = egressErrors(httpJwks().allowedEgressHosts(List.of(HOST_PORT_ENTRY))
+                    .build());
+
+            assertAll("the list feeds an egress guard only on an http source",
+                    () -> assertEquals(List.of(), fileErrors,
+                            "a file source fetches nothing, so its egress list is never checked"),
+                    () -> assertEquals(List.of("/token_validation/issuers/0/jwks/allowed_egress_hosts"),
+                            httpErrors.stream().map(ConfigError::pointer).toList(),
+                            () -> "the http twin proves the entry itself is refusable: " + httpErrors));
         }
     }
 }

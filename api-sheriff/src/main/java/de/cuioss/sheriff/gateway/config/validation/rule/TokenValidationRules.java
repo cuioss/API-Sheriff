@@ -64,6 +64,56 @@ public class TokenValidationRules {
             "remove it, or omit allowed_egress_hosts to derive the host of jwks.url";
 
     /**
+     * The smallest {@code jwks.refresh_interval_seconds} admitted, in seconds — the lower bound of
+     * {@link JwksRefreshKey#REFRESH_INTERVAL}. Public so the configuration model's Javadoc renders the
+     * enforced bound instead of restating it.
+     */
+    public static final int REFRESH_INTERVAL_MIN_SECONDS = 60;
+
+    /**
+     * The largest {@code jwks.refresh_interval_seconds} admitted, in seconds — the upper bound of
+     * {@link JwksRefreshKey#REFRESH_INTERVAL}.
+     */
+    public static final int REFRESH_INTERVAL_MAX_SECONDS = 86_400;
+
+    /**
+     * The smallest {@code jwks.key_rotation_grace_period_seconds} admitted, in seconds — the lower bound of
+     * {@link JwksRefreshKey#KEY_ROTATION_GRACE_PERIOD}; zero retires a replaced key set at once.
+     */
+    public static final int KEY_ROTATION_GRACE_PERIOD_MIN_SECONDS = 0;
+
+    /**
+     * The largest {@code jwks.key_rotation_grace_period_seconds} admitted, in seconds — the upper bound of
+     * {@link JwksRefreshKey#KEY_ROTATION_GRACE_PERIOD}.
+     */
+    public static final int KEY_ROTATION_GRACE_PERIOD_MAX_SECONDS = 3_600;
+
+    /**
+     * The smallest {@code jwks.unknown_kid_refresh_window_seconds} admitted, in seconds — the lower bound of
+     * {@link JwksRefreshKey#UNKNOWN_KID_REFRESH_WINDOW}, and so the bound on how often a flood of unknown key
+     * ids can make the gateway fetch.
+     */
+    public static final int UNKNOWN_KID_REFRESH_WINDOW_MIN_SECONDS = 5;
+
+    /**
+     * The largest {@code jwks.unknown_kid_refresh_window_seconds} admitted, in seconds — the upper bound of
+     * {@link JwksRefreshKey#UNKNOWN_KID_REFRESH_WINDOW}.
+     */
+    public static final int UNKNOWN_KID_REFRESH_WINDOW_MAX_SECONDS = 3_600;
+
+    /**
+     * The smallest {@code jwks.max_staleness_seconds} admitted, in seconds — the lower bound of
+     * {@link JwksRefreshKey#MAX_STALENESS}.
+     */
+    public static final int MAX_STALENESS_MIN_SECONDS = 60;
+
+    /**
+     * The largest {@code jwks.max_staleness_seconds} admitted, in seconds — the upper bound of
+     * {@link JwksRefreshKey#MAX_STALENESS}.
+     */
+    public static final int MAX_STALENESS_MAX_SECONDS = 604_800;
+
+    /**
      * Rule: every {@code allowed_egress_hosts} entry of an {@code http}-sourced issuer must name a
      * bare host.
      * <p>
@@ -215,21 +265,23 @@ public class TokenValidationRules {
     public enum JwksRefreshKey {
 
         /** {@code refresh_interval_seconds}: the cadence of the scheduled background JWKS refresh. */
-        REFRESH_INTERVAL("refresh_interval_seconds", 60, 86_400, IssuerConfig.Jwks::refreshIntervalSeconds),
+        REFRESH_INTERVAL("refresh_interval_seconds", REFRESH_INTERVAL_MIN_SECONDS, REFRESH_INTERVAL_MAX_SECONDS,
+                IssuerConfig.Jwks::refreshIntervalSeconds),
 
         /** {@code key_rotation_grace_period_seconds}: how long a key rotated out of the JWKS stays accepted. */
-        KEY_ROTATION_GRACE_PERIOD("key_rotation_grace_period_seconds", 0, 3_600,
-                IssuerConfig.Jwks::keyRotationGracePeriodSeconds),
+        KEY_ROTATION_GRACE_PERIOD("key_rotation_grace_period_seconds", KEY_ROTATION_GRACE_PERIOD_MIN_SECONDS,
+                KEY_ROTATION_GRACE_PERIOD_MAX_SECONDS, IssuerConfig.Jwks::keyRotationGracePeriodSeconds),
 
         /** {@code unknown_kid_refresh_window_seconds}: the minimum spacing of refreshes an unknown key id triggers. */
-        UNKNOWN_KID_REFRESH_WINDOW("unknown_kid_refresh_window_seconds", 5, 3_600,
-                IssuerConfig.Jwks::unknownKidRefreshWindowSeconds),
+        UNKNOWN_KID_REFRESH_WINDOW("unknown_kid_refresh_window_seconds", UNKNOWN_KID_REFRESH_WINDOW_MIN_SECONDS,
+                UNKNOWN_KID_REFRESH_WINDOW_MAX_SECONDS, IssuerConfig.Jwks::unknownKidRefreshWindowSeconds),
 
         /**
          * {@code max_staleness_seconds}: how long a loaded key set stays usable while every background
          * refresh fails; omitted switches the bound off.
          */
-        MAX_STALENESS("max_staleness_seconds", 60, 604_800, IssuerConfig.Jwks::maxStalenessSeconds);
+        MAX_STALENESS("max_staleness_seconds", MAX_STALENESS_MIN_SECONDS, MAX_STALENESS_MAX_SECONDS,
+                IssuerConfig.Jwks::maxStalenessSeconds);
 
         private final String key;
         private final int minimum;

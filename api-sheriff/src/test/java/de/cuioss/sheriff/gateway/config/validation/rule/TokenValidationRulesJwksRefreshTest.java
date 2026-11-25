@@ -19,12 +19,16 @@ import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.issuer;
 import static de.cuioss.sheriff.gateway.testsupport.ConfigFixtures.issuerName;
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.BiConsumer;
+import java.util.regex.MatchResult;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -34,6 +38,7 @@ import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
+import de.cuioss.sheriff.gateway.testsupport.RepositoryRoot;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -63,6 +68,11 @@ import org.junit.jupiter.params.provider.MethodSource;
  * production spellings as a set, so a key production gains (which no case here would generate and
  * whose errors the pointer filter would drop) or loses turns this class red. A matched negative
  * control shows the guard's comparison reports such a key.
+ * <p>
+ * The {@code IssuerConfig.Jwks} Javadoc renders every range from the public bound constants of
+ * {@link TokenValidationRules} rather than restating it, and {@link DocumentedRange} holds the contract
+ * literal, the constant, the enforced bound and the Javadoc reference to one another, so a bound or its
+ * documentation drifting alone turns this class red.
  */
 @EnableGeneratorController
 @DisplayName("ConfigValidator — jwks refresh keys: ranges and file-source refusal")
@@ -72,29 +82,63 @@ class TokenValidationRulesJwksRefreshTest {
     private static final String POINTER_PREFIX = "/token_validation/issuers/";
     private static final String JWKS_URL = "https://idp.example/jwks";
 
-    /** One of the four keys under test: its spelling, its admitted range and its builder setter. */
+    /**
+     * One of the four keys under test: its spelling, its admitted range as the contract literal, the
+     * stem of the public bound constants the {@code IssuerConfig.Jwks} Javadoc renders, the values of
+     * those constants, and its builder setter.
+     */
     enum RefreshKey {
 
-        REFRESH_INTERVAL("refresh_interval_seconds", 60, 86_400,
-            IssuerConfig.Jwks.JwksBuilder::refreshIntervalSeconds),
-        GRACE_PERIOD("key_rotation_grace_period_seconds", 0, 3_600,
+        REFRESH_INTERVAL("refresh_interval_seconds", 60, 86_400, "REFRESH_INTERVAL",
+                TokenValidationRules.REFRESH_INTERVAL_MIN_SECONDS, TokenValidationRules.REFRESH_INTERVAL_MAX_SECONDS,
+                IssuerConfig.Jwks.JwksBuilder::refreshIntervalSeconds),
+        GRACE_PERIOD("key_rotation_grace_period_seconds", 0, 3_600, "KEY_ROTATION_GRACE_PERIOD",
+                TokenValidationRules.KEY_ROTATION_GRACE_PERIOD_MIN_SECONDS,
+                TokenValidationRules.KEY_ROTATION_GRACE_PERIOD_MAX_SECONDS,
                 IssuerConfig.Jwks.JwksBuilder::keyRotationGracePeriodSeconds),
-        UNKNOWN_KID_WINDOW("unknown_kid_refresh_window_seconds", 5, 3_600,
+        UNKNOWN_KID_WINDOW("unknown_kid_refresh_window_seconds", 5, 3_600, "UNKNOWN_KID_REFRESH_WINDOW",
+                TokenValidationRules.UNKNOWN_KID_REFRESH_WINDOW_MIN_SECONDS,
+                TokenValidationRules.UNKNOWN_KID_REFRESH_WINDOW_MAX_SECONDS,
                 IssuerConfig.Jwks.JwksBuilder::unknownKidRefreshWindowSeconds),
-        MAX_STALENESS("max_staleness_seconds", 60, 604_800,
+        MAX_STALENESS("max_staleness_seconds", 60, 604_800, "MAX_STALENESS",
+                TokenValidationRules.MAX_STALENESS_MIN_SECONDS, TokenValidationRules.MAX_STALENESS_MAX_SECONDS,
                 IssuerConfig.Jwks.JwksBuilder::maxStalenessSeconds);
 
         private final String key;
         private final int minimum;
         private final int maximum;
+        private final String constantStem;
+        private final int documentedMinimum;
+        private final int documentedMaximum;
         private final BiConsumer<IssuerConfig.Jwks.JwksBuilder, Integer> setter;
 
-        RefreshKey(String key, int minimum, int maximum,
-                BiConsumer<IssuerConfig.Jwks.JwksBuilder, Integer> setter) {
+        RefreshKey(String key, int minimum, int maximum, String constantStem, int documentedMinimum,
+                int documentedMaximum, BiConsumer<IssuerConfig.Jwks.JwksBuilder, Integer> setter) {
             this.key = key;
             this.minimum = minimum;
             this.maximum = maximum;
+            this.constantStem = constantStem;
+            this.documentedMinimum = documentedMinimum;
+            this.documentedMaximum = documentedMaximum;
             this.setter = setter;
+        }
+
+        /** The name of the public constant carrying the lower bound the Javadoc renders. */
+        String minimumConstant() {
+            return constantStem + "_MIN_SECONDS";
+        }
+
+        /** The name of the public constant carrying the upper bound the Javadoc renders. */
+        String maximumConstant() {
+            return constantStem + "_MAX_SECONDS";
+        }
+
+        /** The production key of the same spelling; the completeness guard proves there is exactly one. */
+        TokenValidationRules.JwksRefreshKey production() {
+            return Stream.of(TokenValidationRules.JwksRefreshKey.values())
+                    .filter(candidate -> candidate.key().equals(key))
+                    .findFirst()
+                    .orElseGet(() -> fail("no production JwksRefreshKey is spelled " + key));
         }
 
         String pointer(int index) {
@@ -257,6 +301,116 @@ class TokenValidationRulesJwksRefreshTest {
                     IssuerConfig.Jwks.builder().source("http").url(JWKS_URL).build());
 
             assertEquals(List.of(), refreshErrors(omitted));
+        }
+    }
+
+    /**
+     * The {@code IssuerConfig.Jwks} Javadoc renders each admitted range from the public bound constants of
+     * {@link TokenValidationRules} through {@code {@value}} instead of restating the numbers. These cases
+     * tie the three places a bound lives together: the contract literal of {@link RefreshKey}, the public
+     * constant the Javadoc renders, and the {@link TokenValidationRules.JwksRefreshKey} bound the rule
+     * enforces — and they hold the Javadoc to referencing the constants, so neither a bound nor its
+     * documentation can drift from the others without a red build.
+     */
+    @Nested
+    @DisplayName("the IssuerConfig.Jwks Javadoc renders each enforced range instead of restating it")
+    class DocumentedRange {
+
+        private static final String ISSUER_CONFIG_SOURCE =
+                "api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/IssuerConfig.java";
+
+        /** Opens the Javadoc of the nested {@code Jwks} record. */
+        private static final String JWKS_JAVADOC_START = "Key material for signature verification.";
+
+        /** Follows the Javadoc of the nested {@code Jwks} record. */
+        private static final String JWKS_JAVADOC_END = "public record Jwks(";
+
+        private static final String VALUE_REFERENCE =
+                "{@value de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules#%s}";
+
+        /** A Javadoc line's leading asterisk and the single space after it. */
+        private static final Pattern JAVADOC_LINE_PREFIX = Pattern.compile("(?m)^\\s*\\*\\s?");
+
+        /** A range stated by hand: a digit following {@code range:}, whatever whitespace separates them. */
+        private static final Pattern HAND_WRITTEN_RANGE = Pattern.compile("(?i)range:\\s*\\d[\\d_,]*");
+
+        private static String jwksJavadoc() throws IOException {
+            String source = Files.readString(RepositoryRoot.holding(ISSUER_CONFIG_SOURCE).resolve(ISSUER_CONFIG_SOURCE));
+            int start = source.indexOf(JWKS_JAVADOC_START);
+            assertTrue(start >= 0, () -> ISSUER_CONFIG_SOURCE + " no longer carries the anchor " + JWKS_JAVADOC_START);
+            int end = source.indexOf(JWKS_JAVADOC_END, start);
+            assertTrue(end > start,
+                    () -> ISSUER_CONFIG_SOURCE + " carries no " + JWKS_JAVADOC_END + " after the Javadoc");
+            return JAVADOC_LINE_PREFIX.matcher(source.substring(start, end)).replaceAll("");
+        }
+
+        /**
+         * The ranges a Javadoc text states by hand.
+         *
+         * @param javadoc the Javadoc text, its line prefixes already stripped
+         * @return every hand-written range found, in order; empty when every range is rendered
+         */
+        static List<String> handWrittenRanges(String javadoc) {
+            return HAND_WRITTEN_RANGE.matcher(javadoc).results().map(MatchResult::group).toList();
+        }
+
+        @ParameterizedTest(name = "{0}: the literal, the public constant and the enforced bound agree")
+        @EnumSource(RefreshKey.class)
+        void theContractLiteralThePublicConstantAndTheEnforcedBoundAgree(RefreshKey key) {
+            TokenValidationRules.JwksRefreshKey production = key.production();
+
+            assertAll(
+                    () -> assertEquals(key.minimum, key.documentedMinimum,
+                            () -> key.minimumConstant() + " drifted from the contract literal"),
+                    () -> assertEquals(key.maximum, key.documentedMaximum,
+                            () -> key.maximumConstant() + " drifted from the contract literal"),
+                    () -> assertEquals(key.minimum, production.minimum(),
+                            () -> "the enforced lower bound of " + production + " drifted from the contract literal"),
+                    () -> assertEquals(key.maximum, production.maximum(),
+                            () -> "the enforced upper bound of " + production + " drifted from the contract literal"));
+        }
+
+        @ParameterizedTest(name = "{0}: the Javadoc renders both bounds from their constants")
+        @EnumSource(RefreshKey.class)
+        void theJavadocRendersBothBoundsFromTheirConstants(RefreshKey key) throws IOException {
+            String javadoc = jwksJavadoc();
+
+            assertAll(
+                    () -> assertTrue(javadoc.contains(VALUE_REFERENCE.formatted(key.minimumConstant())),
+                            () -> "the IssuerConfig.Jwks Javadoc must render the lower bound of " + key.key
+                                    + " as " + VALUE_REFERENCE.formatted(key.minimumConstant())),
+                    () -> assertTrue(javadoc.contains(VALUE_REFERENCE.formatted(key.maximumConstant())),
+                            () -> "the IssuerConfig.Jwks Javadoc must render the upper bound of " + key.key
+                                    + " as " + VALUE_REFERENCE.formatted(key.maximumConstant())));
+        }
+
+        @Test
+        @DisplayName("the Javadoc states no range by hand")
+        void theJavadocStatesNoRangeByHand() throws IOException {
+            List<String> handWritten = handWrittenRanges(jwksJavadoc());
+
+            assertEquals(List.of(), handWritten,
+                    () -> "the IssuerConfig.Jwks Javadoc restates a range instead of rendering it: " + handWritten);
+        }
+
+        @Test
+        @DisplayName("a hand-written range is reported, a rendered one is not (matched negative control)")
+        void reportsAHandWrittenRangeAndNotARenderedOne() {
+            String handWritten = JAVADOC_LINE_PREFIX.matcher("""
+                     *        default of 600 seconds. Admitted
+                     *        range: 60 to 86400. Declared on a
+                    """).replaceAll("");
+            String rendered = JAVADOC_LINE_PREFIX.matcher("""
+                     *        default of 600 seconds. Admitted
+                     *        range:
+                     *        {@value de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules#X}
+                    """).replaceAll("");
+
+            assertAll(
+                    () -> assertEquals(List.of("range: 60"), handWrittenRanges(handWritten),
+                            "a range written across a line break must still be found"),
+                    () -> assertEquals(List.of(), handWrittenRanges(rendered),
+                            "a range rendered through {@value} must not be reported"));
         }
     }
 
