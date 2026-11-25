@@ -32,12 +32,14 @@ import java.util.List;
 import java.util.Properties;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.Function;
 import java.util.jar.JarFile;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaField;
 import com.tngtech.archunit.core.domain.JavaModifier;
@@ -56,8 +58,9 @@ import org.junit.jupiter.api.Test;
  * on that metadata, and neither is visible on the JVM:
  * <ul>
  *   <li>DSL-JSON finds a generated {@code _<Type>_DslJsonConverter} by class name through a reflective
- *       {@code loadClass}. On the JVM the lookup always succeeds; in the native image it fails unless the
- *       converter is in {@code reflect-config.json}. Two of those failures are silent and fail open: an
+ *       {@code loadClass} and instantiates it through its no-argument constructor. On the JVM both always
+ *       succeed; in the native image they fail unless {@code reflect-config.json} registers the converter
+ *       together with access to that constructor. Two of those failures are silent and fail open: an
  *       unreadable token-endpoint error body turns an {@code invalid_grant} refusal into a transport
  *       failure, so the BFF keeps a session the identity provider refused, and an unreadable access-token
  *       payload makes the DPoP issuance check skip its {@code cnf.jkt} comparison.</li>
@@ -67,8 +70,11 @@ import org.junit.jupiter.api.Test;
  * </ul>
  * <p>
  * This test reads the real jar on the test classpath and asserts the metadata covers both: every
- * generated converter the jar ships (enumerated from the jar, not frozen here) is named in its
- * {@code reflect-config.json}, the two fail-open converters are named explicitly, and every engine class
+ * generated converter the jar ships (enumerated from the jar, not frozen here) is registered in its
+ * {@code reflect-config.json} with access to its no-argument constructor — {@code allDeclaredConstructors},
+ * {@code allPublicConstructors}, or a {@code methods} entry {@code <init>} taking no parameters; a name
+ * listed without that access counts as missing — the two fail-open converters are checked explicitly, and
+ * every engine class
  * with a {@code static final SecureRandom} is covered by an {@code --initialize-at-run-time} entry of its
  * {@code native-image.properties}. A non-vacuity check proves each input resolves to something, and the
  * negative controls prove each matcher fails on a name the list lacks. The native integration tests
@@ -94,10 +100,27 @@ class TokenClientNativeMetadataTest {
 
     private static final String NATIVE_IMAGE_PROPERTIES = "native-image.properties";
 
-    /** One {@code "name": "<fqcn>"} member of a reflect-config.json entry. */
-    private static final Pattern REFLECTION_NAME = Pattern.compile("\"name\"\\s*:\\s*\"([^\"]+)\"");
-
     private static final String RUNTIME_INIT_PREFIX = "--initialize-at-run-time=";
+
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    /** The reflect-config.json method name of a constructor. */
+    private static final String CONSTRUCTOR_METHOD = "<init>";
+
+    /** The suffix the missing-converter report gives a converter listed without constructor access. */
+    private static final String WITHOUT_CONSTRUCTOR_ACCESS = " (listed without constructor access)";
+
+    /** The suffix the missing-converter report gives a converter no entry names. */
+    private static final String NOT_LISTED = " (not listed)";
+
+    /** Entry members of the matcher controls, each in the shape GraalVM reads. */
+    private static final String ALL_DECLARED_CONSTRUCTORS = "\"allDeclaredConstructors\": true";
+    private static final String ALL_PUBLIC_CONSTRUCTORS = "\"allPublicConstructors\": true";
+    private static final String NO_ARGUMENT_INIT_METHOD =
+            "\"methods\": [{\"name\": \"<init>\", \"parameterTypes\": []}]";
+    private static final String ONE_ARGUMENT_INIT_METHOD =
+            "\"methods\": [{\"name\": \"<init>\", \"parameterTypes\": [\"java.lang.String\"]}]";
+    private static final String NO_CONSTRUCTOR_ACCESS = "\"allDeclaredFields\": true";
 
     /**
      * Fails open when unregistered: the engine's DPoP issuance check reads the access token through it,
@@ -114,38 +137,42 @@ class TokenClientNativeMetadataTest {
             "de.cuioss.sheriff.token.client.token._TokenErrorResponse_DslJsonConverter";
 
     @Test
-    @DisplayName("Should name every generated DSL-JSON converter of the engine jar in its reflect-config.json")
+    @DisplayName("Should register every generated DSL-JSON converter of the engine jar with constructor access")
     void shouldRegisterEveryEngineConverterForReflection() throws Exception {
         // Arrange
         EngineNativeMetadata metadata = readEngineJar();
 
         // Act
-        Set<String> missing = missingConverters(metadata.converters(), metadata.reflectionNames());
+        Set<String> missing = missingConverters(metadata.converters(), metadata.registrations());
 
         // Assert
         assertTrue(missing.isEmpty(),
                 """
                         %d generated DSL-JSON converter(s) of token-sheriff-client are absent from the jar's \
-                        own reflect-config.json (%s): %s. DSL-JSON resolves these by reflection; on the JVM \
-                        that works, in the native image the response type becomes unreadable. This is an \
-                        engine defect: report it upstream rather than restoring a gateway-side registration.\
-                        """.formatted(missing.size(), metadata.metadataFiles(), missing));
+                        own reflect-config.json, or listed there without access to their no-argument \
+                        constructor (%s): %s. DSL-JSON loads these by name and instantiates them reflectively; \
+                        on the JVM that works, in the native image the response type becomes unreadable. This \
+                        is an engine defect: report it upstream rather than restoring a gateway-side \
+                        registration.\
+                        """.formatted(missing.size(), metadata.metadataFiles(),
+                        describeMissing(missing, metadata.registrations())));
     }
 
     @Test
-    @DisplayName("Should name the two fail-open converters in the engine reflect-config.json")
+    @DisplayName("Should register the two fail-open converters with constructor access in the engine reflect-config.json")
     void shouldRegisterTheFailOpenConverters() throws Exception {
         // Arrange
-        EngineNativeMetadata metadata = readEngineJar();
+        Set<String> constructible = readEngineJar().registrations().constructible();
 
         // Act / Assert
         assertAll("fail-open converters registered by the engine",
-                () -> assertTrue(metadata.reflectionNames().contains(NESTED_PROBE_CONVERTER),
-                        NESTED_PROBE_CONVERTER + " is not in the engine reflect-config.json — without it a native "
-                                + "image skips the DPoP cnf.jkt binding check"),
-                () -> assertTrue(metadata.reflectionNames().contains(TOKEN_ERROR_RESPONSE_CONVERTER),
-                        TOKEN_ERROR_RESPONSE_CONVERTER + " is not in the engine reflect-config.json — without it "
-                                + "a native image reads every invalid_grant refusal as a transport failure"));
+                () -> assertTrue(constructible.contains(NESTED_PROBE_CONVERTER),
+                        NESTED_PROBE_CONVERTER + " is not in the engine reflect-config.json with constructor access "
+                                + "— without it a native image skips the DPoP cnf.jkt binding check"),
+                () -> assertTrue(constructible.contains(TOKEN_ERROR_RESPONSE_CONVERTER),
+                        TOKEN_ERROR_RESPONSE_CONVERTER + " is not in the engine reflect-config.json with constructor "
+                                + "access — without it a native image reads every invalid_grant refusal as a "
+                                + "transport failure"));
     }
 
     @Test
@@ -171,7 +198,8 @@ class TokenClientNativeMetadataTest {
     /**
      * Guards the three tests above: any input that resolved to nothing would leave them green while
      * checking nothing — a jar without metadata files, a converter enumeration that found no class, a
-     * reflect-config.json the parser read no name from, or a SecureRandom scan that matched no field.
+     * reflect-config.json the parser read no name or no constructor access from, or a SecureRandom scan
+     * that matched no field.
      */
     @Test
     @DisplayName("Should read a non-empty converter set, metadata files and SecureRandom holders from the jar")
@@ -192,8 +220,11 @@ class TokenClientNativeMetadataTest {
                                 + metadata.converters()),
                 () -> assertTrue(metadata.converters().contains(NESTED_PROBE_CONVERTER),
                         "the enumeration must reach nested-type converters, found: " + metadata.converters()),
-                () -> assertFalse(metadata.reflectionNames().isEmpty(),
+                () -> assertFalse(metadata.registrations().listed().isEmpty(),
                         "no name was parsed out of the engine " + REFLECT_CONFIG),
+                () -> assertFalse(metadata.registrations().constructible().isEmpty(),
+                        "no entry granting no-argument constructor access was parsed out of the engine "
+                                + REFLECT_CONFIG),
                 () -> assertFalse(metadata.runtimeInitEntries().isEmpty(),
                         "no " + RUNTIME_INIT_PREFIX + " entry was parsed out of the engine " + NATIVE_IMAGE_PROPERTIES),
                 () -> assertFalse(holders.isEmpty(),
@@ -211,28 +242,77 @@ class TokenClientNativeMetadataTest {
             Set<String> converters = readEngineJar().converters();
             Set<String> listed = new TreeSet<>(converters);
             listed.remove(TOKEN_ERROR_RESPONSE_CONVERTER);
-            Set<String> parsed = parseReflectionNames(reflectConfigNaming(listed));
+            ReflectionRegistrations parsed = parseReflectionConfig(reflectConfig(listed, _ -> ALL_DECLARED_CONSTRUCTORS));
+
+            // Act
+            Set<String> missing = missingConverters(converters, parsed);
+
+            // Assert
+            assertAll("a converter left out of the list",
+                    () -> assertEquals(Set.of(TOKEN_ERROR_RESPONSE_CONVERTER), missing,
+                            "the matcher must report exactly the converter left out of the list"),
+                    () -> assertEquals(List.of(TOKEN_ERROR_RESPONSE_CONVERTER + NOT_LISTED),
+                            describeMissing(missing, parsed), "the report must name it as not listed"));
+        }
+
+        @Test
+        @DisplayName("Converter matcher reports a converter listed without constructor access (negative control)")
+        void converterMatcherFailsOnConverterWithoutConstructorAccess() throws Exception {
+            // Arrange
+            Set<String> converters = readEngineJar().converters();
+            ReflectionRegistrations parsed = parseReflectionConfig(reflectConfig(converters,
+                    name -> TOKEN_ERROR_RESPONSE_CONVERTER.equals(name) ? NO_CONSTRUCTOR_ACCESS
+                            : ALL_DECLARED_CONSTRUCTORS));
+
+            // Act
+            Set<String> missing = missingConverters(converters, parsed);
+
+            // Assert
+            assertAll("a converter listed without constructor access",
+                    () -> assertTrue(parsed.listed().containsAll(converters), "every converter is named in the list"),
+                    () -> assertEquals(Set.of(TOKEN_ERROR_RESPONSE_CONVERTER), missing,
+                            "the matcher must report exactly the converter whose entry grants no constructor access"),
+                    () -> assertEquals(List.of(TOKEN_ERROR_RESPONSE_CONVERTER + WITHOUT_CONSTRUCTOR_ACCESS),
+                            describeMissing(missing, parsed),
+                            "the report must name it as listed without constructor access"));
+        }
+
+        @Test
+        @DisplayName("Converter matcher reports a converter whose only <init> entry takes a parameter (negative control)")
+        void converterMatcherFailsOnConstructorWithParameters() throws Exception {
+            // Arrange
+            Set<String> converters = readEngineJar().converters();
+            ReflectionRegistrations parsed = parseReflectionConfig(reflectConfig(converters,
+                    name -> TOKEN_ERROR_RESPONSE_CONVERTER.equals(name) ? ONE_ARGUMENT_INIT_METHOD
+                            : ALL_DECLARED_CONSTRUCTORS));
 
             // Act
             Set<String> missing = missingConverters(converters, parsed);
 
             // Assert
             assertEquals(Set.of(TOKEN_ERROR_RESPONSE_CONVERTER), missing,
-                    "the matcher must report exactly the converter left out of the list");
+                    "a constructor taking a parameter is not the no-argument constructor DSL-JSON calls");
         }
 
         @Test
-        @DisplayName("Converter matcher accepts a list naming every converter (positive control)")
+        @DisplayName("Converter matcher accepts every form of no-argument constructor access (positive control)")
         void converterMatcherAcceptsCompleteList() throws Exception {
             // Arrange
             Set<String> converters = readEngineJar().converters();
-            Set<String> parsed = parseReflectionNames(reflectConfigNaming(converters));
+            ReflectionRegistrations parsed = parseReflectionConfig(reflectConfig(converters, name -> switch (name) {
+                case TOKEN_ERROR_RESPONSE_CONVERTER -> NO_ARGUMENT_INIT_METHOD;
+                case NESTED_PROBE_CONVERTER -> ALL_PUBLIC_CONSTRUCTORS;
+                default -> ALL_DECLARED_CONSTRUCTORS;
+            }));
 
             // Act
             Set<String> missing = missingConverters(converters, parsed);
 
             // Assert
-            assertTrue(missing.isEmpty(), "a list naming every converter must leave nothing missing: " + missing);
+            assertTrue(missing.isEmpty(),
+                    "a list registering every converter with constructor access — allDeclaredConstructors, "
+                            + "allPublicConstructors or an explicit no-argument <init> — must leave nothing "
+                            + "missing: " + missing);
         }
 
         @Test
@@ -266,14 +346,29 @@ class TokenClientNativeMetadataTest {
     }
 
     /** What one walk over the engine jar yields. */
-    private record EngineNativeMetadata(Set<String> converters, Set<String> reflectionNames,
+    private record EngineNativeMetadata(Set<String> converters, ReflectionRegistrations registrations,
     Set<String> runtimeInitEntries, List<String> metadataFiles) {
     }
 
-    private static Set<String> missingConverters(Set<String> converters, Set<String> registered) {
+    /**
+     * What reflect-config.json registers: every class name an entry lists, and the subset whose entry
+     * grants access to the no-argument constructor.
+     */
+    private record ReflectionRegistrations(Set<String> listed, Set<String> constructible) {
+    }
+
+    /** A converter counts as registered only when its entry grants access to its no-argument constructor. */
+    private static Set<String> missingConverters(Set<String> converters, ReflectionRegistrations registrations) {
         Set<String> missing = new TreeSet<>(converters);
-        missing.removeAll(registered);
+        missing.removeAll(registrations.constructible());
         return missing;
+    }
+
+    /** Names each missing converter with why it is missing: not listed, or listed without constructor access. */
+    private static List<String> describeMissing(Set<String> missing, ReflectionRegistrations registrations) {
+        return missing.stream()
+                .map(name -> name + (registrations.listed().contains(name) ? WITHOUT_CONSTRUCTOR_ACCESS : NOT_LISTED))
+                .toList();
     }
 
     /**
@@ -286,13 +381,45 @@ class TokenClientNativeMetadataTest {
                 .collect(Collectors.toCollection(TreeSet::new));
     }
 
-    private static Set<String> parseReflectionNames(String reflectConfig) {
-        Set<String> names = new TreeSet<>();
-        Matcher matcher = REFLECTION_NAME.matcher(reflectConfig);
-        while (matcher.find()) {
-            names.add(matcher.group(1));
+    /**
+     * Reads a reflect-config.json — a JSON array of entries — into the names it lists and the names whose
+     * entry grants no-argument constructor access. An entry without a string {@code name} registers nothing.
+     */
+    private static ReflectionRegistrations parseReflectionConfig(String reflectConfig) throws IOException {
+        JsonNode root = JSON.readTree(reflectConfig);
+        assertTrue(root != null && root.isArray(), "a " + REFLECT_CONFIG + " must be a JSON array of entries");
+        Set<String> listed = new TreeSet<>();
+        Set<String> constructible = new TreeSet<>();
+        for (JsonNode entry : root) {
+            String name = entry.path("name").textValue();
+            if (name == null) {
+                continue;
+            }
+            listed.add(name);
+            if (grantsNoArgumentConstructor(entry)) {
+                constructible.add(name);
+            }
         }
-        return names;
+        return new ReflectionRegistrations(listed, constructible);
+    }
+
+    /**
+     * The three registrations GraalVM honours for the no-argument constructor: {@code allDeclaredConstructors}
+     * or {@code allPublicConstructors} set to the JSON boolean {@code true}, or a {@code methods} entry named
+     * {@code <init>} whose {@code parameterTypes} is an empty array.
+     */
+    private static boolean grantsNoArgumentConstructor(JsonNode entry) {
+        if (entry.path("allDeclaredConstructors").booleanValue() || entry.path("allPublicConstructors").booleanValue()) {
+            return true;
+        }
+        for (JsonNode method : entry.path("methods")) {
+            JsonNode parameterTypes = method.path("parameterTypes");
+            if (CONSTRUCTOR_METHOD.equals(method.path("name").textValue()) && parameterTypes.isArray()
+                    && parameterTypes.isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -312,10 +439,13 @@ class TokenClientNativeMetadataTest {
                 .collect(Collectors.toCollection(TreeSet::new));
     }
 
-    /** Renders names in the shape the engine's reflect-config.json uses, for the matcher controls. */
-    private static String reflectConfigNaming(Set<String> names) {
+    /**
+     * Renders names in the shape the engine's reflect-config.json uses, for the matcher controls; each
+     * entry carries the access members {@code accessMembers} chooses for its name.
+     */
+    private static String reflectConfig(Set<String> names, Function<String, String> accessMembers) {
         return names.stream()
-                .map(name -> "  {\n    \"name\": \"" + name + "\",\n    \"allDeclaredConstructors\": true\n  }")
+                .map(name -> "  {\n    \"name\": \"" + name + "\",\n    " + accessMembers.apply(name) + "\n  }")
                 .collect(Collectors.joining(",\n", "[\n", "\n]"));
     }
 
@@ -335,7 +465,8 @@ class TokenClientNativeMetadataTest {
             files = entries.filter(Files::isRegularFile).toList();
         }
         Set<String> converters = new TreeSet<>();
-        Set<String> reflectionNames = new TreeSet<>();
+        Set<String> listed = new TreeSet<>();
+        Set<String> constructible = new TreeSet<>();
         Set<String> runtimeInitEntries = new TreeSet<>();
         List<String> metadataFiles = new ArrayList<>();
         for (Path file : files) {
@@ -344,14 +475,18 @@ class TokenClientNativeMetadataTest {
             if (CONVERTER_ENTRY.matcher(relative).matches()) {
                 converters.add(relative.substring(0, relative.length() - ".class".length()).replace('/', '.'));
             } else if (relative.startsWith(METADATA_ROOT) && REFLECT_CONFIG.equals(fileName)) {
-                reflectionNames.addAll(parseReflectionNames(Files.readString(file)));
+                // GraalVM merges every reflect-config.json, so the registrations are merged the same way.
+                ReflectionRegistrations registrations = parseReflectionConfig(Files.readString(file));
+                listed.addAll(registrations.listed());
+                constructible.addAll(registrations.constructible());
                 metadataFiles.add(relative);
             } else if (relative.startsWith(METADATA_ROOT) && NATIVE_IMAGE_PROPERTIES.equals(fileName)) {
                 runtimeInitEntries.addAll(parseRuntimeInitEntries(Files.readString(file)));
                 metadataFiles.add(relative);
             }
         }
-        return new EngineNativeMetadata(converters, reflectionNames, runtimeInitEntries, List.copyOf(metadataFiles));
+        return new EngineNativeMetadata(converters, new ReflectionRegistrations(listed, constructible),
+                runtimeInitEntries, List.copyOf(metadataFiles));
     }
 
     /**
