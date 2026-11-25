@@ -21,6 +21,7 @@ import java.util.Objects;
 
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
+import de.cuioss.sheriff.token.commons.error.ErrorTextSanitizer;
 import de.cuioss.sheriff.token.commons.error.TokenSheriffException;
 import de.cuioss.tools.logging.CuiLogger;
 
@@ -30,8 +31,10 @@ import de.cuioss.tools.logging.CuiLogger;
  * destroy the affected sessions through the mode-neutral {@link SessionBinding} seam.
  * <p>
  * Signature verification is reached through the {@link LogoutTokenVerifier} seam — the session
- * runtime binds it to the engine's token validation (reuse of {@code token-sheriff-validation},
- * ADR-11); a test binds it to a hand-built token or a failing stub. Keeping the JWKS wiring behind
+ * runtime binds it to the engine's signature-only entry point {@code TokenValidator#verifySignature}
+ * (reuse of {@code token-sheriff-validation}, ADR-11, ADR-0050), which refuses an unknown or
+ * disabled issuer and one whose key set is not reported usable; a test binds it to a hand-built
+ * token or a failing stub. Keeping the JWKS wiring behind
  * the seam decouples the receiver from the confidential-client configuration and makes both the
  * signature-failure and the claim-rejection paths unit-testable without a live IdP.
  * <p>
@@ -113,7 +116,12 @@ public final class BackchannelLogoutReceiver {
         } catch (TokenSheriffException signatureFailure) {
             // The exception's own detail stays at DEBUG: it is engine-authored text about an
             // attacker-supplied input, so it is exactly what must not reach a default-level record.
-            LOGGER.debug(signatureFailure, "Back-channel logout token signature/validation failed");
+            // It is sanitized here and the exception itself is not attached: the engine's
+            // unknown-issuer refusal quotes the token's iss verbatim, so an un-sanitized message would
+            // let an unauthenticated caller forge log lines (CWE-117). The escaping form keeps the
+            // hostile value readable while neutralising line breaks, U+2028/U+2029 and bidi controls.
+            LOGGER.debug("Back-channel logout token signature/validation failed: %s",
+                    ErrorTextSanitizer.sanitize(Objects.toString(signatureFailure.getMessage(), "")));
             rejectionLog.recordRejection(LogoutRejection.SIGNATURE_REJECTED);
             return BackchannelResult.rejected();
         }

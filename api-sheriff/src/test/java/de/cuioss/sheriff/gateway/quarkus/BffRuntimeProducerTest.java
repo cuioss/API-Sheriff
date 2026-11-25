@@ -86,7 +86,6 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.auth.SanMismatchedJwksServer;
-import de.cuioss.sheriff.gateway.auth.SignatureOnlyTokenVerifier;
 import de.cuioss.sheriff.gateway.auth.TestTlsConfigurationRegistry;
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.client.TestSigningKeys;
@@ -261,15 +260,6 @@ class BffRuntimeProducerTest {
      * token, so the bridge is never asked to validate one; it is present because the coordinator requires it.
      */
     private static final IdTokenValidationBridge ID_TOKEN_VALIDATION = new IdTokenValidationBridge(TOKEN_VALIDATOR);
-
-    /**
-     * The seam the back-channel logout receiver is bound to. Built over the SAME issuer as the
-     * validator, so the assembled runtime is wired exactly as production wires it — the two must not
-     * drift apart, since a verifier over a different issuer set would verify nothing the validator
-     * trusts.
-     */
-    private static final SignatureOnlyTokenVerifier LOGOUT_TOKEN_VERIFIER =
-            new SignatureOnlyTokenVerifier(List.of(TEST_ISSUER), TOKEN_VALIDATOR.getSecurityEventCounter());
 
     /** Numbers the sealing-key files written to {@link #sealingKeyDirectory}, so none overwrites another. */
     private static final AtomicInteger SEALING_KEY_FILES = new AtomicInteger();
@@ -941,7 +931,7 @@ class BffRuntimeProducerTest {
         @DisplayName("a bearer-only gateway has no discovery resolver")
         void bearerOnlyHasNoResolver() {
             RecordingProducer producer = new RecordingProducer(GatewayConfig.builder().version(1).build(),
-                    TOKEN_VALIDATOR, LOGOUT_TOKEN_VERIFIER);
+                    TOKEN_VALIDATOR);
 
             assertAll("no oidc block, no BFF runtime, no discovery datum",
                     () -> assertFalse(producer.bffRuntime().isActive(), "precondition: the runtime is inert"),
@@ -2338,8 +2328,7 @@ class BffRuntimeProducerTest {
                 boolean verifiesHostname) {
             OidcConfig oidc = serverModeOidc();
             RecordingProducer recording = new RecordingProducer(
-                    GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build(), TOKEN_VALIDATOR,
-                    LOGOUT_TOKEN_VERIFIER);
+                    GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build(), TOKEN_VALIDATOR);
 
             BffRuntime runtime = recording.bffRuntime();
 
@@ -2453,7 +2442,7 @@ class BffRuntimeProducerTest {
                     .build();
             GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc)
                     .egressTls(oidcHostname(false)).build();
-            return new RecordingProducer(gatewayConfig, TOKEN_VALIDATOR, LOGOUT_TOKEN_VERIFIER);
+            return new RecordingProducer(gatewayConfig, TOKEN_VALIDATOR);
         }
 
         private ClientConfiguration backChannelFor(SanMismatchedJwksServer target, @Nullable EgressTlsConfig egressTls) {
@@ -2486,10 +2475,8 @@ class BffRuntimeProducerTest {
         /** The configurations the producer built, in call order. */
         private final List<ClientConfiguration> built = new CopyOnWriteArrayList<>();
 
-        RecordingProducer(GatewayConfig gatewayConfig, TokenValidator tokenValidator,
-                SignatureOnlyTokenVerifier logoutTokenVerifier) {
+        RecordingProducer(GatewayConfig gatewayConfig, TokenValidator tokenValidator) {
             super(gatewayConfig, new RouteTable(List.of()), new SingletonInstance<>(tokenValidator),
-                    new SingletonInstance<>(logoutTokenVerifier),
                     new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()), REVOCATION_EXECUTOR,
                     new GatewayJson(new ObjectMapper()), new RecordingTimers().vertx());
         }
@@ -5292,7 +5279,7 @@ class BffRuntimeProducerTest {
             GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(serverModeOidc())
                     .forwarded(ForwardedConfig.builder().trustedProxies(trustedProxies).build()).build();
             return new BffRuntimeProducer(gatewayConfig, new RouteTable(List.of()),
-                    new SingletonInstance<>(TOKEN_VALIDATOR), new SingletonInstance<>(LOGOUT_TOKEN_VERIFIER),
+                    new SingletonInstance<>(TOKEN_VALIDATOR),
                     new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()), REVOCATION_EXECUTOR,
                     new GatewayJson(new ObjectMapper()), new RecordingTimers().vertx()).bffRuntime();
         }
@@ -5350,7 +5337,7 @@ class BffRuntimeProducerTest {
                             .trustedProxies(List.of(FORWARDER + "/32", secondHop + "/32")).build())
                     .build();
             BffRuntime runtime = new BffRuntimeProducer(gatewayConfig, new RouteTable(List.of()),
-                    new SingletonInstance<>(TOKEN_VALIDATOR), new SingletonInstance<>(LOGOUT_TOKEN_VERIFIER),
+                    new SingletonInstance<>(TOKEN_VALIDATOR),
                     new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()), REVOCATION_EXECUTOR,
                     new GatewayJson(new ObjectMapper()), new RecordingTimers().vertx()).bffRuntime();
             ForwardedTrust edgeTrust = ForwardedTrust.of(gatewayConfig);
@@ -5419,7 +5406,7 @@ class BffRuntimeProducerTest {
             TestTlsConfigurationRegistry registry, RouteTable routeTable, RecordingTimers timers) {
         GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build();
         return new BffRuntimeProducer(gatewayConfig, routeTable, new SingletonInstance<>(TOKEN_VALIDATOR),
-                new SingletonInstance<>(LOGOUT_TOKEN_VERIFIER), new JwksTrustProfileResolver(registry),
+                new JwksTrustProfileResolver(registry),
                 REVOCATION_EXECUTOR, new GatewayJson(new ObjectMapper()), timers.vertx());
     }
 

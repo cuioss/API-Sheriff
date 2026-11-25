@@ -45,6 +45,27 @@ This record settles three things at 0.9.8:
 * whether the gateway projects its issuers onto the extension's namespace,
 * whether the extension dependency stays.
 
+=== The 0.9.10 re-evaluation: the probes stay excluded
+
+token-sheriff 0.9.10 closes the gap the table below records for the core validator: it now exposes
+per-issuer status views (`TokenValidator#getIssuerStatuses`), and the extension can opt in to report
+the issuers of an externally built validator such as this gateway's. The decision was taken again
+against that release, and the two probes stay excluded. Adopting them would break the gateway's
+readiness contract rather than extend it:
+
+* *Different payload.* The library probe reports its own fields. The gateway's readiness payload —
+  `jwks`, `issuers`, `issuers_loaded`, `oidc=<mode>`, `oidc_discovery` — is what operators and the
+  integration tests read, and it stays unchanged.
+* *A 30 s cache.* The library probe caches its result for 30 seconds, so readiness would trail a key
+  set's arrival or loss by up to that long. The gateway's probe reads the non-fetching key-set state
+  on every call.
+* *Stale is not never-loaded.* The library's per-issuer status cannot tell an issuer whose key set
+  went stale from one whose key set never loaded. The gateway's `IssuerKeySetStatus` keeps exactly
+  that distinction.
+
+`GatewayReadinessCheck`, `IssuerKeySetStatus` and the `quarkus.arc.exclude-types` exclusion are
+therefore unchanged at 0.9.10. The metrics collector stays kept, as below.
+
 === How the extension resolves its validator at 0.9.8
 
 The observability beans no longer read the issuer namespace themselves. They ask

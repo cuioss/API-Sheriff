@@ -49,7 +49,8 @@ authorization and end-session endpoints, unchanged.
 
 The gateway sends its own calls to `oidc.back_channel_origin` with path and query unchanged: discovery, the pushed authorization request, the token endpoint (code exchange and refresh) and
 RFC 7009 refresh-token revocation. The `ApiSheriff-138` boot record names the same list. The gateway never dials the identity provider's userinfo endpoint: its own `oidc.user_info.path`
-endpoint answers from the session's validated ID-token claims (`IdTokenClaimProjection`).
+endpoint answers from the session's validated ID-token claims, read in their native JSON types through the validation library's raw-claims view
+(`TokenValidator#getRawClaims`, token-sheriff 0.9.10).
 
 The mapping is the engine's single origin mapping, `token-sheriff-client`'s `backChannelOrigin` (introduced in 0.9.7, DPoP `htu` corrected in 0.9.8). The engine re-targets only an advertised
 endpoint on the issuer's own origin. The value goes to the one client configuration every leg dials with, whatever scope set it names per call (ADR-0083), so all scope sets share it.

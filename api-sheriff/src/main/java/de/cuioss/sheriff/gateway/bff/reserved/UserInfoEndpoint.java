@@ -53,7 +53,12 @@ import org.jspecify.annotations.Nullable;
  * boolean or string keeps that type. Numeric date claims such as {@code exp}, {@code iat} and
  * {@code auth_time} are therefore disclosed as JSON numbers, and a {@code groups} claim as a JSON
  * array — never as the string rendering of either. The production seam binds the
- * {@link ClaimSource} to {@link IdTokenClaimProjection}, which produces exactly those shapes.
+ * {@link ClaimSource} to the token library's raw-claims view,
+ * {@code TokenValidator#getRawClaims(TokenContent)}, over the ID token the engine has just validated:
+ * it parses the token's payload with the library's bounded parser and returns an unmodifiable map of
+ * {@link java.util.Map}, {@link java.util.List}, {@link Number}, {@link Boolean} and {@link String}
+ * values, with top-level {@code null} claims omitted. It decides nothing about trust — the token was
+ * validated before its claims are read.
  * <p>
  * <strong>Allowlist cap (secure default closed).</strong> Every response is filtered through the
  * operator-owned {@link ClaimAllowlistFilter}: a claim outside {@code allowed_claims} can never be
@@ -231,7 +236,8 @@ public final class UserInfoEndpoint {
 
     /**
      * The validated-claim resolution seam. The session runtime binds it to the engine's ID-token
-     * validation followed by {@link IdTokenClaimProjection}, so the endpoint discloses
+     * validation followed by the library's raw-claims view ({@code TokenValidator#getRawClaims}), so
+     * the endpoint discloses
      * <em>validated</em> ID-token claims in their native JSON types; a test binds it to a fixed claim
      * map. Keeping the token parsing behind the seam both decouples the endpoint from the engine and
      * enforces the invariant that the endpoint never touches raw token material — it receives only an

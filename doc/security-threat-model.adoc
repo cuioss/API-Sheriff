@@ -3422,6 +3422,30 @@ acted on unremembered. Every refusal is the `400` of a rejected logout token, se
 `ApiSheriff-112` naming the reason. Each component that can refuse a token records each reason at
 `WARN` once and at `DEBUG` afterwards, because a refused token can be presented again at will.
 
+*The signature is checked by the engine, and nothing else is.* The receiver verifies a logout token
+through the token library's signature-only entry point, `TokenValidator#verifySignature`
+(link:adr/0050-A_JWT_whose_type_the_engine_exposes_no_entry_point_for_is_verified_signature-only_and_its_claim_set_is_the_callers_authority.adoc[ADR-0050]),
+over the same validator, issuers, JWKS loaders and security-event counter as the bearer path. It
+refuses a token from an issuer the gateway does not configure, from a disabled issuer and from one
+whose key set is not reported usable, and it applies no claim check of any token type, so a
+spec-valid `sid`-only token without `sub` or `azp` reaches the gateway's claim checks above, which stay
+the only authority over its claims. Adopting the library entry point brings three behaviours with it.
+A token string longer than the library's limit (8192 characters) is refused before it is parsed. Each
+verification is counted as `SIGNATURE_ONLY_VERIFIED` beside the bearer path's events. And a token
+from an issuer whose key set is still loading can wait up to five seconds for that load before it is
+refused. When the library refuses a token, the receiver records the refusal text at `DEBUG` only,
+escaped with the library's error-text sanitiser and without the exception attached, because the
+refusal of an unknown issuer quotes the token's `iss`.
+
+*Accepted residual: the library's own record of an unknown issuer.* The library itself records that
+refusal as a `WARN` (`NO_ISSUER_CONFIG`) under its own logger, and that record carries the `iss` of
+the presented token unescaped. The back-channel endpoint is unauthenticated, so anyone who can reach
+it can place a value of their choosing in that record, line breaks included. The gateway has no
+setting that suppresses or rewrites the record, and the same record already appears for a bearer
+token from an unknown issuer. The operator accepted the record as it is (decision of 2026-11-25): there
+is no gateway-side pre-check of the `iss` and no suppression. Log pipelines that treat a record as one
+line should escape what they ingest from the library's logger.
+
 *An RP-initiated logout acts only on a top-level document navigation from a trusted origin.* The
 logout path is matched whatever the method, so a plain link or an image could otherwise end a user's
 session -- one on another site, and equally one in content served under the gateway's own origin,
@@ -3576,7 +3600,12 @@ every other claim valid is accepted (`LogoutTokenValidatorTest`); each of those 
 that destroys nothing (`BackchannelLogoutEndpointTest`, `RefusedSignedTokens`). The same token
 delivered twice destroys once, sixteen deliveries arriving together act once, and a full replay
 memory refuses and remembers nothing (`LogoutTokenReplayGuardTest`; `BackchannelLogoutReceiverTest`,
-`SingleUse`). A logout with `Sec-Fetch-Site: cross-site` and no `Origin` is answered the `200`
+`SingleUse`). A really signed `sid`-only token is verified by the engine's signature-only entry point
+and accepted, while the ID-token pipeline refuses the same token; a tampered signature, a malformed
+token, a token string over the library limit and a token from an issuer whose key set is not reported
+usable are refused; and a logout token from an unknown issuer is refused with no gateway record
+carrying a raw line break or bidi control and no gateway record above `DEBUG` naming the issuer
+(`BackchannelLogoutSignatureSeamTest`). A logout with `Sec-Fetch-Site: cross-site` and no `Origin` is answered the `200`
 confirmation page carrying `no-store`, `frame-ancestors 'none'`, `X-Frame-Options: DENY` and a form
 posting to the logout path, the session still resolves afterwards and the identity provider is not
 called, while a same-origin top-level document navigation, and a confirmation `POST` with a trusted
@@ -3681,6 +3710,13 @@ resolving `token_relay: false` while its `forward.headers_allow` names `Authoriz
 refused at boot, because that list would re-admit the browser's own `Authorization` header to the
 same origin. The cookie-mode seal also carries the session's active and granted scope sets; scope
 names are not credentials and are printed as-is where the payload's `toString()` redacts the tokens.
+
+*The user-info endpoint discloses claims, never token material.* It reads the session's ID token only
+after the engine has validated it, and then reads its claims through the token library's raw-claims
+view, `TokenValidator#getRawClaims`: an unmodifiable map in the claims' native JSON types, with a
+top-level `null` claim omitted, parsed under the library's bounds (the token-string limit, the JSON
+nesting and array-size bounds), so a token beyond them is refused whole rather than partly
+disclosed. Every claim then passes the operator's `allowed_claims` cap.
 
 *Status:* COVERED.
 

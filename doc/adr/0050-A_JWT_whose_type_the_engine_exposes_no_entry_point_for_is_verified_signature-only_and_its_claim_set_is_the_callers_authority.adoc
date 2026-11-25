@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A JWT of a type the token-validation engine exposes no entry point for is verified through a signature-only path — the engine's own ID-token pipeline minus its final claim-validation stage — and every claim rule of that token's own specification is enforced by the caller, which becomes the single authority over its type's claim set; the trust boundary is unmoved because signature, issuer-configuration and header-posture checks all still run, and only ID-token claim semantics are dropped.
+// summary: A JWT of a type the token-validation engine exposes no entry point for is verified through a signature-only path — the engine's own ID-token pipeline minus its final claim-validation stage, published since token-sheriff 0.9.10 as TokenValidator#verifySignature — and every claim rule of that token's own specification is enforced by the caller, which becomes the single authority over its type's claim set; the trust boundary is unmoved because signature, issuer-configuration and header-posture checks all still run, and only ID-token claim semantics are dropped.
 // tags: token-validation, jwt, bff, back-channel-logout, oidc, engine-seam, trust-boundary, claim-validation, layering
 // affects: api-sheriff
 // supersedes:
@@ -41,17 +41,22 @@ settles how the gateway uses that separation.
 === The decision
 
 A JWT whose type the engine exposes no entry point for is verified signature-only, and its claim set is the caller's authority.
-`SignatureOnlyTokenVerifier` runs the engine's own ID-token pipeline minus its final claim-validation stage, over the same per-issuer
-collaborators the bearer path uses:
+Since token-sheriff 0.9.10 the engine publishes that path itself: `TokenValidator#verifySignature(String)` runs the engine's own
+ID-token pipeline minus its final claim-validation stage, inside the gateway's one validator and therefore over the same issuers and
+JWKS loaders the bearer path uses:
 
+. Check the token string against the engine's token-string limits.
 . Decode the token, with size, structure and base64 bounds from the engine's parser.
-. Resolve the configured issuer by the token's `iss`, and reject an unknown or disabled issuer.
+. Resolve the configured issuer by the token's `iss` through the engine's issuer cache, which rejects an unknown or disabled issuer
+  and one whose key set is not reported usable.
 . Run the engine's header validator: algorithm posture and issuer agreement in the JWT header.
 . Run the engine's signature validator: the cryptographic check against that issuer's JWKS.
-. Run the engine's token builder, which maps the verified body into claims and validates nothing.
+. Map the verified body into claims, validating nothing, and return a `SignatureVerifiedToken` carrying the mapped claims, the
+  native-JSON raw claims and the protected header's `typ`.
 
-Construction resolves the per-issuer collaborators once, so a request allocates none of them. The path increments the same shared
-security-event counter as the bearer path, so a rejection here counts exactly as one there.
+The path increments the same shared security-event counter as the bearer path, so a rejection here counts exactly as one there, and a
+success is counted as `SIGNATURE_ONLY_VERIFIED`. The gateway's own verifier class, which assembled those pipeline stages from the
+engine's internal classes, was removed with the 0.9.10 adoption.
 
 === The caller owns everything the omitted stage enforced
 
@@ -59,6 +64,11 @@ Issuer equality, audience, freshness and the token's own required claims move to
 component becomes the single authority over its type's claim set. This is the property the decision buys: one place to read the back-channel
 logout claim rules, and one place a specification revision lands. For the logout token that component is `LogoutTokenValidator`. It also judges
 the `typ` header value the verifier returns beside the claims.
+
+token-sheriff 0.9.10 also ships a logout-token validator of its own (`logout.LogoutTokenValidator`). The gateway does not adopt it, and this
+record's division of authority stands: the released validator runs the same checks in the same order, but its `events` check refuses an `events`
+claim carried as a JSON string, which the gateway's validator accepts and its tests pin, so the replacement is not one-to-one. It is also stricter
+at four further edges: a whitespace-padded `typ`, a blank or `null` `sub` beside a valid `sid`, a non-string `jti`, and a blank `nonce`.
 
 === The trust boundary does not move
 
@@ -74,8 +84,13 @@ token. The name states what the type states.
 === The gateway sanitizes the issuer before it reaches a diagnostic
 
 The unknown-issuer rejection echoes the issuer identifier. Without it an operator cannot tell a typo in the gateway configuration from a token minted
-elsewhere. At that moment the value is unverified and caller-supplied, and the message reaches a log on an unauthenticated path. The gateway therefore
-strips control characters and bounds the value before interpolation. That closes the log-injection vector (CWE-117) and keeps the diagnostic.
+elsewhere. At that moment the value is unverified and caller-supplied, and the message reaches a log on an unauthenticated path. The engine's
+rejection quotes the value verbatim, so the gateway sanitizes the message where it logs it: the back-channel logout receiver writes the rejection at
+`DEBUG` through the engine's `ErrorTextSanitizer`, which escapes line breaks, U+2028/U+2029 and bidi controls and bounds the length, and does not attach
+the exception. That closes the log-injection vector (CWE-117) at the gateway's own record and keeps the diagnostic.
+
+The engine's issuer cache also writes its own `WARN` naming the unknown issuer, as it does for a bearer token naming one. That record is the library's,
+and since 0.9.10 the logout path reaches it as the bearer path already did.
 
 === The issuer collaborators stay the gateway's own
 
@@ -140,8 +155,8 @@ local.
 === Accepted costs
 
 * The verifier returns claims nothing has validated. Its safety is a property of its callers, and the type system cannot enforce that a caller validates.
-* The split is a maintenance obligation in two places. A change to the engine's pipeline stages must be reflected here, and the "ID-token pipeline minus its last stage"
-  equivalence holds by construction, not by derivation from the engine.
+* Up to token-sheriff 0.9.9 the split was a maintenance obligation in two places, because the gateway assembled the pipeline stages itself. From 0.9.10 the engine
+  owns the signature-only path, so a change to its stages reaches this path with no local change.
 * The gateway carries the back-channel logout claim rules itself. A specification revision is a gateway change, not a dependency upgrade.
 
 === Risks
