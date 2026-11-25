@@ -626,3 +626,94 @@ stays in `epic.md`. These three bullets record the first cut and why it was made
 - **PLAN-31's `surface_delta` is `unmeasured`** (the landing supplied no declared or realized paths), so the realized
   footprint was not reconciled by the machine; this analysis read the diff's six files by hand (all declared). — trigger:
   none; source: `landings/PLAN-31.md`
+
+## Cleanup of 2026-11-22 at 226d9f3a and the PLAN-33-only emit
+
+- 2026-11-22 — **Cleanup at `226d9f3a` (worktree rebased onto `origin/main`, 48 commits after the last pass), then `next`.**
+  Re-ground of the three staged specs by three read-only leaves, one per spec: 58 claims (PLAN-20 7, PLAN-33 29, PLAN-34 22),
+  42 corroborated, 11 unverifiable (TokenSheriff-side or live-IdP), 5 contradicted and rescoped in the spec (PLAN-20 the replay
+  buffer, PLAN-33 two, PLAN-34 two), 0 blocking. **Applied:** a dated re-grounding banner under `## Expected Surface` of each of
+  the three specs (next free ADR **0083**, next free WARN id **153**; every line anchor stale, locate by symbol) and 7, 5 and 16
+  surface entries added, verified by membership in `claimed[]`; PLAN-34's two unresolved entries (bare file names) were fixed
+  by re-writing them as full paths (`indeterminate_count` 0 before and after, all 22 specs `declarative`). **Declined:**
+  nothing superseded or merged (no source-origin match, no live plan, gate population empty); `declaration: none named` on the three
+  staged specs is flagged, not applied: it has no gate effect (`emit_allowed: true`) and the lane's outline resolves skills.
+  Settled-narrative relocation done on the operator's confirmation: five Decisions entries (2026-11-09 and 2026-11-10: the cleanup,
+  PLAN-26 and PLAN-29 landings, the PLAN-21 hold and its supersede) moved verbatim to `settled.md`. Compaction ok (22 rows, 22
+  specs, 22 pointers); archive drain refused; restart `indeterminate` only on `registry_parity` (the executor is 0.1.2106, the
+  registry pins 0.1.2184: regenerate the executor).
+  **Emit.** `parallelization_scope` 2, nothing in flight, so two slots. PLAN-20 and PLAN-33 both pass the prep-ready, declared and
+  disjointness tests and the cross-check is determinate, but they share 14 files, so the overlap prompt was asked: the operator
+  chose **PLAN-33 only**, PLAN-20 held until PLAN-33 lands (recommended option; alternatives offered: both, or PLAN-20 only).
+  PLAN-33 is recorded `launched` (`auto_emit` is true); it is not recorded `running`. PLAN-34 stays staged and BLOCKED: no
+  TokenSheriff 0.9.10 tag exists (tags end at 0.9.9) and it depends on PLAN-33.
+
+## Cleanup, handle-open and the 0.9.10 release and bump of 2026-11-23
+
+- 2026-11-23 — **Cleanup then `handle-open` (threshold 90, knob).** Cleanup: corpus reconciles both ways (22 rows, 22 specs), no
+  Done-when finding, no duplication; the A1 re-ground of PLAN-20 and PLAN-34 is DEFERRED until PLAN-33 lands (they share 14 and 23
+  files with it and it rewrites the claimed surface; PLAN-33 is `running` and excluded). Four settled items relocated verbatim to
+  `settled.md` on the operator's request (the tier-2 inbox drain, the four inert upstream keys, the stale ledger worktree note,
+  PLAN-31 `surface_delta`); compaction ok, 26 pointers. Archive drain refused (no epic-wide quiescence signal). Restart `not_ready`:
+  PLAN-33 running and `registry_parity` (registry 0.1.2139 / 0.1.2184 against executor 0.1.2184). `handle-open`: item 8 (the
+  portal ADR, formerly named ADR-0050) decided by the orchestrator at confidence 93 — retired, the file introduced by #343 is
+  `Accepted` as ADR-0053 (`doc/adr/0053-...adoc:15-17`). The threshold was then lowered to 75 at the operator's request (knob
+  `orchestrator.decision_confidence_threshold`, was 90). Item 1 (PLAN-31's narrower publish rule) was put to the operator, who chose
+  proposal 1: **accept the narrowing in writing**, no re-opening plan; ADR-0063 stays the place the cost is stated. Every other item
+  stays open and is put to the operator one per turn.
+- 2026-11-23 — **0.9.10 bump PR #658 MERGED and `main` pins 0.9.10 (operator session report, checked against GitHub).** Merged
+  2026-11-23T11:40:10Z by the release bot as `4213eb1f`; two commits, `bfbd199d` (the bump) and `d65bcc97` (test fix and BOM-comment
+  re-measure, `BffRuntimeProducerTest.java` and `pom.xml` only). The red CI was a test artefact, not a behaviour change: 0.9.10's
+  `AuthorizationCodeFlow` owns a private, unused `ParClient`, which the test's reflection walk counted. The report also names an
+  infrastructure flake (`generate-mtls-certificates`, `Stream closed`, green on re-run), one timing-test failure under concurrent
+  load that passed in isolation and in CI, and a partial local native run (461 passed, 0 failed, hit the 50-minute limit); the CI
+  integration job is the authoritative run and passed. **This supersedes the same day's entry below for the pin: the "bump cannot merge
+  alone" finding is resolved by the test-only fix, and the PLAN-34 block is now PLAN-33 alone.** Open consequences, none recorded as
+  a defect: (1) PLAN-33's PR #656 was built against the 0.9.9 pin and now sits behind a `main` that pins 0.9.10; its merge state read
+  `CLEAN` when checked, but its CI ran against 0.9.9, so the landing message should say which pin it verified against; (2) PLAN-34 D2
+  must delete the `gatewayParClients` exclusion and its control test when it adopts `authorizePushed`; (3) PLAN-20 re-ground after
+  PLAN-33 is unchanged. Not applied: no PLAN-34 verdicts re-stamped, nothing emitted.
+- 2026-11-23 — **TokenSheriff 0.9.10 released (operator report, verified); inbox drain found nothing.** The epic inbox is empty
+  and PLAN-33's landing is still owed (`awaiting_plans: PLAN-33`, PR #656 open and clean, 44 files, no `pom.xml`). The release is
+  real: tag `0.9.10` published 2026-11-23T07:17:44Z, `token-sheriff-bom` 0.9.10 is on Maven Central. `main` (`1f6dbfec`) still
+  pins 0.9.9; the release workflow's bump PR #658 is open and RED on `BffRuntimeProducerTest` (the assembled runtime now reaches two
+  pushed-authorization-request clients, not one), so it cannot merge by itself. **Applied:** dated release banner in PLAN-34's
+  `## Expected Surface`, the PLAN-34 queue annotation, the resume anchor. **Not applied:** PLAN-34's 22 verdicts are not re-stamped
+  (the 7 unverifiable TokenSheriff-side claims need the resolved jar, which the verify-first gate reads at outline), PLAN-34 is not
+  emitted, and PLAN-20 stays held. PLAN-34's order against PLAN-33 is unchanged: PLAN-33 lands first, since both touch
+  `BffRuntimeProducer` and the dependency decision of PLAN-33 D4.
+
+## Batch B of the 2026-11-23 handle-open pass
+
+- 2026-11-23 — **Batch B (operator: B1:1, B2:1, B3:1).** **B1:** eight release and downstream watches retired on the operator's
+  confirmation that the 0.2.2 release-note and downstream actions are done (an operator-confirmed account, not re-read by the
+  orchestrator; the 0.2.4 downstream report backs the notification half). One residual of the 0.2.4 report was kept as its own
+  open watch (reserved-path defaults outside a build-time context path; Keycloak's extra `302`). **B2:** four entries on unobserved
+  main-branch runs stay open, marked awaiting the operator's Actions check; the orchestrator cannot read push runs, and the
+  operator has not yet reported any result. **B3:** seven entries accepted as outside this epic, each marked with where it is
+  tracked; none retired or relocated. Open-item count after this batch: the product-gap defects and watches (batch C) remain.
+
+## PLAN-34 emission, PLAN-33 landing and batch B2 (2026-11-24)
+
+- 2026-11-24 — **Emit: PLAN-34 alone (operator answer to the overlap prompt).** `parallelization_scope` 2, nothing in flight, so two
+  slots. PLAN-20 and PLAN-34 both pass the prep-ready test (no blocking verdict; every claim of both is stale after #656, and
+  staleness never blocks), the declared test (both spec-skills declarations flagged only, `emit_allowed`) and the disjointness test
+  against in-flight work (none). Emitting both would have shared 36 files; the operator chose PLAN-34 only. `auto_emit` is true, so
+  PLAN-34 is recorded `launched`; launched to running stays operator-owned. PLAN-20 stays held: re-ground against the new `main`, take
+  its outline decision, call the step-up result verifier. The re-ground of PLAN-34 is its own first step (verify-first read of the
+  resolved 0.9.10 jar), as the Queue annotations say.
+- 2026-11-24 — **`analyze`: PLAN-33 landed (#656, `6ea8bf31`) and was reconciled.** One inbox landing drained (incomplete at three
+  optional-class keys, recorded as an Open Defect), a three-layer read by one read-only leaf, eight points re-read by the orchestrator,
+  the rest recorded as leads. D4 was dropped by design, D1-D3 and D5 met; no blocker. The row is `shipped`, stamped `#656`,
+  `landings/PLAN-33.md`, `plan-33-adapt-to-token-sheriff-0-9-9`. **Fix routing:** the new findings (L3-1 test gap, L3-2 Javadoc, L2-1
+  logout-verifier WARN reason, L2-2 `destroyIfCurrent` test, `@since`, doc wording lag) join the DUE fix plan, which is still
+  unstaged, so the proposed scope grows from nine to **twelve** deliverables (the spec cap), with the five held `RetryingJwksLoader`
+  fixes that were to join later: re-group at staging, or split. The layer-3 defects were reported to the operator in the same turn.
+  **Open consequence for the held fixes:** PLAN-33 changed `RetryingJwksLoader` (`getLoaderStatus`, `settleRefresh` neighbourhood), so
+  the five fixes of item 2 must be re-read against the merged file at PLAN-34's re-ground before they are routed. **PLAN-34 and PLAN-20:**
+  every claim of both is now stale against the new `main`; both need the verify-first re-ground, PLAN-34 against the resolved 0.9.10 jar.
+- 2026-11-24 — **Batch B2 closed by the operator's Actions check.** The operator ran `.plan/temp/check-main-runs.sh`. Maven Build is
+  GREEN with `deploy-snapshot` success on `5aa17338`, `3e3addc`, `69b322b`, `c1b09c7`, `f6067588` and `ad00807d`; Integration Tests
+  is GREEN on `5aa17338`. Those four entries are retired in place. **Kept open (two residuals):** PLAN-18's Integration Tests run
+  `35917940826` is RED (the known infrastructure failure, no test executed; re-run or accept as unverifiable), and the PLAN-26 lane
+  wall-clock figure. The orchestrator did not read the runs itself; the account is the operator's output.
