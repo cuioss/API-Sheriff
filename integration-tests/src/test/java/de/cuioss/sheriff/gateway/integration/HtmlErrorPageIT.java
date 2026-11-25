@@ -29,6 +29,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -59,7 +61,9 @@ import org.junit.jupiter.api.Test;
  *   <li>{@code Accept: application/json} keeps the exit's current shape —
  *       {@code application/problem+json} where the exit renders one — and never the page.</li>
  * </ul>
- * The status is identical on both legs: negotiation changes the body, never the status. The error
+ * The status is identical on both legs: negotiation changes the body, never the status. Both legs name
+ * {@code Accept} as a token of {@code Vary}, because which of the two answers depends on it — and so
+ * does the wildcard control below, whose exit is just as negotiable. The error
  * classes exercised are the ones the IT stack can reach: an unrouted address ({@code 404}), a body
  * over the route cap (answered to the untrusted caller as the unrouted {@code 404}, ADR-0073), an
  * upstream the gateway cannot dial ({@code 502}), an upstream that
@@ -460,7 +464,24 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
                 () -> assertTrue(body.contains(PortalIT.OPERATOR_TEMPLATE_MARKER),
                         "the page renders through the operator template; body: " + body),
                 () -> assertTrue(body.contains("data-status=\"" + status + "\""),
-                        "the page names the preserved status in its error block; body: " + body));
+                        "the page names the preserved status in its error block; body: " + body),
+                () -> assertVariesOnAccept(response));
+    }
+
+    /**
+     * Asserts that a negotiable exit's answer names {@code Accept} in {@code Vary}: which variant answers
+     * depends on it, so a shared cache must key on it. The field is matched as one comma-separated token
+     * of any {@code Vary} line, case-insensitively, so {@code Accept} merged beside {@code Origin} or
+     * {@code Cookie} counts, while a token that merely contains it — {@code Accept-Encoding} — does not.
+     */
+    private static void assertVariesOnAccept(ExtractableResponse<Response> response) {
+        List<String> vary = response.headers().getValues("Vary");
+        boolean namesAccept = vary.stream()
+                .flatMap(line -> Arrays.stream(line.split(",")))
+                .map(String::strip)
+                .anyMatch("Accept"::equalsIgnoreCase);
+        assertTrue(namesAccept, () -> "a negotiable error answer must name Accept in Vary, for the HTML page and "
+                + "the JSON variant alike; Vary was " + vary);
     }
 
     private static void assertCurrentShape(ExtractableResponse<Response> response, int status, boolean problemJson) {
@@ -476,7 +497,8 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
                         assertTrue(contentType(response).startsWith(PROBLEM_JSON),
                                 "this exit renders RFC 9457 problem+json; content type was " + response.contentType());
                     }
-                });
+                },
+                () -> assertVariesOnAccept(response));
     }
 
     /**
