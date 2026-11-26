@@ -98,9 +98,11 @@ public final class ConfigLogMessages {
 
         /**
          * An issuer's JWKS key set was loaded after its first load failed, either by a gateway retry
-         * or because the token library's own background refresh recovered it before the first retry
-         * ran and that retry kept the recovered key set (the retry count is then 0), so the issuer's
-         * tokens can be validated again and readiness no longer counts it as missing.
+         * or because the token library's own background refresh recovered the current key set before
+         * the next retry ran and that retry kept it instead of replacing it. In the second case the
+         * retry count is the number of retries that had already run, 0 when the recovery came before
+         * the first. Either way the issuer's tokens can be validated again and readiness no longer
+         * counts it as missing.
          * <p>
          * The pair to {@link WARN#JWKS_KEY_SET_RETRY}: that record announces every scheduled retry,
          * this one closes the episode. The template carries the configured issuer <em>name</em> and
