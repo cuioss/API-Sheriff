@@ -201,17 +201,24 @@ did not happen.
 *One creating write and two updating writes.*
 
 * `bind` creates a session. It is the login's write.
-* `persist` updates a session that already exists, and never creates one. It is the refresh's write.
-* `persistReissuingCookie` updates the session as `persist` does and also re-issues the value the
-  browser holds. It is the write of a step-up or a widening
+* `persist` updates a session that already exists, and never creates one. It is the refresh's write,
+  and it names the record it was computed from.
+* `persistReissuingCookie` updates a session that already exists, never creates one, and also
+  re-issues the value the browser holds. It is the write of a step-up or a widening
   (link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 
 Neither updating write extends the absolute lifetime. A binding that can observe that the session was
 destroyed since the caller resolved it writes nothing and reports the session gone. In server mode
-the store checks for the session and replaces its record in one atomic step, under the lock every
-destroy takes. A logout therefore precedes the check, and nothing is written, or it follows the
-write and removes the result. Both callers treat a session reported gone as ended, and neither ends
-it a second time. The widening callback answers its terminal `403` and stores nothing. The refresh
+the store checks and replaces in one atomic step, under the lock every destroy takes. A logout
+therefore precedes the check, and nothing is written, or it follows the write and removes the result.
+The two writes check different things. `persistReissuingCookie` checks presence only. `persist`
+writes only while the stored record is still the one it was computed from, so a widening or a step-up
+that replaced the record in between is reported as *superseded* and is not overwritten: when a
+refresh and a widening of one session overlap, the refresh gives way. The refused refresh's
+destruction, `destroyIfCurrent`, names its basis the same way, so it does not destroy the record a
+widening has just written
+(link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
+Both callers treat a session reported gone as ended, and neither ends it a second time. The widening callback answers its terminal `403` and stores nothing. The refresh
 coordinator answers the request as *no session*, without a clearing cookie -- one could delete the
 cookie a login callback has just set for a replacement session -- and abandons the refresh token the
 exchange returned without revoking it: the refresh lost a race to the destruction, and a session that

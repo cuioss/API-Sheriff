@@ -97,8 +97,10 @@ observed through different result types:
   a `SessionBinding.PersistResult`: `Written` when it wrote the session, `Gone` when the binding
   observed that the session no longer exists, and `Superseded` when it observed that the session's
   record is no longer that basis because a widening or a step-up replaced it. In server mode
-  `ServerSessionBinding` answers `Gone` when a logout destroyed the session after the caller resolved
-  it and `Superseded` when a widening replaced the record; on either, `TokenRefreshCoordinator`
+  `ServerSessionBinding` answers `Gone` when something destroyed the session after the caller
+  resolved it -- a logout, a back-channel logout, a login callback that replaced the session, an
+  expiry sweep or an eviction -- and `Superseded` when a widening or a step-up replaced the record;
+  on either, `TokenRefreshCoordinator`
   answers the request as no session and sends no clearing cookie. `CookieSessionBinding` holds nothing
   a logout or a widening could have changed, so it ignores the basis, always re-seals and always
   answers `Written` -- a refresh that was in flight during a logout still produces a session cookie.
