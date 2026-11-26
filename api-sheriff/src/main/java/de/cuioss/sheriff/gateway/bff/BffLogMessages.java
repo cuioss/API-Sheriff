@@ -174,13 +174,9 @@ public final class BffLogMessages {
         /**
          * A back-channel logout token was rejected. Records the non-sensitive rejection disposition
          * only — never the raw logout token, the subject, or the IdP {@code sid}. The accepted set of
-         * dispositions is closed and enumerated by
-         * {@code de.cuioss.sheriff.gateway.bff.logout.LogoutRejection}: {@code no-idp-destruction-capability},
-         * {@code missing-logout-token}, {@code signature-rejected}, {@code key-source-unavailable},
-         * {@code type-mismatch},
-         * {@code issuer-mismatch}, {@code audience-mismatch}, {@code iat-outside-window},
-         * {@code expired}, {@code events-missing}, {@code nonce-present}, {@code no-sub-or-sid},
-         * {@code jti-missing}, {@code replayed}, {@code replay-memory-full}.
+         * dispositions is closed: the substitution is always the fixed token of one member of
+         * {@link de.cuioss.sheriff.gateway.bff.logout.LogoutRejection}, which is the authoritative list of
+         * the dispositions and what each one means.
          * <p>
          * <strong>Latched per disposition.</strong> The back-channel path is reserved and
          * unauthenticated, so the record is emitted only on the FIRST occurrence of each disposition
@@ -370,10 +366,12 @@ public final class BffLogMessages {
          * The gateway's own session was already ended and the logout completed as usual; the refresh
          * token stays valid at the identity provider until it expires.
          * <p>
-         * The only substitution is the reason, a closed set: {@code provider-discovery} (the provider
-         * metadata the request needs could not be obtained) or {@code revocation-request} (the
-         * revocation request itself failed — a transport failure, an egress refusal or a non-success
-         * answer). The record is logged without a throwable, so it carries no other value — never the
+         * The only substitution is the reason, the fixed token of one member of a closed set: the
+         * reasons and what each one means are defined by
+         * {@code de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout.RevocationFailureReason}, a
+         * package-private member of {@link de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout}, which
+         * classifies a failure into its reason by type alone. The record is logged without a throwable, so
+         * it carries no other value — never the
          * refresh token, the session id, the subject, or the identity provider's answer, whose text is
          * not sanitised. A {@code DEBUG} line written beside it names the exception types of the
          * failure's cause chain and carries neither the throwable nor any exception message.

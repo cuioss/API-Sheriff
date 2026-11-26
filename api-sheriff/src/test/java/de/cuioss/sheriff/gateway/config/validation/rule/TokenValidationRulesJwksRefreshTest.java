@@ -24,10 +24,12 @@ import java.nio.file.Files;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.BiConsumer;
 import java.util.regex.MatchResult;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -72,7 +74,9 @@ import org.junit.jupiter.params.provider.MethodSource;
  * The {@code IssuerConfig.Jwks} Javadoc renders every range from the public bound constants of
  * {@link TokenValidationRules} rather than restating it, and {@link DocumentedRange} holds the contract
  * literal, the constant, the enforced bound and the Javadoc reference to one another, so a bound or its
- * documentation drifting alone turns this class red.
+ * documentation drifting alone turns this class red. Each key's references are looked for inside that
+ * key's own {@code @param} section only, so two keys' references exchanged with each other are reported
+ * although every reference still appears somewhere in the Javadoc.
  */
 @EnableGeneratorController
 @DisplayName("ConfigValidator — jwks refresh keys: ranges and file-source refusal")
@@ -83,41 +87,42 @@ class TokenValidationRulesJwksRefreshTest {
     private static final String JWKS_URL = "https://idp.example/jwks";
 
     /**
-     * One of the four keys under test: its spelling, its admitted range as the contract literal, the
-     * stem of the public bound constants the {@code IssuerConfig.Jwks} Javadoc renders, the values of
-     * those constants, and its builder setter.
+     * One of the four keys under test: its spelling, the {@code IssuerConfig.Jwks} record component whose
+     * {@code @param} section documents it, its admitted range as the contract literal, the stem of the
+     * public bound constants that section renders, the values of those constants, and its builder setter.
      */
     enum RefreshKey {
 
-        REFRESH_INTERVAL("refresh_interval_seconds", 60, 86_400, "REFRESH_INTERVAL",
+        REFRESH_INTERVAL("refresh_interval_seconds", "refreshIntervalSeconds", 60, 86_400,
             TokenValidationRules.REFRESH_INTERVAL_MIN_SECONDS, TokenValidationRules.REFRESH_INTERVAL_MAX_SECONDS,
             IssuerConfig.Jwks.JwksBuilder::refreshIntervalSeconds),
-        GRACE_PERIOD("key_rotation_grace_period_seconds", 0, 3_600, "KEY_ROTATION_GRACE_PERIOD",
+        KEY_ROTATION_GRACE_PERIOD("key_rotation_grace_period_seconds", "keyRotationGracePeriodSeconds", 0, 3_600,
                 TokenValidationRules.KEY_ROTATION_GRACE_PERIOD_MIN_SECONDS,
                 TokenValidationRules.KEY_ROTATION_GRACE_PERIOD_MAX_SECONDS,
                 IssuerConfig.Jwks.JwksBuilder::keyRotationGracePeriodSeconds),
-        UNKNOWN_KID_WINDOW("unknown_kid_refresh_window_seconds", 5, 3_600, "UNKNOWN_KID_REFRESH_WINDOW",
+        UNKNOWN_KID_REFRESH_WINDOW("unknown_kid_refresh_window_seconds", "unknownKidRefreshWindowSeconds", 5, 3_600,
                 TokenValidationRules.UNKNOWN_KID_REFRESH_WINDOW_MIN_SECONDS,
                 TokenValidationRules.UNKNOWN_KID_REFRESH_WINDOW_MAX_SECONDS,
                 IssuerConfig.Jwks.JwksBuilder::unknownKidRefreshWindowSeconds),
-        MAX_STALENESS("max_staleness_seconds", 60, 604_800, "MAX_STALENESS",
+        MAX_STALENESS("max_staleness_seconds", "maxStalenessSeconds", 60, 604_800,
                 TokenValidationRules.MAX_STALENESS_MIN_SECONDS, TokenValidationRules.MAX_STALENESS_MAX_SECONDS,
                 IssuerConfig.Jwks.JwksBuilder::maxStalenessSeconds);
 
         private final String key;
+        private final String component;
         private final int minimum;
         private final int maximum;
-        private final String constantStem;
         private final int documentedMinimum;
         private final int documentedMaximum;
         private final BiConsumer<IssuerConfig.Jwks.JwksBuilder, Integer> setter;
 
-        RefreshKey(String key, int minimum, int maximum, String constantStem, int documentedMinimum,
-                int documentedMaximum, BiConsumer<IssuerConfig.Jwks.JwksBuilder, Integer> setter) {
+        RefreshKey(String key, String component, int minimum, int maximum,
+                int documentedMinimum, int documentedMaximum,
+                BiConsumer<IssuerConfig.Jwks.JwksBuilder, Integer> setter) {
             this.key = key;
+            this.component = component;
             this.minimum = minimum;
             this.maximum = maximum;
-            this.constantStem = constantStem;
             this.documentedMinimum = documentedMinimum;
             this.documentedMaximum = documentedMaximum;
             this.setter = setter;
@@ -125,12 +130,12 @@ class TokenValidationRulesJwksRefreshTest {
 
         /** The name of the public constant carrying the lower bound the Javadoc renders. */
         String minimumConstant() {
-            return constantStem + "_MIN_SECONDS";
+            return name() + "_MIN_SECONDS";
         }
 
         /** The name of the public constant carrying the upper bound the Javadoc renders. */
         String maximumConstant() {
-            return constantStem + "_MAX_SECONDS";
+            return name() + "_MAX_SECONDS";
         }
 
         /** The production key of the same spelling; the completeness guard proves there is exactly one. */
@@ -309,8 +314,9 @@ class TokenValidationRulesJwksRefreshTest {
      * {@link TokenValidationRules} through {@code {@value}} instead of restating the numbers. These cases
      * tie the three places a bound lives together: the contract literal of {@link RefreshKey}, the public
      * constant the Javadoc renders, and the {@link TokenValidationRules.JwksRefreshKey} bound the rule
-     * enforces — and they hold the Javadoc to referencing the constants, so neither a bound nor its
-     * documentation can drift from the others without a red build.
+     * enforces — and they hold each key's own {@code @param} section of the Javadoc to referencing that
+     * key's constants, so neither a bound nor its documentation can drift from the others, and no two keys'
+     * references can be exchanged, without a red build.
      */
     @Nested
     @DisplayName("the IssuerConfig.Jwks Javadoc renders each enforced range instead of restating it")
@@ -325,6 +331,9 @@ class TokenValidationRulesJwksRefreshTest {
         /** Follows the Javadoc of the nested {@code Jwks} record. */
         private static final String JWKS_JAVADOC_END = "public record Jwks(";
 
+        /** Closes a Javadoc comment. */
+        private static final String JAVADOC_CLOSE = "*/";
+
         private static final String VALUE_REFERENCE =
                 "{@value de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules#%s}";
 
@@ -334,6 +343,9 @@ class TokenValidationRulesJwksRefreshTest {
         /** A range stated by hand: a digit following {@code range:}, whatever whitespace separates them. */
         private static final Pattern HAND_WRITTEN_RANGE = Pattern.compile("(?i)range:\\s*\\d[\\d_,]*");
 
+        /** A block tag opening a line of a Javadoc text whose line prefixes are already stripped. */
+        private static final Pattern BLOCK_TAG = Pattern.compile("(?m)^@\\w+");
+
         private static String jwksJavadoc() throws IOException {
             String source = Files.readString(RepositoryRoot.holding(ISSUER_CONFIG_SOURCE).resolve(ISSUER_CONFIG_SOURCE));
             int start = source.indexOf(JWKS_JAVADOC_START);
@@ -341,7 +353,42 @@ class TokenValidationRulesJwksRefreshTest {
             int end = source.indexOf(JWKS_JAVADOC_END, start);
             assertTrue(end > start,
                     () -> ISSUER_CONFIG_SOURCE + " carries no " + JWKS_JAVADOC_END + " after the Javadoc");
-            return JAVADOC_LINE_PREFIX.matcher(source.substring(start, end)).replaceAll("");
+            int close = source.lastIndexOf(JAVADOC_CLOSE, end);
+            assertTrue(close > start,
+                    () -> ISSUER_CONFIG_SOURCE + " carries no " + JAVADOC_CLOSE + " closing the Javadoc");
+            return JAVADOC_LINE_PREFIX.matcher(source.substring(start, close)).replaceAll("");
+        }
+
+        /**
+         * The {@code @param} section of one record component: from its {@code @param} tag up to the next
+         * block tag, or to the end of the Javadoc when no block tag follows.
+         *
+         * @param javadoc   the Javadoc text, its line prefixes already stripped
+         * @param component the record component the section documents
+         * @return the section, or empty when the Javadoc documents no such component
+         */
+        static Optional<String> paramSection(String javadoc, String component) {
+            Matcher tag = Pattern.compile("(?m)^@param\\s+" + Pattern.quote(component) + "\\b").matcher(javadoc);
+            if (!tag.find()) {
+                return Optional.empty();
+            }
+            Matcher next = BLOCK_TAG.matcher(javadoc);
+            int end = next.find(tag.end()) ? next.start() : javadoc.length();
+            return Optional.of(javadoc.substring(tag.start(), end));
+        }
+
+        /**
+         * The bound references of one key a Javadoc text fails to carry.
+         *
+         * @param text the text searched, a whole Javadoc or one {@code @param} section of it
+         * @param key  the key whose two bound references are looked for
+         * @return the missing references, lower bound first; empty when both are present
+         */
+        static List<String> missingBoundReferences(String text, RefreshKey key) {
+            return Stream.of(key.minimumConstant(), key.maximumConstant())
+                    .map(VALUE_REFERENCE::formatted)
+                    .filter(reference -> !text.contains(reference))
+                    .toList();
         }
 
         /**
@@ -370,18 +417,85 @@ class TokenValidationRulesJwksRefreshTest {
                             () -> "the enforced upper bound of " + production + " drifted from the contract literal"));
         }
 
-        @ParameterizedTest(name = "{0}: the Javadoc renders both bounds from their constants")
+        @ParameterizedTest(name = "{0}: its own @param section renders both bounds from their constants")
         @EnumSource(RefreshKey.class)
         void theJavadocRendersBothBoundsFromTheirConstants(RefreshKey key) throws Exception {
             String javadoc = jwksJavadoc();
 
+            String section = paramSection(javadoc, key.component).orElseGet(() -> fail(
+                    "the IssuerConfig.Jwks Javadoc carries no @param " + key.component + " section documenting "
+                            + key.key));
+
+            List<String> missing = missingBoundReferences(section, key);
+            assertEquals(List.of(), missing,
+                    () -> "the @param " + key.component + " section of the IssuerConfig.Jwks Javadoc must render "
+                            + "both bounds of " + key.key + " from their own constants; missing: " + missing);
+        }
+
+        @Test
+        @DisplayName("two keys' exchanged references are reported per section, not by the whole Javadoc (matched negative control)")
+        void reportsReferencesExchangedBetweenTwoKeys() {
+            String exchanged = JAVADOC_LINE_PREFIX.matcher("""
+                     * Key material for signature verification.
+                     *
+                     * @param refreshIntervalSeconds
+                     *        the refresh interval. Admitted range:
+                     *        %s
+                     *        to
+                     *        %s.
+                     * @param maxStalenessSeconds
+                     *        the staleness bound. Admitted range:
+                     *        %s
+                     *        to
+                     *        %s.
+                     * @since 1.0
+                    """.formatted(
+                    VALUE_REFERENCE.formatted(RefreshKey.MAX_STALENESS.minimumConstant()),
+                    VALUE_REFERENCE.formatted(RefreshKey.MAX_STALENESS.maximumConstant()),
+                    VALUE_REFERENCE.formatted(RefreshKey.REFRESH_INTERVAL.minimumConstant()),
+                    VALUE_REFERENCE.formatted(RefreshKey.REFRESH_INTERVAL.maximumConstant()))).replaceAll("");
+            List<String> refreshIntervalReferences = List.of(
+                    VALUE_REFERENCE.formatted(RefreshKey.REFRESH_INTERVAL.minimumConstant()),
+                    VALUE_REFERENCE.formatted(RefreshKey.REFRESH_INTERVAL.maximumConstant()));
+            List<String> maxStalenessReferences = List.of(
+                    VALUE_REFERENCE.formatted(RefreshKey.MAX_STALENESS.minimumConstant()),
+                    VALUE_REFERENCE.formatted(RefreshKey.MAX_STALENESS.maximumConstant()));
+
+            String refreshIntervalSection = paramSection(exchanged, RefreshKey.REFRESH_INTERVAL.component)
+                    .orElseThrow();
+            String maxStalenessSection = paramSection(exchanged, RefreshKey.MAX_STALENESS.component).orElseThrow();
+
             assertAll(
-                    () -> assertTrue(javadoc.contains(VALUE_REFERENCE.formatted(key.minimumConstant())),
-                            () -> "the IssuerConfig.Jwks Javadoc must render the lower bound of " + key.key
-                                    + " as " + VALUE_REFERENCE.formatted(key.minimumConstant())),
-                    () -> assertTrue(javadoc.contains(VALUE_REFERENCE.formatted(key.maximumConstant())),
-                            () -> "the IssuerConfig.Jwks Javadoc must render the upper bound of " + key.key
-                                    + " as " + VALUE_REFERENCE.formatted(key.maximumConstant())));
+                    () -> assertEquals(List.of(), missingBoundReferences(exchanged, RefreshKey.REFRESH_INTERVAL),
+                            "the whole-Javadoc search finds every exchanged reference and so reports nothing"),
+                    () -> assertEquals(List.of(), missingBoundReferences(exchanged, RefreshKey.MAX_STALENESS),
+                            "the whole-Javadoc search finds every exchanged reference and so reports nothing"),
+                    () -> assertEquals(refreshIntervalReferences,
+                            missingBoundReferences(refreshIntervalSection, RefreshKey.REFRESH_INTERVAL),
+                            "the refresh-interval section must be reported for both of its own references"),
+                    () -> assertEquals(maxStalenessReferences,
+                            missingBoundReferences(maxStalenessSection, RefreshKey.MAX_STALENESS),
+                            "the max-staleness section must be reported for both of its own references"),
+                    () -> assertFalse(maxStalenessSection.contains("@since"),
+                            "a section must end at the next block tag"));
+        }
+
+        @Test
+        @DisplayName("a section ends at the end of the Javadoc, and an undocumented component has none")
+        void endsASectionAtTheEndOfTheJavadocAndReportsAnAbsentOne() {
+            String lastSection = JAVADOC_LINE_PREFIX.matcher("""
+                     * @param maxStalenessSeconds
+                     *        the staleness bound.
+                    """).replaceAll("");
+
+            Optional<String> present = paramSection(lastSection, RefreshKey.MAX_STALENESS.component);
+            Optional<String> absent = paramSection(lastSection, RefreshKey.REFRESH_INTERVAL.component);
+
+            assertAll(
+                    () -> assertEquals(Optional.of(lastSection), present,
+                            "a section without a following block tag must run to the end of the Javadoc"),
+                    () -> assertEquals(Optional.empty(), absent,
+                            "a component the Javadoc does not document must yield no section"));
         }
 
         @Test
@@ -453,8 +567,8 @@ class TokenValidationRulesJwksRefreshTest {
 
             List<ConfigError> errors = refreshErrors(first, second);
 
-            assertEquals(List.of(RefreshKey.REFRESH_INTERVAL.pointer(0), RefreshKey.UNKNOWN_KID_WINDOW.pointer(0),
-                            RefreshKey.GRACE_PERIOD.pointer(1)),
+            assertEquals(List.of(RefreshKey.REFRESH_INTERVAL.pointer(0), RefreshKey.UNKNOWN_KID_REFRESH_WINDOW.pointer(0),
+                            RefreshKey.KEY_ROTATION_GRACE_PERIOD.pointer(1)),
                     errors.stream().map(ConfigError::pointer).toList(), errors::toString);
         }
 
