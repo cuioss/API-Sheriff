@@ -127,17 +127,12 @@ class BackchannelLogoutSignatureSeamTest {
     private final TokenValidator tokenValidator = TokenValidator.builder().issuerConfig(issuerConfig).build();
 
     /**
-     * The seam exactly as the session runtime binds it: through the engine factory, over the validator
-     * and the configured logout issuer whose key source a refusal is checked against.
+     * The seam exactly as the session runtime binds it — through the engine factory — over
+     * {@code validator}, configured for the fixture token's issuer as the logout issuer whose key source
+     * a refusal is checked against.
      */
-    private static BackchannelLogoutReceiver.LogoutTokenVerifier productionSeam(TokenValidator validator,
-            String issuer) {
-        return BackchannelLogoutReceiver.LogoutTokenVerifier.engine(validator, issuer);
-    }
-
-    /** The production seam over {@code validator}, configured for the fixture token's issuer. */
     private BackchannelLogoutReceiver.LogoutTokenVerifier productionSeam(TokenValidator validator) {
-        return productionSeam(validator, logoutToken.getIssuer());
+        return BackchannelLogoutReceiver.LogoutTokenVerifier.engine(validator, logoutToken.getIssuer());
     }
 
     private LogoutTokenValidator claimResidualFor(TestTokenHolder token) {
@@ -234,8 +229,8 @@ class BackchannelLogoutSignatureSeamTest {
                     TokenValidator.builder().issuerConfig(withoutExpiry.getIssuerConfig()).build();
 
             LogoutTokenValidator.Verdict verdict = claimResidualFor(withoutExpiry)
-                    .validate(productionSeam(expirylessValidator, withoutExpiry.getIssuer())
-                            .verify(withoutExpiry.getRawToken()), Instant.now());
+                    .validate(BackchannelLogoutReceiver.LogoutTokenVerifier.engine(expirylessValidator,
+                            withoutExpiry.getIssuer()).verify(withoutExpiry.getRawToken()), Instant.now());
 
             LogoutTokenValidator.Verdict.Rejected rejected = assertInstanceOf(
                     LogoutTokenValidator.Verdict.Rejected.class, verdict,
@@ -342,7 +337,8 @@ class BackchannelLogoutSignatureSeamTest {
                     .withClaim("sid", ClaimValue.forPlainString(SID))
                     .withClaim("padding", ClaimValue.forPlainString("a".repeat(20_000)));
             TokenValidator validator = TokenValidator.builder().issuerConfig(overlong.getIssuerConfig()).build();
-            BackchannelLogoutReceiver.LogoutTokenVerifier seam = productionSeam(validator, overlong.getIssuer());
+            BackchannelLogoutReceiver.LogoutTokenVerifier seam =
+                    BackchannelLogoutReceiver.LogoutTokenVerifier.engine(validator, overlong.getIssuer());
             String raw = overlong.getRawToken();
 
             TokenValidationException refusal = assertThrows(TokenValidationException.class, () -> seam.verify(raw));
