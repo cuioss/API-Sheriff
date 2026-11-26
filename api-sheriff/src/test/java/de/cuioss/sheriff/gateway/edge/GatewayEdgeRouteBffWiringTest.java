@@ -38,7 +38,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.http.forwarded.ForwardedResolverConfig;
@@ -982,7 +981,8 @@ public class GatewayEdgeRouteBffWiringTest {
 
         @BeforeEach
         void setUp() {
-            pendingStore = new InMemoryPendingAuthorizationStore(16, _ -> { });
+            pendingStore = new InMemoryPendingAuthorizationStore(16, _ -> {
+            });
             bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
             sessionBinding = serverBinding(newStore());
 
@@ -2467,7 +2467,8 @@ public class GatewayEdgeRouteBffWiringTest {
 
     /** An in-memory pending store that records the quota key of every record offered to it. */
     private static PendingAuthorizationStore recordingStore(List<String> quotaKeys) {
-        InMemoryPendingAuthorizationStore delegate = new InMemoryPendingAuthorizationStore(16, _ -> { });
+        InMemoryPendingAuthorizationStore delegate = new InMemoryPendingAuthorizationStore(16, _ -> {
+        });
         return new PendingAuthorizationStore() {
             @Override
             public void store(PendingAuthorizationRecord pending, Instant now) {
@@ -2539,7 +2540,8 @@ public class GatewayEdgeRouteBffWiringTest {
     static BffRuntime activeRuntime(SessionBinding binding, ClientJwksEndpoint clientJwksEndpoint,
             SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld) {
         return assembleRuntime(binding, clientJwksEndpoint, sessionRelays, sessionHeld,
-                new InMemoryPendingAuthorizationStore(16, _ -> { }), scopes -> {
+                new InMemoryPendingAuthorizationStore(16, _ -> {
+                }), scopes -> {
                     throw new AssertionError("engine authorize must not be reached");
                 }, false, untrustingQuotaKeys());
     }
@@ -2551,7 +2553,8 @@ public class GatewayEdgeRouteBffWiringTest {
      * path and a session-route navigation reach the store — which refuses them.
      */
     private static BffRuntime saturatedStoreRuntime(SessionBinding binding) {
-        InMemoryPendingAuthorizationStore saturated = new InMemoryPendingAuthorizationStore(1, _ -> { });
+        InMemoryPendingAuthorizationStore saturated = new InMemoryPendingAuthorizationStore(1, _ -> {
+        });
         Instant now = Instant.now();
         saturated.store(PendingAuthorizationRecord.create(FlowContext.create(ORIGIN + CALLBACK_PATH),
                 ROOT_RETURN_TARGET, List.of("openid"), "203.0.113.99", now), now);

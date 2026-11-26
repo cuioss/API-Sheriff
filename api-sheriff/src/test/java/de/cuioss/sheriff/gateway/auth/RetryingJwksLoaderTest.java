@@ -1867,7 +1867,7 @@ class RetryingJwksLoaderTest {
             tick(WINDOW);
             loader.getKeyInfo("invented");
             Awaits.until(() -> loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent()
-                    && !loader.refreshInProgress(), "the next window's refresh to be published",
+                            && !loader.refreshInProgress(), "the next window's refresh to be published",
                     Awaits.CONNECT_CEILING_SECONDS);
 
             // Assert

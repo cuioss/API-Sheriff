@@ -113,7 +113,8 @@ class LoginFlowTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new InMemoryPendingAuthorizationStore(8, _ -> { });
+        pendingStore = new InMemoryPendingAuthorizationStore(8, _ -> {
+        });
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         flowContext = FlowContext.create(GATEWAY_ORIGIN + "/auth/callback");
         AuthorizationCodeFlow.AuthorizationRedirect redirect =
@@ -349,7 +350,8 @@ class LoginFlowTest {
         @Test
         @DisplayName("Should propagate the store's refusal after the push and yield no binding cookie")
         void shouldPropagateSaturationRefusal() {
-            InMemoryPendingAuthorizationStore saturated = new InMemoryPendingAuthorizationStore(1, _ -> { });
+            InMemoryPendingAuthorizationStore saturated = new InMemoryPendingAuthorizationStore(1, _ -> {
+            });
             PendingAuthorizationRecord held = PendingAuthorizationRecord.create(flowContext, "/held", SCOPES,
                     OTHER_QUOTA_KEY, T0);
             saturated.store(held, T0);
@@ -375,7 +377,8 @@ class LoginFlowTest {
         @Test
         @DisplayName("Should admit the login when the held record expired during the push, its TTL anchored at now")
         void shouldAdmitWhenTheHeldRecordExpiredDuringThePush() {
-            InMemoryPendingAuthorizationStore full = new InMemoryPendingAuthorizationStore(1, _ -> { });
+            InMemoryPendingAuthorizationStore full = new InMemoryPendingAuthorizationStore(1, _ -> {
+            });
             Instant heldCreatedAt = T0.minus(PendingAuthorizationRecord.FIXED_TTL).plusSeconds(1);
             full.store(PendingAuthorizationRecord.create(flowContext, "/held", SCOPES, OTHER_QUOTA_KEY,
                     heldCreatedAt), heldCreatedAt);

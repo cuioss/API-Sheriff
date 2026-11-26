@@ -137,7 +137,8 @@ class CallbackEndpointTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new InMemoryPendingAuthorizationStore(8, _ -> { });
+        pendingStore = new InMemoryPendingAuthorizationStore(8, _ -> {
+        });
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
         sessionStore = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {
@@ -1166,7 +1167,8 @@ class CallbackEndpointTest {
             @Test
             @DisplayName("Should propagate a saturated store's refusal of the re-drive, set no cookie, keep the session")
             void shouldPropagateRedriveRefusal() {
-                InMemoryPendingAuthorizationStore saturated = new InMemoryPendingAuthorizationStore(1, _ -> { });
+                InMemoryPendingAuthorizationStore saturated = new InMemoryPendingAuthorizationStore(1, _ -> {
+                });
                 saturated.store(PendingAuthorizationRecord.create(FlowContext.create(CALLBACK_URI), RETURN_URL,
                         REQUESTED_SCOPES, "203.0.113.99", T0), T0);
                 SessionWidening refusingWidening = new SessionWidening((scopes, silent) -> {

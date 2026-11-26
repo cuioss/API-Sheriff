@@ -25,7 +25,6 @@ import java.util.TreeSet;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
@@ -136,8 +135,8 @@ class RefusalEchoEscapingTest {
                 // The anchor path_prefix is echoed beside the anchor name; the pair overlaps, and the
                 // fragment holds whichever order the anchors map iterates in.
                 refusal("AnchorRules", gatewayWithAnchors(Map.of(
-                                "api", anchor("api", "/api", null),
-                                "nested", anchor("nested", "/api/v" + LINE_FEED + "1", null))),
+                        "api", anchor("api", "/api", null),
+                        "nested", anchor("nested", "/api/v" + LINE_FEED + "1", null))),
                         List.of(), topologyWith(), "/anchors", "(/api/v\\u000A1)"),
                 refusal("AuthRules", validGateway().build(),
                         List.of(endpointSeed("orders").baseUrl("ORDERS")

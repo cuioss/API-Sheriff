@@ -597,6 +597,9 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         // call into the library, and the scheduler may refuse the task.
         boolean claimed = false;
         boolean scheduled = false;
+        // The library's failure types are not part of this contract and the lookup must be answered
+        // whatever the capture throws — so the catch is deliberately broad.
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             // Captured before the in-flight flag is taken; both delegates are read off one snapshot.
             Snapshot current = snapshot.get();

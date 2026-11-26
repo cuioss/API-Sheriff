@@ -266,7 +266,7 @@ public class TokenValidationRules {
 
         /** {@code refresh_interval_seconds}: the cadence of the scheduled background JWKS refresh. */
         REFRESH_INTERVAL("refresh_interval_seconds", REFRESH_INTERVAL_MIN_SECONDS, REFRESH_INTERVAL_MAX_SECONDS,
-                IssuerConfig.Jwks::refreshIntervalSeconds),
+            IssuerConfig.Jwks::refreshIntervalSeconds),
 
         /** {@code key_rotation_grace_period_seconds}: how long a key rotated out of the JWKS stays accepted. */
         KEY_ROTATION_GRACE_PERIOD("key_rotation_grace_period_seconds", KEY_ROTATION_GRACE_PERIOD_MIN_SECONDS,

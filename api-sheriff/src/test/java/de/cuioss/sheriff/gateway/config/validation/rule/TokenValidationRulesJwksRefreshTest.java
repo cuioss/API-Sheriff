@@ -90,8 +90,8 @@ class TokenValidationRulesJwksRefreshTest {
     enum RefreshKey {
 
         REFRESH_INTERVAL("refresh_interval_seconds", 60, 86_400, "REFRESH_INTERVAL",
-                TokenValidationRules.REFRESH_INTERVAL_MIN_SECONDS, TokenValidationRules.REFRESH_INTERVAL_MAX_SECONDS,
-                IssuerConfig.Jwks.JwksBuilder::refreshIntervalSeconds),
+            TokenValidationRules.REFRESH_INTERVAL_MIN_SECONDS, TokenValidationRules.REFRESH_INTERVAL_MAX_SECONDS,
+            IssuerConfig.Jwks.JwksBuilder::refreshIntervalSeconds),
         GRACE_PERIOD("key_rotation_grace_period_seconds", 0, 3_600, "KEY_ROTATION_GRACE_PERIOD",
                 TokenValidationRules.KEY_ROTATION_GRACE_PERIOD_MIN_SECONDS,
                 TokenValidationRules.KEY_ROTATION_GRACE_PERIOD_MAX_SECONDS,
@@ -372,7 +372,7 @@ class TokenValidationRulesJwksRefreshTest {
 
         @ParameterizedTest(name = "{0}: the Javadoc renders both bounds from their constants")
         @EnumSource(RefreshKey.class)
-        void theJavadocRendersBothBoundsFromTheirConstants(RefreshKey key) throws IOException {
+        void theJavadocRendersBothBoundsFromTheirConstants(RefreshKey key) throws Exception {
             String javadoc = jwksJavadoc();
 
             assertAll(
@@ -386,7 +386,7 @@ class TokenValidationRulesJwksRefreshTest {
 
         @Test
         @DisplayName("the Javadoc states no range by hand")
-        void theJavadocStatesNoRangeByHand() throws IOException {
+        void theJavadocStatesNoRangeByHand() throws Exception {
             List<String> handWritten = handWrittenRanges(jwksJavadoc());
 
             assertEquals(List.of(), handWritten,
