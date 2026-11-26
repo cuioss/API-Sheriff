@@ -612,7 +612,7 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         } catch (RejectedExecutionException rejected) {
             // The scheduler is shutting down.
             LOGGER.debug(rejected, "JWKS refresh for issuer '%s' could not be scheduled", issuerName);
-        } catch (RuntimeException failure) {
+        } catch (RuntimeException _) {
             // A failure nobody anticipated, most likely a delegate failing to report its key ids. The
             // claimed window then refreshes nothing, and nothing else reports that. The record names
             // the issuer only: the throwable's message is not under the gateway's control.

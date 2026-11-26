@@ -1385,8 +1385,8 @@ public class BffRuntimeProducer {
             return;
         }
         ProviderMetadata providerMetadata;
-        // The supplier reaches provider discovery, whose failure types are not part of this contract;
-        // every failure of it is the one reason the marker names.
+        // The supplier reaches provider discovery, whose failure types are not part of this contract,
+        // so every failure of it is the one reason the marker names.
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             providerMetadata = metadata.get();

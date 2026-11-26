@@ -131,9 +131,12 @@ decision does. Each is stated with the question a closing decision has to answer
 
 == Consequences
 
-* *One source's login flood cannot fail another user's login.* Cross-source displacement does not exist
+* *One source's login flood cannot evict another user's live login.* Cross-source displacement does not exist
   on any path: the purge removes only expired records, the per-source cap evicts only the flooding key's
-  own records, and saturation refuses instead of evicting.
+  own records, and saturation refuses instead of evicting. A source at its cap still occupies its share of
+  the store's capacity, so when other sources already hold the rest, its records can bring the store to
+  capacity, and new logins from any other source are then refused with `PENDING_AUTHORIZATION_SATURATED`
+  while the store stays full.
 * *A flooding source loses its own oldest logins in flight.* Its evicted logins' callbacks find no
   record and are refused `403`. A legitimate user who shares a source address with many others behind a proxy the gateway does
   not trust shares that source's share; `forwarded.trusted_proxies` is what gives such users their own
