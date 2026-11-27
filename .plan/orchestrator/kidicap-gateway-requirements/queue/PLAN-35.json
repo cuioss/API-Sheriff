@@ -2,10 +2,10 @@
   "id": "PLAN-35",
   "slug": "fix-pass-bff-edge-jwks-hygiene",
   "workstream": "WS-01",
-  "status": "staged",
+  "status": "shipped",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "plan_marshall_plan_id": "plan-35-fix-pass-bff-edge-jwks-hygiene",
+  "pr": "665",
+  "landing": "landings/PLAN-35.md",
   "seq": 23
 }

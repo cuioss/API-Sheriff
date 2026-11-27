@@ -717,3 +717,73 @@ stays in `epic.md`. These three bullets record the first cut and why it was made
   is GREEN on `5aa17338`. Those four entries are retired in place. **Kept open (two residuals):** PLAN-18's Integration Tests run
   `35917940826` is RED (the known infrastructure failure, no test executed; re-run or accept as unverifiable), and the PLAN-26 lane
   wall-clock figure. The orchestrator did not read the runs itself; the account is the operator's output.
+
+## PLAN-34 analyze, PLAN-20 and PLAN-35 re-ground, cleanup and land of 2026-11-25
+
+- 2026-11-25 — **`analyze` then `cleanup` then `land` (operator: "analyze, do a full cleanup including settled and land").** **Analyze:**
+  PLAN-34 landed (#663, `5b95b60b`) and was reconciled: merge verified through the CI abstraction, one inbox landing drained (incomplete at
+  `effort`, an Open Defect), one read-only three-layer leaf, the key points re-read by the orchestrator, row `shipped`, stamped `663`,
+  `landings/PLAN-34.md`, `plan-34-adapt-to-token-sheriff-0-9-10`. No blocker; L3-1 was already operator-accepted, L3-2 to L3-4 and the test gaps are unstaged leads
+  for the operator's word. **Cleanup:** PLAN-20 and PLAN-35 re-grounded against `5b95b60b` (17 verdicts persisted by `corpus set-verdict`, producer
+  `kidicap-gateway-requirements/analyze`); PLAN-35 D10 dropped, PLAN-20 deliverable 2 re-scoped, the `Skills:` declaration added to PLAN-20 (the one A3
+  finding), both `## Expected Surface` sections corrected and verified by membership in `claimed[]`. No duplication, no Done-when finding, 0 blocking
+  verdicts. Settled relocation done on the operator's instruction: four Decisions groups (2026-11-22, the 2026-11-23 cleanup and 0.9.10 entries, batch B,
+  and the 2026-11-24 emit, landing and B2 entries) moved verbatim to `settled.md`; the live decisions (the standing fix-routing rule, batch A and C,
+  the 2026-10-26 operator answers, the AS-14 re-scope) stay. **Superseded premise to not re-derive:** the 2026-11-23 note "PLAN-34 D2 must delete the
+  `gatewayParClients` exclusion" did not hold: the merged runtime keeps a second `ParClient` for the step-up re-drive. **Next free ids:** ADR 0085, WARN 154.
+
+## Plan-marshall items routed out (2026-11-24)
+
+- 2026-11-24 — **Plan-marshall items routed out (operator: "move all plan-marshall related stuff in the corresponding inbox").** Nine
+  `kind=finding` messages written with `orchestrator inbox write` (run inside /home/oliver/git/plan-marshall) to its `lessons-routing`
+  inbox as sender `api-sheriff-kidicap-gateway-requirements`, sequence 018 to 026, all valid and unconsumed there: 018 `ci-verify`
+  routing, 019 `source_id` stored path, 020 `post_responses` triage prose, 021 merge-lock "already free", 022 review-body count
+  mismatch, 023 PLAN-33 landing-fact gaps, 024 the CI abstraction cannot read push runs on `main`, 025 the three-layer leaf's
+  `grep -r` walked into `.plan/`, 026 `handle-open` usability (one item per turn, threshold persistence, `corpus verdicts` size).
+  Five existing entries here were replaced by routed pointers; the PLAN-33 incomplete-landing defect stays open here with a pointer.
+  **Not routed, on purpose:** the framing-corpus flake (tracked in `api-sheriff-0-3-0`), the downstream's stale link to a removed doc,
+  the Sonar `architecture enrich insight` call and the executor/registry repin and `build.queue.max_slots` migrate (operator actions
+  in this repository, not defects), and the Nov 19 Integration Tests reporting-step failure (dropped by the operator). The messages sit
+  uncommitted in that repository's ledger worktree; this run did not touch its git state.
+
+## Second handle-open pass of 2026-11-23 (threshold 60)
+
+- 2026-11-23 — **Threshold lowered to 60; second `handle-open` re-read pass (operator: "revisit all finding, decide if you are 60%
+  confident").** The `orchestrator.decision_confidence_threshold` knob was found at 90 (the earlier change to 75 was not on disk)
+  and was set to 60 for this run only; the operator reverted it to 90 on 2026-11-24, so the knob stays 90 and nothing is owed. Decided this pass: item 5 narrowed (2 fixes to the backlog, applied at the
+  threshold on the operator's wording), the WARN-id/ADR-ordinal watch retired on PLAN-20's spec, and the retry-jitter question
+  answered (SmallRye's default jitter is 200 ms; 1 wording fix to the backlog). **Backlog now: 8** (5 from item 2, 2 from item 5,
+  1 retry wording), under 10, so no fix plan yet; target plan still held for PLAN-34's re-ground. Items 3 and 4 were answered by
+  the operator earlier in the run (measure the gate churn after PLAN-33; route the breaker-identity ADR to the next plan on
+  `edge/`). **Re-read this run and still open (nothing decided on them, evidence recorded so the next run does not repeat it):**
+  `Vary: Accept` absent; no `quarkus.http.access-log.*` setting; `WebSocketRelayStage.java:531` still sets the redundant
+  `pongHandler` and the two near-duplicate dialer helpers still sit in `WebSocketRelayStageTest`; `token-sheriff-client-quarkus`
+  still declared at `api-sheriff/pom.xml` :123-125 with no import in main; PLAN-26 L3-1 (single `revocationFailureReported`
+  latch, `RpInitiatedLogout.java:121`) and the layer-2 residue (`LogoutEndpointTest.java:682` keeps its misleading name,
+  `BffLogMessages.java:32` keeps a hand-written inventory, ADR-0080 does not link ADR-0071, `RpInitiatedLogout.java:58` still says
+  no other path revokes); the canonical-form boot check covers `user_info`, `login`, `step_up` and the client JWKS path
+  (`ReservedPathRules.java` :211, :239, :267) but not callback, logout, logout-return or back-channel-logout; no ADR records the
+  pending-store fairness mechanism (`doc/adr` has none); `StepUpResultVerifier` has no caller (PLAN-20). The `getLoaderStatus`
+  masking is carried by PLAN-33's spec (`plans/PLAN-33-*.md` :42-46), which is running. Not re-read, so capped at the threshold and
+  not decidable: every CI-run, release-note and downstream watch, the plugin-side lessons, and the practice notes.
+
+## TokenSheriff separation staged as WS-05 (2026-11-12)
+
+- 2026-11-12 — **TokenSheriff separation staged as WS-05 (PLAN-33, PLAN-34) plus a TokenSheriff epic.**
+  Operator asked for full separation of concerns with TokenSheriff after the 0.9.9 bump removed one
+  duplicate. Decisions: (1) the work that needs only the pinned 0.9.9 is one plan, PLAN-33 (five
+  deliverables: truthful JWKS status through `RetryingJwksLoader` with a failing test first, the
+  library's `ErrorTextSanitizer` in `SignatureOnlyTokenVerifier`, documentation 0.9.9 made false, the
+  unused `token-sheriff-client-quarkus` dependency, and a verify-first check of the refresh-versus-
+  widening race); the operator named it the next plan to run. (2) Everything that needs a new
+  TokenSheriff seam is NOT planned here: it is the TokenSheriff epic `api-sheriff-seams` (seven plans,
+  target 0.9.10, in `/home/oliver/git/TokenSheriff`'s own ledger, not landed), and PLAN-34 deletes the
+  gateway copies against the released 0.9.10, one droppable deliverable per TokenSheriff plan. The
+  version bump is the release workflow's PR, never PLAN-34's. (3) Split-or-proceed: PLAN-34 carries
+  seven deliverables, under the 12 cap, because each is independently droppable and a deliverable
+  whose TokenSheriff plan did not ship is removed at outline rather than waited on. (4) The audit's
+  "StepUpCoordinator is dead code" is rejected: PLAN-20 wires it, and PLAN-20 must also call the
+  step-up result verifier. (5) Corrections the drafting made to the audit: the `pom.xml` comment on
+  `GatewayExceptionMapper` was already fixed by `0c0680b3`; the race in PLAN-33 D5 involves the
+  widening/step-up landing, not login (login mints a new session id). Alternative considered: one
+  large plan covering both; rejected because PLAN-34 cannot start before a TokenSheriff release.
