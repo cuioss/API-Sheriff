@@ -390,7 +390,10 @@ class GatewayEdgeUniformNotFoundTest {
                 () -> assertNull(response.headers().get("WWW-Authenticate"), "no challenge"),
                 () -> assertNull(response.headers().get("Allow"), "no Allow"),
                 () -> assertNull(response.headers().get(FRAME_OPTIONS), "no route security_headers block"),
-                () -> assertNull(response.headers().get("Vary"), "no match.headers Vary"),
+                // The unrouted answer negotiates too, so its Vary names Accept; only the route's own
+                // match.headers name would disclose the route.
+                () -> assertFalse(response.headers().getOrDefault("Vary", "").toLowerCase(Locale.ROOT)
+                        .contains(TENANT_HEADER.toLowerCase(Locale.ROOT)), "no match.headers Vary: " + response.headers()),
                 () -> assertNull(response.headers().get("grpc-status"), "no trailers-only status"));
     }
 

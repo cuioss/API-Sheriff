@@ -22,6 +22,10 @@ import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.token.commons.error.ErrorTextSanitizer;
 import de.cuioss.sheriff.token.commons.error.TokenSheriffException;
+import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
+import de.cuioss.sheriff.token.commons.transport.LoaderStatus;
+import de.cuioss.sheriff.token.validation.TokenValidator;
+import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
 import de.cuioss.tools.logging.CuiLogger;
 
 /**
@@ -36,6 +40,13 @@ import de.cuioss.tools.logging.CuiLogger;
  * token or a failing stub. Keeping the JWKS wiring behind
  * the seam decouples the receiver from the confidential-client configuration and makes both the
  * signature-failure and the claim-rejection paths unit-testable without a live IdP.
+ * <p>
+ * <strong>A key-source outage is not a signature failure.</strong> When the seam reports that a
+ * refusal is the configured issuer's key source being unusable
+ * ({@link LogoutTokenVerifier#keySourceUnavailable}), the rejection is recorded as
+ * {@link LogoutRejection#KEY_SOURCE_UNAVAILABLE}; every other refusal is
+ * {@link LogoutRejection#SIGNATURE_REJECTED}. Either way the refusal's detail stays at {@code DEBUG},
+ * sanitized and without the throwable attached, and nothing is destroyed.
  * <p>
  * <strong>Each token is acted on once.</strong> A token that passed every claim check is handed to the
  * {@link LogoutTokenReplayGuard}, which remembers its {@code jti} for as long as the token stays
@@ -121,7 +132,11 @@ public final class BackchannelLogoutReceiver {
             // hostile value readable while neutralising line breaks, U+2028/U+2029 and bidi controls.
             LOGGER.debug("Back-channel logout token signature/validation failed: %s",
                     ErrorTextSanitizer.sanitize(Objects.toString(signatureFailure.getMessage(), "")));
-            rejectionLog.recordRejection(LogoutRejection.SIGNATURE_REJECTED);
+            // A refusal caused by the configured issuer's key source being unusable is not a verdict on
+            // the token, so it is recorded apart from a failed verification.
+            rejectionLog.recordRejection(verifier.keySourceUnavailable(signatureFailure)
+                    ? LogoutRejection.KEY_SOURCE_UNAVAILABLE
+                    : LogoutRejection.SIGNATURE_REJECTED);
             return BackchannelResult.rejected();
         }
 
@@ -177,9 +192,15 @@ public final class BackchannelLogoutReceiver {
 
     /**
      * The engine signature-verification seam. The session runtime binds it to the engine's JWKS
-     * token validation; a test binds it to a hand-built {@link VerifiedLogoutToken} or a stub that throws.
-     * Keeping the confidential-client/JWKS wiring behind the seam decouples the receiver from it and
-     * makes the signature-failure path unit-testable without a live IdP.
+     * token validation through {@link #engine}; a test binds it to a hand-built
+     * {@link VerifiedLogoutToken} or a stub that throws. Keeping the confidential-client/JWKS wiring
+     * behind the seam decouples the receiver from it and makes the signature-failure path
+     * unit-testable without a live IdP.
+     * <p>
+     * After a refusal the receiver asks {@link #keySourceUnavailable} whether the refusal is the
+     * configured issuer's key source being unusable rather than a verdict on the token. A binding that
+     * cannot tell keeps the default, {@code false}, and every refusal is recorded as
+     * {@link LogoutRejection#SIGNATURE_REJECTED}.
      *
      * @author API Sheriff Team
      * @since 1.0
@@ -196,6 +217,56 @@ public final class BackchannelLogoutReceiver {
          *         structural validation fails
          */
         VerifiedLogoutToken verify(String rawLogoutToken);
+
+        /**
+         * Whether a refusal {@link #verify} raised is the configured issuer's key source being
+         * unusable — its key set is not reported usable — rather than a verdict on the token itself.
+         *
+         * @param refusal the refusal {@link #verify} raised
+         * @return {@code true} when the refusal is a key-source outage; {@code false} by default
+         */
+        default boolean keySourceUnavailable(TokenSheriffException refusal) {
+            return false;
+        }
+
+        /**
+         * Binds the seam to the engine: {@link #verify} is the engine's signature-only entry point
+         * {@code TokenValidator#verifySignature}, and {@link #keySourceUnavailable} reads the engine's
+         * issuer status.
+         * <p>
+         * <strong>The discriminator.</strong> The engine refuses a configured issuer whose key loader
+         * does not report {@link LoaderStatus#OK} with the same {@code NO_ISSUER_CONFIG} event it raises
+         * for an unknown issuer, so the event alone cannot tell an outage from a foreign issuer. A
+         * refusal is therefore a key-source outage exactly when it is a
+         * {@link TokenValidationException} carrying {@code NO_ISSUER_CONFIG} <em>and</em>
+         * {@link TokenValidator#getIssuerStatuses()} reports the configured logout issuer with a loader
+         * status other than {@code OK}. Every other refusal — an unknown issuer while the key source is
+         * healthy, a bad signature, a malformed or over-long token, an unknown key id — is not.
+         *
+         * @param validator the engine validator the issuer configuration is registered with
+         * @param issuer    the configured logout issuer whose key source is consulted
+         * @return the engine-bound seam
+         */
+        static LogoutTokenVerifier engine(TokenValidator validator, String issuer) {
+            Objects.requireNonNull(validator, "validator");
+            Objects.requireNonNull(issuer, "issuer");
+            return new LogoutTokenVerifier() {
+
+                @Override
+                public VerifiedLogoutToken verify(String rawLogoutToken) {
+                    return VerifiedLogoutToken.of(validator.verifySignature(rawLogoutToken));
+                }
+
+                @Override
+                public boolean keySourceUnavailable(TokenSheriffException refusal) {
+                    return refusal instanceof TokenValidationException validationFailure
+                            && validationFailure.getEventType() == SecurityEventCounter.EventType.NO_ISSUER_CONFIG
+                            && validator.getIssuerStatuses().stream()
+                            .anyMatch(status -> issuer.equals(status.issuerIdentifier())
+                                    && status.loaderStatus() != LoaderStatus.OK);
+                }
+            };
+        }
     }
 
     /**

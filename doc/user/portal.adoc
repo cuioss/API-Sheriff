@@ -360,6 +360,13 @@ whatever that exit writes. A browser navigation sends `Accept: text/html,...` an
 `fetch()`, XHR and REST clients send `+*/*+` by default and keep the JSON body. *The status code is
 the same either way.*
 
+*Both variants carry `Vary: Accept`.* When the first two conditions hold, the answer depends on the
+request's `Accept`, so the HTML page and the `application/problem+json` fallback both name `Accept`
+in `Vary`. It is merged into any `Vary` the response already carries (such as the CORS reflection's
+`Origin`), never replacing it, so a shared cache never serves the HTML page to an
+API client or the JSON body to a browser. An exit that cannot negotiate, because `error_pages` is off
+or the exit is not HTML-eligible, carries no `Accept` in its `Vary`.
+
 [cols="1,3"]
 |===
 | Status | HTML-eligible gateway errors
@@ -397,7 +404,7 @@ An error page:
   an exception message or an upstream address;
 * renders the catalog and the login/logout links, but is always *anonymous*: no session is resolved on
   a failure path;
-* is `Cache-Control: no-store` and carries the portal CSP and `nosniff`.
+* is `Cache-Control: no-store` and carries the portal CSP, `nosniff` and `Vary: Accept`.
 
 [[_see_also]]
 == See also

@@ -23,8 +23,11 @@ image::../resources/diagrams/event-categories-and-consumers.svg[Failure event ca
   surface as an HTTP response.
 
 * *Informational and WebSocket-close events.* Success/informational events (`REQUEST_FORWARDED`,
-  `TOKEN_REFRESHED`, `CONFIG_LOADED`, `SOURCE_TRIPPED`) carry no category and serve as metric
-  counters only; `WEBSOCKET_IDLE_TIMEOUT` closes an idle relay with WebSocket code `1001`.
+  `TOKEN_REFRESHED`, `CONFIG_LOADED`, `SOURCE_TRIPPED`, `PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED`)
+  carry no category and serve as metric counters only; `WEBSOCKET_IDLE_TIMEOUT` closes an idle relay
+  with WebSocket code `1001`. `PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED` is the BFF
+  pending-authorization store evicting a source's own oldest pending login because that source
+  already holds its per-source share; the new start is admitted (ADR-0085, `ApiSheriff-154`).
 
 * *Typed gateway exceptions.* `GatewayException` carries its `EventType`, so the edge maps the event
   to its HTTP status and renders `application/problem+json` (RFC 9457) without leaking internal
@@ -143,7 +146,8 @@ authentication rejections, which keep their `302` / `401`) is rendered to the ca
   holds its capacity of live records (`PENDING_AUTHORIZATION_SATURATED`, carrying `Retry-After: 30`;
   raised after the pushed authorization request, with no pending record stored, no binding cookie set
   and no other source's live login evicted -- see
-  link:../user/bff-session.adoc[BFF Session]); it is kept honest before the trust boundary, because
+  link:../user/bff-session.adoc[BFF Session] and
+  link:../adr/0085-The_pending-authorization_store_caps_each_source_by_evicting_its_own_oldest_record_and_refuses_only_at_saturation.adoc[ADR-0085]); it is kept honest before the trust boundary, because
   the session branch already discloses the route by its `302` into the identity provider.
   Edge admission cap, virtual-thread executor rejection, and WebSocket session-relay tracking-cap
   exhaustion write a bare `503` directly with no `EventType`.
@@ -345,7 +349,11 @@ link:../configuration/tls-and-egress.adoc#_management[Configuration -- `manageme
 | Downstream call duration per route, separating gateway overhead from upstream latency.
 
 | `sheriff_session_events_total{event}`
-| BFF session lifecycle events (create, destroy, refresh, CSRF, logout) keyed by `EventType`.
+| Counter of BFF events keyed by `EventType` name. Its one recorder today is the pending-authorization
+  store: `PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED`, one per eviction of a source's own oldest pending
+  login once that source holds its per-source share of 256 (link:../adr/0085-The_pending-authorization_store_caps_each_source_by_evicting_its_own_oldest_record_and_refuses_only_at_saturation.adoc[ADR-0085],
+  `WARN ApiSheriff-154`). The session lifecycle events (create, destroy, refresh, logout) are not
+  recorded on this series; a CSRF rejection is counted on `sheriff_errors_total` as `CSRF_REJECTED`.
 
 | `sheriff_auth_branch_total{route,branch}`
 | Authentication branch (`bearer` or `session`) selected on a

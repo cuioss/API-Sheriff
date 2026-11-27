@@ -45,8 +45,14 @@ public record IssuerConfig(String name, String issuer, @Nullable String audience
 
     /**
      * Key material for signature verification.
+     * <p>
+     * The admitted range quoted for each refresh key below is rendered from the bound boot validation
+     * enforces — {@link de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules.JwksRefreshKey},
+     * applied by
+     * {@link de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules#validateJwksRefresh} —
+     * rather than restated here, so the documented range cannot drift from the enforced one.
      *
-     * @param source             the key source ({@code http} / {@code file}), mandatory
+     * @param source            the key source ({@code http} / {@code file}), mandatory
      * @param url                the JWKS URL (for {@code source: http}), {@code null} otherwise
      * @param file               the JWKS file path (for {@code source: file}), {@code null}
      *                           otherwise
@@ -73,30 +79,42 @@ public record IssuerConfig(String name, String issuer, @Nullable String audience
      *                           the interval, in seconds, at which the JWKS client re-fetches
      *                           the key set in the background ({@code source: http} only),
      *                           {@code null} when omitted. Omitted keeps the token library's
-     *                           default of 600 seconds. Admitted range: 60 to 86400. Declared on a
-     *                           {@code source: file} issuer it is refused at boot, because a file
-     *                           source has no refresh.
+     *                           default of 600 seconds. Admitted range:
+     *                           {@value de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules#REFRESH_INTERVAL_MIN_SECONDS}
+     *                           to
+     *                           {@value de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules#REFRESH_INTERVAL_MAX_SECONDS}.
+     *                           Declared on a {@code source: file} issuer it is refused at boot,
+     *                           because a file source has no refresh.
      * @param keyRotationGracePeriodSeconds
      *                           how long, in seconds, a key set replaced by a rotation keeps
      *                           verifying tokens signed with its keys ({@code source: http} only),
      *                           {@code null} when omitted. Omitted keeps the token library's
-     *                           default of 300 seconds. Admitted range: 0 to 3600, where 0 retires
-     *                           the replaced keys at once. Declared on a {@code source: file}
-     *                           issuer it is refused at boot.
+     *                           default of 300 seconds. Admitted range:
+     *                           {@value de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules#KEY_ROTATION_GRACE_PERIOD_MIN_SECONDS}
+     *                           to
+     *                           {@value de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules#KEY_ROTATION_GRACE_PERIOD_MAX_SECONDS},
+     *                           where the lower bound retires the replaced keys at once. Declared on
+     *                           a {@code source: file} issuer it is refused at boot.
      * @param unknownKidRefreshWindowSeconds
      *                           the per-issuer window, in seconds, within which a token naming an
      *                           unknown key id triggers at most one JWKS fetch
      *                           ({@code source: http} only), {@code null} when omitted. Omitted
-     *                           resolves to 30 seconds. Admitted range: 5 to 3600. Declared on a
-     *                           {@code source: file} issuer it is refused at boot.
+     *                           resolves to 30 seconds. Admitted range:
+     *                           {@value de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules#UNKNOWN_KID_REFRESH_WINDOW_MIN_SECONDS}
+     *                           to
+     *                           {@value de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules#UNKNOWN_KID_REFRESH_WINDOW_MAX_SECONDS}.
+     *                           Declared on a {@code source: file} issuer it is refused at boot.
      * @param maxStalenessSeconds
      *                           the opt-in bound, in seconds, on how long the issuer's loaded key
      *                           set stays usable while every background refresh fails
      *                           ({@code source: http} only), {@code null} when omitted. Omitted
      *                           switches the bound off: the token library's default, which keeps
      *                           serving the loaded keys indefinitely while refreshes fail. Admitted
-     *                           range: 60 to 604800 (one minute to seven days). Declared on a
-     *                           {@code source: file} issuer it is refused at boot. Staleness is
+     *                           range:
+     *                           {@value de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules#MAX_STALENESS_MIN_SECONDS}
+     *                           to
+     *                           {@value de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules#MAX_STALENESS_MAX_SECONDS}.
+     *                           Declared on a {@code source: file} issuer it is refused at boot. Staleness is
      *                           checked once per refresh cycle, after a cycle that installed no keys,
      *                           so the issuer degrades at the first failed cycle after the bound has
      *                           passed; a bound below the effective refresh interval therefore behaves

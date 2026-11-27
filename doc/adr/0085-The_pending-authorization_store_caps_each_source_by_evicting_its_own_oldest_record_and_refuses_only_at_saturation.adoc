@@ -1,0 +1,167 @@
+= ADR-0085: The pending-authorization store caps each source by evicting its own oldest record and refuses only at saturation
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: InMemoryPendingAuthorizationStore admits a pending login in a fixed order: purge every expired record in expiry order, then let a quota key that holds MAX_PENDING_PER_SOURCE (256) live records evict only its own oldest one, then refuse a net-new record with PENDING_AUTHORIZATION_SATURATED (503, Retry-After 30) once the store holds its capacity, otherwise insert. No source ever displaces another source's live login. A refusal is logged ApiSheriff-145 once per saturation episode (released below half capacity); an own-oldest eviction is counted as PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED on sheriff_session_events_total and logged ApiSheriff-154 once per store-wide eviction episode (released once no key holds half its share). A login-initiation rate limiter and moving the pushed authorization request after the store stay open decisions.
+// tags: bff, login, pending-authorization, dos, fairness, observability, security
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+== Decision
+
+=== The question
+
+Every login, step-up and session widening stores one pending-authorization record — `state`, nonce,
+PKCE verifier and return URL — until the callback consumes it (ADR-0018). The record is created by a
+browser that has not authenticated yet, so the store is an unauthenticated write path. An unbounded store
+is a memory amplifier, and a bounded store that makes room by evicting the oldest record lets one
+requester flush every other user's login in flight: the victim's callback then finds no record and the
+login fails.
+
+The store therefore needs a bound that holds memory flat under a flood *and* a rule for which record
+gives way that never lets one source touch another source's live login.
+
+=== The decision
+
+*`InMemoryPendingAuthorizationStore.store` admits a record in a fixed order, and only the flooding
+source pays for its own flood.*
+
+. *Expired first, in expiry order.* Every record expired at the given instant is purged before any live
+  record is considered. The purge reads a sorted expiry index, not insertion order: a caller stamps
+  `createdAt` before its pushed authorization request and stores the record after it, so a record stored
+  later can expire earlier.
+. *Per-source cap with own-oldest eviction.* A record is counted under its quota key — the requester
+  source `PendingQuotaKeys` derives from the connection and `forwarded.trusted_proxies`. When that key
+  already holds `MAX_PENDING_PER_SOURCE` (256) live records, the key's *own* oldest record is evicted and
+  the new one inserted: no net growth, and no other source's record is touched. The new start is admitted.
+. *Refuse only at saturation.* Otherwise, when the store holds its capacity of live records (10,000 in
+  the producer), the record is refused with `PENDING_AUTHORIZATION_SATURATED`, which the edge answers
+  `503` with `Retry-After: 30`. Nothing stored is touched: a full store never evicts a live record of
+  another source to make room.
+. Otherwise the record is inserted.
+
+The constant is documented, not configured, like the other hardening bounds (ADR-0060, ADR-0064).
+
+=== The two signals and their episodes
+
+Both outcomes that a flood produces are observable, and neither lets a caller set the volume of `WARN`
+lines it causes (ADR-0051). Neither record carries request data — no source address, quota key, record
+id, `state` or nonce.
+
+* *Saturation.* A refusal is counted on `sheriff_errors_total` under `PENDING_AUTHORIZATION_SATURATED`
+  and logged `ApiSheriff-145` once per saturation episode, every further refusal at `DEBUG`. The latch is
+  set by the first refusal and released with hysteresis: only once the store has drained below half its
+  capacity. Freeing one place and filling it again keeps the episode open.
+* *Own-oldest eviction.* Every own-oldest eviction hands `PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED` to
+  the store's event counter, which `BffRuntimeProducer` binds to `SheriffMetrics.recordSessionEvent`, so
+  the eviction rate is `sheriff_session_events_total{event="PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED"}`.
+  The event is informational: the request is admitted, so it has no category and no HTTP mapping, is not
+  a reconnaissance signal and is not in the uniform-`404` closed set. The eviction is logged
+  `ApiSheriff-154` once per eviction episode and every further eviction of the episode at `DEBUG`.
+  *The eviction episode is store-wide and ends only once no quota key holds half its per-source share
+  (128 live records) or more.* An evicting key is at its full share, so a source cannot end the episode
+  by letting one record expire, and a source that keeps flooding keeps it open. The store keeps the count
+  of keys at or above half their share on every insert and removal, so the release check costs nothing
+  per call.
+
+== Alternatives rejected
+
+=== Evict the globally oldest record when the store is full
+
+The store would keep one bound and make room by evicting the oldest record, whoever stored it.
+
+Rejected because it is exactly the displacement the decision exists to prevent: a single source filling
+the store would flush every other user's login in flight, and each victim's callback would fail.
+
+=== Refuse a source at its share instead of evicting its oldest record
+
+A source at its per-source share would be refused rather than have its own oldest record evicted.
+
+Rejected because the source's newest start is the one the user is waiting on. A user who opened many
+login tabs, or a client that retries, would be locked out of a fresh login by its own stale records,
+which expire only after their fixed lifetime. Evicting the source's own oldest record costs that source
+alone and keeps its newest login working.
+
+=== Reuse the saturation release rule for the eviction latch
+
+The eviction latch would be released, like the saturation latch, once the store has drained below half
+its capacity.
+
+Rejected because the two conditions live on different scales. A source at its share of 256 leaves a
+store of 10,000 far below half full, so the rule would release the latch before every eviction and log a
+`WARN` for each one — a single source would set the `WARN` volume again.
+
+=== Latch the eviction record per source
+
+Each quota key would carry its own eviction latch.
+
+Rejected because the set of sources is attacker-chosen: a latch per source is either unbounded state or
+needs its own bound and overflow rule, and a flood from many sources would still produce one `WARN` per
+source. The counter already gives the per-flood rate, and the store-wide episode gives the one line an
+operator needs.
+
+== Open decisions
+
+Two gaps named when the fairness mechanism was reviewed stay open, by decision: this ADR does not close
+them, and the threat model carries both as accepted residuals of link:../security-threat-model.adoc#bff-20[BFF-20] until a later
+decision does. Each is stated with the question a closing decision has to answer.
+
+* *No login-initiation rate limiter.* The per-source cap bounds how much of the store one source can
+  hold, not how often it can start a login. A source can churn its own share indefinitely: every start
+  past its share evicts one of its own records and costs one pushed authorization request at the identity
+  provider. Per-route `rate_limit` is not implemented (`ApiSheriff-140`), and `enumeration_detection` does
+  not count login starts. Whether the login-initiation path gets its own rate limit, and keyed how, is
+  open.
+* *The pushed authorization request runs before the store.* `LoginFlow`, `SessionWidening` and the
+  step-up re-drive push the authorization request (ADR-0058) and only then store the pending record. A
+  start the store refuses at saturation has therefore already cost the identity provider one push, and so
+  has every own-oldest eviction. Checking capacity before the push would need a reservation the store does
+  not offer today, because a pre-check outside the store's monitor reopens the window the monitor closes.
+  Whether the store gains a reserve-then-commit contract so a refused start never reaches the identity
+  provider is open.
+
+== Consequences
+
+* *One source's login flood cannot evict another user's live login.* Cross-source displacement does not exist
+  on any path: the purge removes only expired records, the per-source cap evicts only the flooding key's
+  own records, and saturation refuses instead of evicting. A source at its cap still occupies its share of
+  the store's capacity, so when other sources already hold the rest, its records can bring the store to
+  capacity, and new logins from any other source are then refused with `PENDING_AUTHORIZATION_SATURATED`
+  while the store stays full.
+* *A flooding source loses its own oldest logins in flight.* Its evicted logins' callbacks find no
+  record and are refused `403`. A legitimate user who shares a source address with many others behind a proxy the gateway does
+  not trust shares that source's share; `forwarded.trusted_proxies` is what gives such users their own
+  quota keys.
+* *Two bounded `WARN` lines per flood, at most.* `ApiSheriff-145` for a saturation episode and
+  `ApiSheriff-154` for an eviction episode; the rates are on the two counters.
+* *The store calls its event counter under its monitor.* The counter must not block and must not call
+  back into the store. `SheriffMetrics.recordSessionEvent` only increments a cached meter.
+* *`PendingAuthorizationStoreTest` pins the mechanism.* The fairness tests cover the expiry-order purge,
+  the per-source eviction and the saturation refusal with its latch; the own-oldest eviction test drives
+  more than `MAX_PENDING_PER_SOURCE` records under one quota key and asserts one counter increment per
+  eviction, exactly one `ApiSheriff-154` per episode and `DEBUG` after.
+
+== Links
+
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/InMemoryPendingAuthorizationStore.java`
+  -- the admission order, both latches and the eviction signal
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` -- the store's
+  capacity and the binding of its event counter to `sheriff_session_events_total`
+* link:../LogMessages.adoc#apisheriff-154[ApiSheriff-154] and `ApiSheriff-145` in
+  link:../LogMessages.adoc[Log Messages] -- the two episode records
+* link:../architecture/observability-and-errors.adoc[Observability and errors] -- the event catalogue and
+  the session-events series
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
+  -- the session seam the pending records serve
+* link:0051-A_rejection_on_an_unauthenticated_reserved_endpoint_is_recorded_from_a_closed_vocabulary_at_a_level_keyed_on_attacker-reachability.adoc[ADR-0051]
+  -- why an attacker-reachable path latches its `WARN`
+* link:../security-threat-model.adoc[Security threat model] -- the pending-store control and its open gaps

@@ -49,7 +49,9 @@ import org.jspecify.annotations.Nullable;
  *       answered {@code 429} before admission, before any pipeline request exists to negotiate
  *       with. {@link EventType#PRE_TRUST_INTERNAL_FAILURE} is classified here only because it is
  *       never rendered as itself: its answer is rendered as {@link EventType#NO_ROUTE_MATCHED} and
- *       negotiates as that event does.</li>
+ *       negotiates as that event does. {@link EventType#PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED} is
+ *       classified here because it never answers a request at all: the login start whose store call
+ *       evicted is admitted.</li>
  * </ul>
  * <p>
  * <strong>Exhaustive by construction.</strong> {@link #classify(EventType)} is a {@code switch}
@@ -148,6 +150,9 @@ public class ErrorPageClassifier {
                 // SOURCE_BLOCKED is answered on the event loop before admission, so before any pipeline
                 // request exists to negotiate an HTML page for: the 429 keeps its problem document.
                 WEBSOCKET_IDLE_TIMEOUT, SOURCE_TRIPPED, SOURCE_BLOCKED,
+                // PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED never answers a request: the request whose
+                // store call evicted is admitted, so there is no error exit to render a page for.
+                PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED,
                 // PRE_TRUST_INTERNAL_FAILURE is never rendered as itself: its answer is the unrouted 404,
                 // which negotiates as NO_ROUTE_MATCHED does.
                 PRE_TRUST_INTERNAL_FAILURE -> Classification.KEEP_SHAPE;

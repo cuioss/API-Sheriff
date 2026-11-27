@@ -225,7 +225,7 @@ public enum EventType {
      */
     SOURCE_BLOCKED(EventCategory.RATE_LIMITING, 429),
 
-    // --- BFF pending-authorization store capacity (503) ---
+    // --- BFF pending-authorization store capacity (503) and per-source share (informational) ---
 
     /**
      * A login, step-up or session-widening start was refused because the BFF's pending-authorization
@@ -239,6 +239,16 @@ public enum EventType {
      * carries threat weight {@code 0}.
      */
     PENDING_AUTHORIZATION_SATURATED(EventCategory.RATE_LIMITING, 503),
+    /**
+     * A source that already held its full per-source share of the BFF's pending-authorization store
+     * started one more login, step-up or session widening, so the store evicted that source's own oldest
+     * pending record to admit the new one ({@code InMemoryPendingAuthorizationStore.store}, ADR-0085). No
+     * other source's record is touched and the request itself is admitted. Informational, not a
+     * rejection: it describes the source's share of the store, not a refused request, so it has no
+     * category and no HTTP mapping. Counted on {@code sheriff_session_events_total} under its own name;
+     * the evicted login's later callback finds no pending record.
+     */
+    PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED(null, 0),
 
     // --- BFF server-session lifecycle (informational; no category, no HTTP mapping) ---
 

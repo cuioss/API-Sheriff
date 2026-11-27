@@ -29,7 +29,6 @@ import java.util.Set;
 import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
@@ -108,7 +107,8 @@ class ReservedEndpointLogHygieneTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new InMemoryPendingAuthorizationStore(PENDING_CAPACITY);
+        pendingStore = new InMemoryPendingAuthorizationStore(PENDING_CAPACITY, _ -> {
+        });
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         sessionBinding = new ServerSessionBinding(
                 new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {

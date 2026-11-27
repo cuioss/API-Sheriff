@@ -838,7 +838,8 @@ the browser is redirected, the gateway tries to revoke the session's refresh tok
 refresh that rotated the token while the logout was running is covered. When something else ended
 the session after the logout found it and before it destroyed it, the gateway revokes the refresh
 token of the session the logout found instead. When discovery fails, the
-revocation's own metadata read fails too: the attempt is reported as `ApiSheriff-147` and nothing is revoked. Where the revocation
+revocation's own metadata read fails too: the attempt is reported as `ApiSheriff-147` with the
+reason `provider-discovery` and nothing is revoked. Where the revocation
 succeeds, a refresh token stolen from the session can no longer mint access tokens. What it does
 not revoke:
 
@@ -857,17 +858,21 @@ at most two: a discovery request when the IdP's metadata is not yet known, and t
 (see
 link:../adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]).
 The session is already gone during that wait. A failed
-revocation never changes the answer the browser gets. The first failure logs `WARN` `ApiSheriff-147`
-once; repeats stay at `DEBUG`. If you see `ApiSheriff-147`, check that the gateway can reach the
+revocation never changes the answer the browser gets. The first failure of each reason logs `WARN`
+`ApiSheriff-147` once, carrying the reason: `provider-discovery` when the IdP's metadata could not be
+obtained, `revocation-request` when the revocation request itself failed. Repeats of a reason stay at
+`DEBUG`. If you see `ApiSheriff-147`, check that the gateway can reach the
 IdP's revocation endpoint over its back channel and that the IdP accepts the gateway's client
 authentication there -- until then, logouts leave refresh tokens valid until they expire.
 
 A logout with same-origin proof but without a live session answers the same redirect to
 `oidc.logout.final_redirect` and clears the cookie; without the proof it gets the confirmation page
-like any other, because the proof is checked before the session is looked up. There is no session token to revoke, so no revocation request is sent. A logout
-that found a live session which something else -- a new login of the same user, the expiry sweep, a
-back-channel logout -- ended before the logout destroyed it is different: the gateway revokes the
-refresh token of the session it found, as described above, and the browser is still redirected to
+like any other, because the proof is checked before the session is looked up. With no session there
+is no refresh token to revoke, so no revocation request is sent. A logout that found a live session
+which something else -- a new login of the same user, the expiry sweep, a back-channel logout --
+ended before the logout destroyed it is different: the destruction hands back nothing, so the
+gateway revokes the refresh token of the session the logout found, as described above, and the
+browser is still redirected to
 the IdP's end-session endpoint where one is usable. Revoking a token that is already invalid does no
 harm; the IdP answers it with success.
 
@@ -1000,8 +1005,9 @@ and the two signing keys, any replica serves any session.
   had just issued is abandoned, not revoked: after a new
   login that reused the IdP's session, revoking it could end the new session at the IdP, and the
   gateway cannot tell that case from a logout. This is a residual risk. `oidc.logout.path` revokes
-  the refresh token of the session it found, which the refresh had already spent, and a back-channel
-  logout comes from an IdP that has ended its own session; whether the IdP also invalidates the newly
+  the refresh token the session held when the logout destroyed it -- the one the in-flight refresh
+  had already spent, since the rotated token was never stored -- and a back-channel logout revokes
+  nothing and comes from an IdP that has ended its own session; whether the IdP also invalidates the newly
   issued refresh token is the IdP's own policy (RFC 7009 allows it but does not require it). The
   abandoned token is held by nobody -- it never reaches the browser and no copy is kept -- but it can
   stay valid at the IdP until the IdP's refresh-token lifetime ends. A refresh that a widening

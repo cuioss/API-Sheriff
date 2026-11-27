@@ -545,14 +545,59 @@ class RetryingJwksLoaderTest {
             refreshScheduler.runCapturedRefresh();
 
             // Assert — the issuer cache, which reads the status, re-admits the issuer at once; readiness,
-            // which reads the recorded attempt, waits for the wrapper's own retry, so it never reports
-            // UP for a delegate the retry is about to replace
+            // which reads the recorded attempt, waits for the wrapper's own retry, which then records the
+            // recovery instead of replacing the delegate
             assertEquals(LoaderStatus.OK, built.getFirst().getLoaderStatus(), "precondition: the library recovered");
             assertEquals(LoaderStatus.OK, loader.getLoaderStatus(), "the recovered delegate's OK is reported as it is");
             assertEquals(KeySetState.FAILED, loader.keySetState(), "the recorded outcome is the last completed attempt");
             assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent(),
                     "the recovered delegate answers from the keys it installed");
             assertTrue(loader.retryPending(), "the wrapper's retry sequence is still live");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a retry that finds a failed first load recovered by the library's own refresh keeps that "
+                + "delegate and ends the retry sequence")
+        void retryKeepsADelegateTheLibraryRecovered() throws Exception {
+            // Arrange — the first fetch fails and the wrapper's fast retry is scheduled. The test holds
+            // the scheduler's one thread, so the retry cannot run before the library's own background
+            // refresh has recovered the delegate
+            failuresBeforeSuccess.set(1);
+            List<HttpJwksLoader> built = new CopyOnWriteArrayList<>();
+            RetryingJwksLoader loader = loader(() -> {
+                HttpJwksLoader delegate = new HttpJwksLoader(capturedRefreshConfig(null));
+                built.add(delegate);
+                return delegate;
+            }, REFRESH_INTERVAL, FAST);
+            CountDownLatch release = new CountDownLatch(1);
+            scheduler.submit(() -> release.await(AWAIT_SECONDS, TimeUnit.SECONDS));
+            try {
+                assertNotEquals(LoaderStatus.OK, initialise(loader), "precondition: the first load failed");
+                assertTrue(loader.retryPending(), "precondition: the wrapper's retry is scheduled");
+                refreshScheduler.runCapturedRefresh();
+                assertEquals(LoaderStatus.OK, built.getFirst().getLoaderStatus(),
+                        "precondition: the library recovered the delegate by its own refresh");
+            } finally {
+                release.countDown();
+            }
+
+            // Act — the wrapper's retry runs against the recovered delegate
+            Awaits.until(() -> !loader.retryPending(), "the wrapper's retry to run", Awaits.CONNECT_CEILING_SECONDS);
+            drainScheduler(FAST.multipliedBy(4));
+
+            // Assert — the recovered delegate is kept: replacing it would close a delegate holding usable
+            // keys and report a fresh one's LOADING, so the issuer cache would refuse a healthy issuer
+            // for the length of a fetch, and for longer whenever that fetch failed
+            assertEquals(1, built.size(), "the retry builds no fresh delegate over a recovered one");
+            assertEquals(LoaderStatus.OK, built.getFirst().getLoaderStatus(), "the recovered delegate is not closed");
+            assertEquals(LoaderStatus.OK, loader.getLoaderStatus());
+            assertEquals(KeySetState.LOADED, loader.keySetState(),
+                    "the recovery is recorded, so readiness counts the issuer loaded");
+            assertFalse(loader.retryPending(), "the retry sequence ends at the recovered key set");
+            assertEquals(2, server.getRequestCount(),
+                    "the failed first load and the library's own refresh; the retry fetched nothing");
+            awaitLog(TestLogLevel.INFO, "JWKS key set for issuer '" + ISSUER_NAME + "' loaded after 0 retry attempt(s)");
             loader.close();
         }
 
@@ -1270,31 +1315,6 @@ class RetryingJwksLoaderTest {
         }
 
         @Test
-        @DisplayName("a refresh triggered by an invented key id publishes a rotated key set")
-        void inventedKeyIdPublishesARotatedKeySet() throws Exception {
-            // Arrange — the endpoint did rotate, but the lookup names a key id it never published
-            RetryingJwksLoader loader = refreshingLoader();
-            initialise(loader);
-            rotateSigningKey();
-
-            // Act
-            Optional<KeyInfo> triggering = loader.getKeyInfo("invented");
-            awaitRotatedKeyPublished(loader);
-            drainScheduler(Duration.ZERO);
-
-            // Assert — the rotated key set gains a key id the loaded one lacks, so it is published
-            // although the key id that triggered the refresh is not among its key ids
-            assertTrue(triggering.isEmpty(), "the lookup that triggers a refresh never waits for it");
-            assertEquals(Set.of(ROTATED_KEY_ID), loader.getKeyIds(), "the rotated key set is the published one");
-            assertEquals(2, built.size(), "the first delegate and exactly one refresh");
-            assertFalse(built.getFirst().closed.get(), "the replaced delegate is retained as the retired one");
-            assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent(),
-                    "the replaced key set still resolves its key id inside the grace period");
-            assertTrue(loader.getKeyInfo("invented").isEmpty(), "the invented key id still resolves nothing");
-            loader.close();
-        }
-
-        @Test
         @DisplayName("a key set published by an unknown-key-id refresh is reported with the fresh delegate's OK and reads LOADED")
         void publishedRefreshReportsTheFreshDelegateStatus() throws Exception {
             // Arrange
@@ -1315,9 +1335,12 @@ class RetryingJwksLoaderTest {
         }
 
         @Test
-        @DisplayName("a degraded issuer can still claim a refresh, and a published key set re-admits it")
+        @DisplayName("a lookup reaching the wrapper over a degraded delegate can still claim a refresh, and a published "
+                + "key set reports OK")
         void degradedIssuerIsReadmittedByAPublishedRefresh() throws Exception {
-            // Arrange — a loaded delegate that has stopped reporting its key set usable
+            // Arrange — a loaded delegate that has stopped reporting its key set usable. In production no
+            // lookup reaches the wrapper for such an issuer: the library's issuer cache refuses its tokens
+            // first (ADR-0063). This pins the wrapper's own mechanics, which do not depend on that
             SwitchableStatusLoader degraded = new SwitchableStatusLoader();
             AtomicInteger builds = new AtomicInteger();
             RetryingJwksLoader loader = loader(() -> builds.incrementAndGet() == 1 ? degraded : trackedDelegate());
@@ -1439,16 +1462,18 @@ class RetryingJwksLoaderTest {
         @Test
         @DisplayName("a refresh fetched while the loaded key set dropped a key id is discarded and does not bring it back")
         void refreshOutrunByADropIsDiscarded() throws Exception {
-            // Arrange — the identity provider drops A and adds C while the fetch is held; the fetch
-            // still carries the older {A, B}, which gains A against the moved {B, C} key set
+            // Arrange — the loaded key set {A, B} moves to {B, C} while the fetch is held: the identity
+            // provider added C and dropped A. The fetch carries {A, B, C}, the key set between those two
+            // steps. It gains C against the basis {A, B}, so the key-id comparison alone would publish
+            // it; only the check that the basis is still current keeps it from bringing A back
             String keyA = InMemoryKeyMaterialHandler.DEFAULT_KEY_ID;
             String keyC = "added-key";
 
             // Act
             RetryingJwksLoader loader = refreshOutrunByTheLoadedKeySet(Set.of(keyA, ROTATED_KEY_ID),
-                    Set.of(ROTATED_KEY_ID, keyC), keyA, ROTATED_KEY_ID);
+                    Set.of(ROTATED_KEY_ID, keyC), keyA, ROTATED_KEY_ID, keyC);
 
-            // Assert — compared against the basis it was fetched to improve on, the fetch gains nothing
+            // Assert — the basis no longer describes the current delegate, so the fetch is discarded
             assertEquals(Set.of(ROTATED_KEY_ID, keyC), loader.getKeyIds(), "the moved key set stays published");
             assertTrue(loader.getKeyInfo(keyA).isEmpty(), "the dropped key id is not brought back");
             assertEquals(KeySetState.LOADED, loader.keySetState());
@@ -1703,6 +1728,154 @@ class RetryingJwksLoaderTest {
             // Assert — the built delegate was closed, and the next window's refresh ran
             assertTrue(answeredAfterFailure, "the loaded delegate keeps answering after a refresh that did not start");
             assertEquals(3, builds.get(), "the first delegate, the refresh that did not start and the next window's one");
+            loader.close();
+        }
+
+        /** Asserts that every unexpected-refresh-failure WARN names the issuer and nothing of the failure. */
+        private void assertRefreshFailureWarnings(int expected, String failureMessage) {
+            List<String> warnings = warningsContaining(WARN_REFRESH_FAILED);
+            assertEquals(expected, warnings.size(),
+                    () -> expected + " unexpected-refresh-failure WARN(s) expected, got " + warnings);
+            for (String warning : warnings) {
+                assertTrue(warning.contains("'" + ISSUER_NAME + "'"), "the WARN names the issuer: " + warning);
+                assertFalse(warning.contains(failureMessage), "the WARN never carries the failure's message");
+                assertFalse(warning.contains(String.valueOf(server.getPort())), "the WARN never carries the JWKS port");
+            }
+        }
+
+        @Test
+        @DisplayName("a refresh whose settling fails before publication closes the fresh delegate, warns once and "
+                + "does not switch the refresh off")
+        void refreshWhoseSettlingFailsIsClosedAndReported() throws Exception {
+            // Arrange — the second delegate, which is the refresh, loads and then fails the moment its
+            // fetched key ids are read, which is the first thing settling the refresh does
+            String failureMessage = "simulated failure to read the fetched key ids";
+            AtomicInteger builds = new AtomicInteger();
+            RetryingJwksLoader loader = loader(() -> {
+                if (builds.incrementAndGet() != 2) {
+                    return trackedDelegate();
+                }
+                AtomicBoolean loaded = new AtomicBoolean();
+                TrackedLoader failing = new TrackedLoader(httpConfig()) {
+                    @Override
+                    public CompletableFuture<LoaderStatus> initJWKSLoader(SecurityEventCounter securityEventCounter) {
+                        return super.initJWKSLoader(securityEventCounter).thenApply(status -> {
+                            loaded.set(true);
+                            return status;
+                        });
+                    }
+
+                    @Override
+                    public Set<String> getKeyIds() {
+                        if (loaded.get()) {
+                            throw new UnsupportedOperationException(failureMessage);
+                        }
+                        return super.getKeyIds();
+                    }
+                };
+                built.add(failing);
+                return failing;
+            });
+            initialise(loader);
+            rotateSigningKey();
+
+            // Act — the refresh whose settling fails, then a lookup in the next window
+            loader.getKeyInfo(ROTATED_KEY_ID);
+            awaitBuilt(2);
+            Awaits.until(() -> !loader.refreshInProgress(), "the failed refresh to settle",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            boolean freshClosed = built.get(1).closed.get();
+            boolean answeredAfterFailure = loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent();
+            tick(WINDOW);
+            loader.getKeyInfo(ROTATED_KEY_ID);
+            awaitRotatedKeyPublished(loader);
+
+            // Assert — the fresh delegate was not left open, the failure was reported once, and the next
+            // window's refresh ran, so the failure left no in-flight claim behind
+            assertTrue(freshClosed, "the refresh's fresh delegate is closed, not leaked");
+            assertTrue(answeredAfterFailure, "the loaded delegate keeps answering after a failed settling");
+            assertEquals(3, builds.get(), "the first delegate, the failed refresh and the next window's one");
+            assertRefreshFailureWarnings(1, failureMessage);
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a refresh whose settling fails after publication keeps the published delegate open and warns once")
+        void refreshWhoseSettlingFailsAfterPublicationKeepsThePublishedDelegate() throws Exception {
+            // Arrange — the first delegate fails when it is closed, which the second publication does
+            // when it closes the older retired delegate
+            String failureMessage = "simulated failure to close the older retired delegate";
+            AtomicInteger builds = new AtomicInteger();
+            RetryingJwksLoader loader = loader(() -> {
+                if (builds.incrementAndGet() != 1) {
+                    return trackedDelegate();
+                }
+                TrackedLoader failingOnClose = new TrackedLoader(httpConfig()) {
+                    @Override
+                    public void close() {
+                        super.close();
+                        throw new UnsupportedOperationException(failureMessage);
+                    }
+                };
+                built.add(failingOnClose);
+                return failingOnClose;
+            });
+            initialise(loader);
+            rotateSigningKey();
+            loader.getKeyInfo(ROTATED_KEY_ID);
+            awaitRotatedKeyPublished(loader);
+            String secondRotation = "rotated-again";
+            jwksBody.set(InMemoryKeyMaterialHandler.createDefaultJwks()
+                    .replace(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID, secondRotation));
+
+            // Act — the next window's refresh is published and then fails closing the older retired one
+            tick(WINDOW);
+            loader.getKeyInfo(secondRotation);
+            Awaits.until(() -> loader.getKeyIds().contains(secondRotation) && !loader.refreshInProgress(),
+                    "the second refresh to be published and settle", Awaits.CONNECT_CEILING_SECONDS);
+
+            // Assert — the published delegate stays current and open; the failure was reported once
+            assertEquals(3, builds.get(), "the first delegate and two refreshes");
+            assertTrue(built.getFirst().closed.get(), "precondition: the older retired delegate's close ran");
+            assertFalse(built.get(2).closed.get(), "a published delegate is never closed by a failed settling");
+            assertEquals(Set.of(secondRotation), loader.getKeyIds(), "the second rotation is the current key set");
+            assertTrue(loader.getKeyInfo(secondRotation).isPresent(), "the published delegate answers");
+            assertRefreshFailureWarnings(1, failureMessage);
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a failure capturing a refresh's basis never reaches the request thread and switches nothing off")
+        void basisCaptureFailureStaysOffTheRequestThread() throws Exception {
+            // Arrange — a loaded delegate that reports no key id, and fails reading its key ids while
+            // the test says so; capturing a refresh's basis is what reads them on the request thread
+            MovingKeySetLoader loaded = new MovingKeySetLoader(Set.of());
+            AtomicInteger builds = new AtomicInteger();
+            RetryingJwksLoader loader = loader(() -> builds.incrementAndGet() == 1 ? loaded : trackedDelegate());
+            initialise(loader);
+            assertEquals(KeySetState.LOADED, loader.keySetState(), "precondition: the key set is loaded");
+            loaded.failKeyIdReads(true);
+
+            // Act — the lookup claims the window and the basis capture fails
+            Optional<KeyInfo> key = assertDoesNotThrow(() -> loader.getKeyInfo("invented"),
+                    "the lookup is answered from the held key sets whatever capturing the basis does");
+            drainScheduler(Duration.ZERO);
+            boolean inFlightAfterFailure = loader.refreshInProgress();
+            int buildsAfterFailure = builds.get();
+            // ... then the delegate reads its key ids again and the next window's lookup claims a refresh
+            loaded.failKeyIdReads(false);
+            tick(WINDOW);
+            loader.getKeyInfo("invented");
+            Awaits.until(() -> loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent()
+                            && !loader.refreshInProgress(), "the next window's refresh to be published",
+                    Awaits.CONNECT_CEILING_SECONDS);
+
+            // Assert
+            assertTrue(key.isEmpty(), "the unknown key id resolves nothing");
+            assertFalse(inFlightAfterFailure, "a failed capture leaves no refresh in flight");
+            assertEquals(1, buildsAfterFailure, "a failed capture schedules no refresh");
+            assertEquals(2, builds.get(), "the next window's refresh is built");
+            assertRefreshFailureWarnings(1, MovingKeySetLoader.KEY_ID_READ_FAILURE);
             loader.close();
         }
 
@@ -2109,11 +2282,16 @@ class RetryingJwksLoaderTest {
     /**
      * A hand-written loader whose load succeeds and whose key ids a test sets and moves, playing the
      * delegate's own background refresh; it resolves no key, so a key id it reports never verifies a
-     * token. Built with no key ids, it is a loaded delegate that reports none.
+     * token. Built with no key ids, it is a loaded delegate that reports none. A test can also make it
+     * fail reading its key ids, playing a library loader that fails where nothing anticipates it.
      */
     private static final class MovingKeySetLoader implements JwksLoader {
 
+        /** The message of the failure a key-id read raises while {@link #failKeyIdReads} is set. */
+        static final String KEY_ID_READ_FAILURE = "simulated failure to read the key ids";
+
         private final AtomicReference<Set<String>> keyIds;
+        private final AtomicBoolean failKeyIdReads = new AtomicBoolean();
 
         MovingKeySetLoader(Set<String> keyIds) {
             this.keyIds = new AtomicReference<>(Set.copyOf(keyIds));
@@ -2124,6 +2302,11 @@ class RetryingJwksLoaderTest {
             keyIds.set(Set.copyOf(next));
         }
 
+        /** Makes every key-id read fail while {@code fail} is set. */
+        void failKeyIdReads(boolean fail) {
+            failKeyIdReads.set(fail);
+        }
+
         @Override
         public Optional<KeyInfo> getKeyInfo(String kid) {
             return Optional.empty();
@@ -2131,6 +2314,9 @@ class RetryingJwksLoaderTest {
 
         @Override
         public Set<String> getKeyIds() {
+            if (failKeyIdReads.get()) {
+                throw new UnsupportedOperationException(KEY_ID_READ_FAILURE);
+            }
             return keyIds.get();
         }
 

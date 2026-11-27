@@ -206,8 +206,9 @@ link:../user/bff-cookie.adoc#_cookie_size_budget[the cookie-BFF operator guide])
   session-bound `state` (carried in the short-lived logout cookie, see
   link:../configuration/authentication-and-oidc.adoc#_oidc[`logout.path`]). Before that redirect the
   gateway revokes at the IdP (RFC 7009) the refresh token sealed in the cookie the logout request
-  presents; a failure never stops the logout, and the first one per runtime is reported as
-  `ApiSheriff-147`. The access token is not revoked and stays valid at a resource server until it
+  presents; a failure never stops the logout, and the first one of each reason per runtime is
+  reported as `ApiSheriff-147`, carrying a bounded reason token (`provider-discovery` or
+  `revocation-request`). The access token is not revoked and stays valid at a resource server until it
   expires; a session without a refresh token, or an IdP without a `revocation_endpoint`, gets no
   revocation request
   (link:../adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]).
@@ -301,7 +302,7 @@ link:../configuration/authentication-and-oidc.adoc#_oidc[the configuration refer
 | State | Stateless after login -- the sealed cookie carries the session; the login and widening legs need affinity.
 | Token custody | Tokens leave the server only sealed in an `HttpOnly` cookie; script cannot read them, but XSS on the page can still drive requests -- hence the fixed CSRF defence and short token lifetimes.
 | Shared material | The sealing-key file and the two signing-key files (with a client secret: the secret and the proof-key file).
-| Revocation | Not immediate: no back-channel logout; an ended IdP session takes effect at the next refresh. RP-initiated logout revokes the presented refresh token at the IdP, never the access token, so a retained cookie ends at its next refresh.
+| Revocation | Not immediate: no back-channel logout; an ended IdP session takes effect at the next refresh. RP-initiated logout revokes the presented refresh token at the IdP, never the access token, so a retained cookie ends at its next refresh. A failed revocation does not stop the logout and is reported as `ApiSheriff-147`, and the refresh token then stays valid at the IdP; a session without a refresh token sends no revocation request.
 | OIDC client | Confidential client: pushed requests, DPoP-bound tokens, key-based client authentication unless a client secret is configured.
 |===
 

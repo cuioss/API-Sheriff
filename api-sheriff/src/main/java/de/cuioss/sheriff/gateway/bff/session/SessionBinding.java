@@ -194,8 +194,9 @@ public interface SessionBinding {
     List<String> recordAccess(SessionRecord session, @Nullable String cookieHeader, Instant now);
 
     /**
-     * Destroys the given session (RP-initiated logout or a failed refresh) and hands back the record
-     * that was destroyed. A no-op when the session is already gone.
+     * Destroys the given session (an RP-initiated logout, a failed refresh, or a login callback that
+     * replaces the session) and hands back the record that was destroyed. A no-op when the session is
+     * already gone.
      * <p>
      * <strong>The result is the session as it stood when it was destroyed</strong>, which need not be
      * {@code session}: the caller resolved the session earlier, and an updating write may have replaced
@@ -354,23 +355,32 @@ public interface SessionBinding {
     sealed interface PersistResult permits PersistResult.Written, PersistResult.Gone, PersistResult.Superseded {
 
         /**
+         * The result of a write that landed.
+         *
          * @param bound the updated session and the {@code Set-Cookie} header value(s) the caller emits
          * @return the result of a write that landed
+         * @since 1.0
          */
         static PersistResult written(BoundSession bound) {
             return new Written(bound);
         }
 
         /**
+         * The result of a write that found the session gone.
+         *
          * @return the result of a write that found the session destroyed and wrote nothing
+         * @since 1.0
          */
         static PersistResult gone() {
             return Gone.INSTANCE;
         }
 
         /**
+         * The result of a write that found the session's record replaced.
+         *
          * @return the result of a write that found the session's record replaced since the caller read
          *         it and wrote nothing
+         * @since 1.0
          */
         static PersistResult superseded() {
             return Superseded.INSTANCE;

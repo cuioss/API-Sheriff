@@ -64,10 +64,12 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 /**
- * Covers the back-channel logout signature seam as the session runtime binds it — the engine's
- * signature-only entry point {@link TokenValidator#verifySignature(String)}, adapted by
- * {@link VerifiedLogoutToken#of} — over a <strong>really signed</strong> token, and the receiver's
- * handling of that seam's refusals.
+ * Covers the back-channel logout signature seam as the session runtime binds it — through
+ * {@link BackchannelLogoutReceiver.LogoutTokenVerifier#engine}, the engine's signature-only entry point
+ * {@link TokenValidator#verifySignature(String)} adapted by {@link VerifiedLogoutToken#of} — over a
+ * <strong>really signed</strong> token, and the receiver's handling of that seam's refusals: a
+ * configured issuer whose key set is not reported usable is recorded as {@code key-source-unavailable},
+ * every other refusal as {@code signature-rejected}.
  * <p>
  * The suite is built around one matched pair, because the seam it guards is invisible to a test of
  * either side alone:
@@ -124,9 +126,13 @@ class BackchannelLogoutSignatureSeamTest {
 
     private final TokenValidator tokenValidator = TokenValidator.builder().issuerConfig(issuerConfig).build();
 
-    /** The seam exactly as the session runtime binds it. */
-    private static BackchannelLogoutReceiver.LogoutTokenVerifier productionSeam(TokenValidator validator) {
-        return raw -> VerifiedLogoutToken.of(validator.verifySignature(raw));
+    /**
+     * The seam exactly as the session runtime binds it — through the engine factory — over
+     * {@code validator}, configured for the fixture token's issuer as the logout issuer whose key source
+     * a refusal is checked against.
+     */
+    private BackchannelLogoutReceiver.LogoutTokenVerifier productionSeam(TokenValidator validator) {
+        return BackchannelLogoutReceiver.LogoutTokenVerifier.engine(validator, logoutToken.getIssuer());
     }
 
     private LogoutTokenValidator claimResidualFor(TestTokenHolder token) {
@@ -143,8 +149,16 @@ class BackchannelLogoutSignatureSeamTest {
     }
 
     private static int signatureRejections() {
+        return warningsFor(LogoutRejection.SIGNATURE_REJECTED);
+    }
+
+    private static int keySourceOutages() {
+        return warningsFor(LogoutRejection.KEY_SOURCE_UNAVAILABLE);
+    }
+
+    private static int warningsFor(LogoutRejection reason) {
         return TestLoggerFactory.getTestHandler()
-                .resolveLogMessagesContaining(TestLogLevel.WARN, LogoutRejection.SIGNATURE_REJECTED.token()).size();
+                .resolveLogMessagesContaining(TestLogLevel.WARN, reason.token()).size();
     }
 
     private static List<LogRecord> gatewayRecords() {
@@ -215,7 +229,8 @@ class BackchannelLogoutSignatureSeamTest {
                     TokenValidator.builder().issuerConfig(withoutExpiry.getIssuerConfig()).build();
 
             LogoutTokenValidator.Verdict verdict = claimResidualFor(withoutExpiry)
-                    .validate(productionSeam(expirylessValidator).verify(withoutExpiry.getRawToken()), Instant.now());
+                    .validate(BackchannelLogoutReceiver.LogoutTokenVerifier.engine(expirylessValidator,
+                            withoutExpiry.getIssuer()).verify(withoutExpiry.getRawToken()), Instant.now());
 
             LogoutTokenValidator.Verdict.Rejected rejected = assertInstanceOf(
                     LogoutTokenValidator.Verdict.Rejected.class, verdict,
@@ -298,10 +313,12 @@ class BackchannelLogoutSignatureSeamTest {
                     JwtTokenTamperingUtil.TamperingStrategy.MODIFY_SIGNATURE_LAST_CHAR);
             BackchannelLogoutReceiver.LogoutTokenVerifier seam = productionSeam(tokenValidator);
 
-            assertThrows(TokenValidationException.class, () -> seam.verify(tampered));
+            TokenValidationException refusal = assertThrows(TokenValidationException.class, () -> seam.verify(tampered));
             assertFalse(receiverOver(tokenValidator).receive(tampered, Instant.now()).accepted(),
                     "the receiver refuses what the seam refuses");
+            assertFalse(seam.keySourceUnavailable(refusal), "a bad signature is no key-source outage");
             assertEquals(1, signatureRejections(), "refused as SIGNATURE_REJECTED");
+            assertEquals(0, keySourceOutages());
         }
 
         @Test
@@ -320,7 +337,8 @@ class BackchannelLogoutSignatureSeamTest {
                     .withClaim("sid", ClaimValue.forPlainString(SID))
                     .withClaim("padding", ClaimValue.forPlainString("a".repeat(20_000)));
             TokenValidator validator = TokenValidator.builder().issuerConfig(overlong.getIssuerConfig()).build();
-            BackchannelLogoutReceiver.LogoutTokenVerifier seam = productionSeam(validator);
+            BackchannelLogoutReceiver.LogoutTokenVerifier seam =
+                    BackchannelLogoutReceiver.LogoutTokenVerifier.engine(validator, overlong.getIssuer());
             String raw = overlong.getRawToken();
 
             TokenValidationException refusal = assertThrows(TokenValidationException.class, () -> seam.verify(raw));
@@ -345,23 +363,39 @@ class BackchannelLogoutSignatureSeamTest {
         @DisplayName("Should refuse a logout token from an issuer whose loader holds keys but does not report OK")
         void shouldRefuseTokenFromDegradedIssuer(LoaderStatus degradedStatus) {
             StatusReportingLoader loader = new StatusReportingLoader(issuerConfig.getJwksLoader(), degradedStatus);
-            BackchannelLogoutReceiver.LogoutTokenVerifier seam = productionSeam(validatorOver(loader));
+            TokenValidator validator = validatorOver(loader);
+            BackchannelLogoutReceiver.LogoutTokenVerifier seam = productionSeam(validator);
             String raw = logoutToken.getRawToken();
             assertFalse(loader.getKeyIds().isEmpty(), "precondition: the degraded loader still holds the issuer's keys");
 
-            assertThrows(TokenValidationException.class, () -> seam.verify(raw),
+            TokenValidationException refusal = assertThrows(TokenValidationException.class, () -> seam.verify(raw),
                     "a key set its loader does not report usable must not verify a logout token");
+            BackchannelResult result = receiverOver(validator).receive(raw, Instant.now());
+
+            assertAll("a logout token from an issuer whose loader reports " + degradedStatus,
+                    () -> assertEquals(SecurityEventCounter.EventType.NO_ISSUER_CONFIG, refusal.getEventType(),
+                            "precondition: the engine refuses a degraded issuer as it refuses an unknown one"),
+                    () -> assertTrue(seam.keySourceUnavailable(refusal),
+                            "the engine binding reads the refusal as a key-source outage"),
+                    () -> assertFalse(result.accepted(), "the receiver refuses the token"),
+                    () -> assertEquals(1, keySourceOutages(), "and records it as key-source-unavailable"),
+                    () -> assertEquals(0, signatureRejections(), "not as a signature failure"));
         }
 
         @Test
         @DisplayName("Should verify the same token against the same keys when the loader reports OK (matched control)")
         void shouldVerifyTokenFromHealthyIssuer() {
             StatusReportingLoader loader = new StatusReportingLoader(issuerConfig.getJwksLoader(), LoaderStatus.OK);
+            TokenValidator validator = validatorOver(loader);
 
-            VerifiedLogoutToken verified = productionSeam(validatorOver(loader)).verify(logoutToken.getRawToken());
+            VerifiedLogoutToken verified = productionSeam(validator).verify(logoutToken.getRawToken());
+            BackchannelResult result = receiverOver(validator).receive(logoutToken.getRawToken(), Instant.now());
 
-            assertEquals(SID, verified.content().getClaims().get("sid").getOriginalString(),
-                    "only the reported status differs from the refusal arm, and with OK the token verifies");
+            assertAll("the same token while the loader reports OK",
+                    () -> assertEquals(SID, verified.content().getClaims().get("sid").getOriginalString(),
+                            "only the reported status differs from the refusal arm, and with OK the token verifies"),
+                    () -> assertTrue(result.accepted(), "and the receiver accepts it"),
+                    () -> assertEquals(0, keySourceOutages(), "nothing is recorded as a key-source outage"));
         }
 
         /** A validator over one issuer that names the fixture token's {@code iss} and reads {@code loader}. */
@@ -409,6 +443,8 @@ class BackchannelLogoutSignatureSeamTest {
 
             assertFalse(result.accepted(), "an issuer the gateway does not configure is refused");
             assertEquals(1, signatureRejections(), "refused as SIGNATURE_REJECTED");
+            assertEquals(0, keySourceOutages(),
+                    "the configured issuer's key source is healthy, so a foreign issuer is no key-source outage");
             List<LogRecord> gateway = gatewayRecords();
             assertAll("gateway records after an unknown-issuer logout token",
                     () -> assertTrue(gateway.stream().anyMatch(captured -> Level.FINE.equals(captured.getLevel())

@@ -24,7 +24,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
-
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
@@ -73,7 +72,8 @@ class StepUpCoordinatorTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new InMemoryPendingAuthorizationStore(8);
+        pendingStore = new InMemoryPendingAuthorizationStore(8, _ -> {
+        });
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
     }
 
@@ -120,7 +120,8 @@ class StepUpCoordinatorTest {
     @Test
     @DisplayName("Should admit the re-drive when the held record expired during the push, its TTL anchored at now")
     void shouldAdmitReDriveWhenTheHeldRecordExpiredDuringThePush() {
-        InMemoryPendingAuthorizationStore full = new InMemoryPendingAuthorizationStore(1);
+        InMemoryPendingAuthorizationStore full = new InMemoryPendingAuthorizationStore(1, _ -> {
+        });
         FlowContext context = FlowContext.create(GATEWAY_ORIGIN + "/auth/callback");
         Instant heldCreatedAt = NOW.minus(PendingAuthorizationRecord.FIXED_TTL).plusSeconds(1);
         full.store(PendingAuthorizationRecord.create(context, "/held", STEP_UP_SCOPES, "198.51.100.20",

@@ -181,7 +181,8 @@ attached. Same-origin deployments need neither.
   store held when the session was destroyed, so a refresh that rotated it just before is covered.
   When something else ended the session just before the logout destroyed it, the gateway revokes the
   refresh token of the session the logout found instead. A failure never stops the logout, and the
-  first one per runtime is reported as `ApiSheriff-147`. The access token is not revoked and
+  first one of each reason per runtime is reported as `ApiSheriff-147`, carrying a bounded reason
+  token (`provider-discovery` or `revocation-request`). The access token is not revoked and
   stays valid at a resource server until it expires. A session without a refresh token, or an IdP
   without a `revocation_endpoint`, gets no revocation request
   (link:../adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080]).
@@ -205,8 +206,9 @@ attached. Same-origin deployments need neither.
   unauthenticated. The refresh abandons the refresh token it just obtained without revoking it,
   because a session that replaced the destroyed one may share the IdP's user session and a
   revocation could end it. That
-  leaves a residual risk: RP-initiated logout revokes the refresh token of the session it found,
-  which the refresh had already spent, and a back-channel logout comes from an IdP that has ended its
+  leaves a residual risk: RP-initiated logout revokes the refresh token the store held when the
+  logout destroyed the session -- the one the refresh had already spent, since the rotated token was
+  never written -- and a back-channel logout revokes nothing and comes from an IdP that has ended its
   own session; whether the IdP also invalidates the newly obtained token is its own policy (RFC 7009
   allows it but does not require it). The abandoned token is held by nobody, but it can stay valid at
   the IdP until its refresh-token lifetime ends -- the same accepted residual as a superseded refresh

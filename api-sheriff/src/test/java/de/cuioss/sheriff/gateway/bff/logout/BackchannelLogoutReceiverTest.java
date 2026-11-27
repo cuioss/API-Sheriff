@@ -32,6 +32,7 @@ import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.token.commons.error.TokenSheriffException;
 import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
@@ -53,7 +54,8 @@ import org.junit.jupiter.api.Test;
  * was never delivered, one that was delivered and refused, and one that was accepted but matched no
  * session produced byte-identical silence in a production log. The observability assertions below are
  * what keep those three apart: an acceptance raises {@code ApiSheriff-13} carrying the destroyed
- * count, and each refusal raises {@code ApiSheriff-112} naming the check that refused.
+ * count, and each refusal raises {@code ApiSheriff-112} naming the check that refused — a refusal the
+ * seam reports as a key-source outage as {@code key-source-unavailable}, apart from a signature failure.
  * <p>
  * The signature seam is bound to a hand-built token (or a stub that throws), so every case runs
  * without a live IdP; the session binding is a recording stub, so the sid-vs-sub decision is
@@ -265,9 +267,59 @@ class BackchannelLogoutReceiverTest {
             assertFalse(receiver.receive(RAW, NOW).accepted());
 
             assertEquals(1, warningsFor(LogoutRejection.SIGNATURE_REJECTED));
+            assertEquals(0, warningsFor(LogoutRejection.KEY_SOURCE_UNAVAILABLE),
+                    "a seam that cannot tell the key source's state keeps every refusal on signature-rejected");
             assertEquals(0, TestLoggerFactory.getTestHandler()
                             .resolveLogMessagesContaining(TestLogLevel.WARN, "attacker-supplied").size(),
                     "the engine's own message describes attacker-supplied input and must stay at DEBUG");
+        }
+
+        /**
+         * A refusal the seam reports as the configured issuer's key source being down is no verdict on
+         * the token, so it is recorded as {@code key-source-unavailable} and never as a signature
+         * failure. Mapped back to {@code SIGNATURE_REJECTED}, this case goes red; the case below, whose
+         * seam answers {@code false} for the same refusal, is its matched control.
+         */
+        @Test
+        @DisplayName("Should record a refusal the seam reports as a key-source outage as key-source-unavailable, not as a signature failure")
+        void shouldReportKeySourceOutageApartFromSignatureRejection() {
+            RecordingBinding binding = new RecordingBinding(SessionBinding.IdpDestruction.SUPPORTED, 1);
+            RefusingVerifier verifier = new RefusingVerifier(true);
+            BackchannelLogoutReceiver receiver = new BackchannelLogoutReceiver(verifier, validator, binding,
+                    roomyGuard());
+
+            BackchannelResult result = receiver.receive(RAW, NOW);
+
+            assertAll("a logout token refused while the key source is down",
+                    () -> assertFalse(result.accepted(), "the token is refused"),
+                    () -> assertEquals(0, result.destroyed(), "and destroys nothing"),
+                    () -> assertEquals(0, binding.destroyCalls, "the binding is not asked to destroy"),
+                    () -> assertSame(verifier.refusal, verifier.asked,
+                            "the seam is asked about the refusal it raised"),
+                    () -> assertEquals(1, warningsFor(LogoutRejection.KEY_SOURCE_UNAVAILABLE),
+                            "the outage is recorded as key-source-unavailable"),
+                    () -> assertEquals(0, warningsFor(LogoutRejection.SIGNATURE_REJECTED),
+                            "and not as a signature failure"),
+                    () -> assertEquals(0, TestLoggerFactory.getTestHandler()
+                                    .resolveLogMessagesContaining(TestLogLevel.WARN, RefusingVerifier.DETAIL).size(),
+                            "the engine's own message stays at DEBUG"));
+        }
+
+        @Test
+        @DisplayName("Should record the same refusal as signature-rejected when the seam reports the key source healthy (matched control)")
+        void shouldReportSignatureRejectionWhenKeySourceIsHealthy() {
+            RecordingBinding binding = new RecordingBinding(SessionBinding.IdpDestruction.SUPPORTED, 1);
+            RefusingVerifier verifier = new RefusingVerifier(false);
+            BackchannelLogoutReceiver receiver = new BackchannelLogoutReceiver(verifier, validator, binding,
+                    roomyGuard());
+
+            assertFalse(receiver.receive(RAW, NOW).accepted());
+
+            assertAll("the same refusal while the key source is healthy",
+                    () -> assertSame(verifier.refusal, verifier.asked, "the seam was asked and answered false"),
+                    () -> assertEquals(1, warningsFor(LogoutRejection.SIGNATURE_REJECTED),
+                            "only the seam's answer differs, and the refusal is a signature failure"),
+                    () -> assertEquals(0, warningsFor(LogoutRejection.KEY_SOURCE_UNAVAILABLE)));
         }
 
         @Test
@@ -452,6 +504,37 @@ class BackchannelLogoutReceiverTest {
                     .build();
             String setCookie = serverBinding.bind(session, NOW).setCookieHeaders().getFirst();
             return setCookie.substring(0, setCookie.indexOf(';'));
+        }
+    }
+
+    /**
+     * A signature seam that refuses every token with one engine refusal and answers
+     * {@link BackchannelLogoutReceiver.LogoutTokenVerifier#keySourceUnavailable} with the value the case
+     * chose, recording the refusal it was asked about.
+     */
+    private static final class RefusingVerifier implements BackchannelLogoutReceiver.LogoutTokenVerifier {
+
+        /** The engine message the refusal carries, which must never reach a WARN line. */
+        static final String DETAIL = "engine detail of the refused token";
+
+        private final TokenValidationException refusal =
+                new TokenValidationException(SecurityEventCounter.EventType.NO_ISSUER_CONFIG, DETAIL);
+        private final boolean keySourceDown;
+        private @Nullable TokenSheriffException asked;
+
+        RefusingVerifier(boolean keySourceDown) {
+            this.keySourceDown = keySourceDown;
+        }
+
+        @Override
+        public VerifiedLogoutToken verify(String rawLogoutToken) {
+            throw refusal;
+        }
+
+        @Override
+        public boolean keySourceUnavailable(TokenSheriffException raised) {
+            asked = raised;
+            return keySourceDown;
         }
     }
 

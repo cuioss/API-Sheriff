@@ -83,8 +83,8 @@ The behaviour the keys appeared to configure is a fixed policy of the gateway. `
 | `UPSTREAM_TIMEOUT_SECONDS`. The guard ends an attempt the upstream holds up for 30 seconds. The timeout sits inside the retry, so it bounds each attempt, not the whole dispatch.
 
 | Retry
-| 2 retries, 100 ms apart
-| SmallRye `maxRetries(2)`, only on a route whose effective `retry.enabled` is `true`. A retried dispatch runs up to three attempts, about 90 s in all (#582).
+| 2 retries, nominal 100 ms delay
+| SmallRye `maxRetries(2)` with `delay(100 ms)`, only on a route whose effective `retry.enabled` is `true`. The guard sets no jitter, so SmallRye Fault Tolerance randomises each wait with its default jitter of 200 ms: the wait before a retry is not a fixed gap. A retried dispatch runs up to three attempts, about 90 s in all (#582).
 
 | Retried methods
 | `GET`, `HEAD`, `OPTIONS`, `PUT`, `DELETE`

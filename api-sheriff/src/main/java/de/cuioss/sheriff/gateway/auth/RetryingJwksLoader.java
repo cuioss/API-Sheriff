@@ -59,9 +59,11 @@ import org.jspecify.annotations.Nullable;
  * {@link LoaderStatus#UNDEFINED} once its refreshes have failed past that bound, while keeping the
  * keys. This wrapper therefore reports the current delegate's status as it is
  * ({@link #getLoaderStatus()}), so the library's issuer cache — which admits an issuer only while its
- * loader reports {@link LoaderStatus#OK} — rejects a stale-degraded issuer fail-closed until a refresh
- * re-admits it. What the wrapper adds is the readiness view {@link #keySetState()}, which reads a
- * loaded key set the delegate no longer reports usable as {@link KeySetState#FAILED}; the fast,
+ * loader reports {@link LoaderStatus#OK} — rejects a stale-degraded issuer fail-closed until the
+ * delegate's own background refresh installs usable keys again. That rejection comes before any key
+ * lookup, so no token of a degraded issuer reaches {@link #getKeyInfo(String)} and no unknown key id
+ * can claim a refresh for it. What the wrapper adds is the readiness view {@link #keySetState()},
+ * which reads a loaded key set the delegate no longer reports usable as {@link KeySetState#FAILED}; the fast,
  * bounded first-load retry, because the library's own recovery waits a whole refresh interval; and the
  * bounded unknown-key-id refresh with the grace-period retirement of the key set it replaces.
  * <p>
@@ -73,6 +75,8 @@ import org.jspecify.annotations.Nullable;
  * a fresh delegate (and so a fresh loader configuration, because a closed delegate may have taken
  * resources with it), publishes it, closes the one it replaced, and loads it. Retries stop at the first
  * loaded key set, after which the successful delegate's own background refresh keeps the keys current.
+ * A delegate the library recovered by that background refresh before the next retry ran counts as
+ * loaded too: that retry keeps it rather than replacing it.
  * Attempts are strictly sequential — the next one is scheduled only once the previous one has
  * completed — so at most one is in flight per issuer, whatever the request rate. Every attempt that
  * ends while the wrapper is open continues the sequence: an attempt whose delegate cannot be built,
@@ -481,6 +485,15 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * One retry: builds a fresh delegate, publishes it in place of the current one, closes the
      * replaced delegate, and loads the fresh one. Runs on the scheduler only.
      * <p>
+     * A retry first reads the current delegate's status. A delegate whose failed load the library has
+     * since recovered by its own background refresh reports {@link LoaderStatus#OK}; the retry then
+     * keeps it, records the outcome as {@link KeySetState#LOADED} and ends the sequence, logging the
+     * episode's closing record with the number of retries that ran before the recovery (which is
+     * {@code 0} when the library recovered before the first retry). Replacing such a delegate would
+     * close one holding usable keys and report a fresh one's status while that one loads, so the
+     * library's issuer cache would refuse a healthy issuer for the length of a fetch, and for longer
+     * whenever the fetch failed.
+     * <p>
      * Every exit that neither hands the fresh delegate's load to {@link #settle} nor finds the wrapper
      * closed schedules exactly one next attempt, whatever ended it. There is no in-flight flag to
      * release here: what an escaping failure would cost is the retry sequence itself, because nothing
@@ -498,6 +511,17 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         }
         boolean continued = false;
         try {
+            JwksLoader held = snapshot.get().delegate();
+            if (held.getLoaderStatus() == LoaderStatus.OK) {
+                // The library recovered the failed load by its own background refresh. Replacing the
+                // delegate now would close one holding usable keys and report a fresh one's status
+                // while it loads, so the issuer cache would refuse a healthy issuer for the length of
+                // a fetch, and for longer whenever that fetch failed. Record the recovery instead.
+                recordOutcome(held, LoaderStatus.OK);
+                LOGGER.info(ConfigLogMessages.INFO.JWKS_KEY_SET_LOADED_AFTER_RETRY, issuerName, retry - 1);
+                continued = true;
+                return;
+            }
             JwksLoader fresh = buildDelegate();
             Snapshot replaced = snapshot.getAndUpdate(current -> current.with(fresh, current.state()));
             closeDelegate(replaced.delegate());
@@ -543,6 +567,12 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * the lookup is not handed to the refresh: whether a refresh is published depends on the key ids
      * it fetched and on that basis (see {@link #settleRefresh}), never on the key id that asked for
      * it. Runs on the calling request thread and performs no fetch and no blocking wait.
+     * <p>
+     * Nothing here reaches the request thread as a failure: capturing the basis and handing the
+     * refresh to the scheduler are shielded together. A scheduler that refuses the task stays
+     * {@code DEBUG}; any other runtime failure — a delegate failing to report its key ids — records
+     * {@link ConfigLogMessages.WARN#JWKS_REFRESH_FAILED} once, bounded like the claim itself. Either way
+     * the in-flight flag, if this call took it, is released, and the window's refresh is spent.
      */
     private void onUnknownKeyId() {
         if (closed.get()) {
@@ -562,18 +592,34 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         if (!refreshEnabled) {
             return;
         }
-        // Captured before the in-flight flag is taken, so nothing between taking and handing it to
-        // the scheduler can leave it set. Both delegates are read off one snapshot.
-        Snapshot current = snapshot.get();
-        RefreshBasis basis = RefreshBasis.of(current.delegate(), answeringRetired(current));
-        if (refreshInFlight.compareAndSet(false, true)) {
-            try {
+        // The lookup is answered from the held key sets whatever happens below, so nothing below may
+        // surface on the request thread: capturing the basis reads the delegates' key ids, which is a
+        // call into the library, and the scheduler may refuse the task.
+        boolean claimed = false;
+        boolean scheduled = false;
+        // The library's failure types are not part of this contract and the lookup must be answered
+        // whatever the capture throws — so the catch is deliberately broad.
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
+        try {
+            // Captured before the in-flight flag is taken; both delegates are read off one snapshot.
+            Snapshot current = snapshot.get();
+            RefreshBasis basis = RefreshBasis.of(current.delegate(), answeringRetired(current));
+            claimed = refreshInFlight.compareAndSet(false, true);
+            if (claimed) {
                 scheduler.execute(() -> runRefresh(basis));
-            } catch (RejectedExecutionException rejected) {
-                // The scheduler is shutting down. The lookup is answered from the held key sets either
-                // way, so the refusal must not surface on the request thread.
+                scheduled = true;
+            }
+        } catch (RejectedExecutionException rejected) {
+            // The scheduler is shutting down.
+            LOGGER.debug(rejected, "JWKS refresh for issuer '%s' could not be scheduled", issuerName);
+        } catch (RuntimeException _) {
+            // A failure nobody anticipated, most likely a delegate failing to report its key ids. The
+            // claimed window then refreshes nothing, and nothing else reports that. The record names
+            // the issuer only: the throwable's message is not under the gateway's control.
+            LOGGER.warn(ConfigLogMessages.WARN.JWKS_REFRESH_FAILED, issuerName);
+        } finally {
+            if (claimed && !scheduled) {
                 refreshInFlight.set(false);
-                LOGGER.debug(rejected, "JWKS refresh for issuer '%s' could not be scheduled", issuerName);
             }
         }
     }
@@ -672,21 +718,56 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * settled, and a key set that brings back only those is left to a later window. The check and the
      * publication in {@link #publishRefreshed} are a check-then-act without a lock; what remains open
      * is the few instructions between the two, not the duration of the fetch.
+     * <p>
+     * Settling runs as a completion stage of the fresh delegate's load, whose own future nobody reads,
+     * so a failure escaping here would be recorded nowhere. Every exit therefore ends the refresh from
+     * one {@code finally}: the fresh delegate is closed unless it is the published one — a failure
+     * after the publication keeps it, because it is answering lookups — and the in-flight flag is
+     * released. An exit that is neither a discard nor a completed publication records
+     * {@link ConfigLogMessages.WARN#JWKS_REFRESH_FAILED} once, as {@link #runRefresh} does for a
+     * failure before the load, so a refresh yields at most one record.
      *
      * @param fresh  the refresh's delegate, loaded off to the side and never published before this
      * @param status the load's status, or {@code null} when it completed exceptionally
      * @param basis  the comparison basis captured when the refresh's window was claimed
      */
     private void settleRefresh(JwksLoader fresh, @Nullable LoaderStatus status, RefreshBasis basis) {
+        // True on a discard and on a completed publication; only a failure nobody anticipated leaves it
+        // false.
+        boolean accountedFor = false;
         try {
             if (closed.get() || status != LoaderStatus.OK
                     || basis.holdsAll(fresh.getKeyIds())
                     || !basis.isCurrent(snapshot.get().delegate())) {
                 LOGGER.debug("JWKS refresh for issuer '%s' discarded (status %s)", issuerName, status);
-                closeDelegate(fresh);
+                accountedFor = true;
                 return;
             }
             publishRefreshed(fresh);
+            accountedFor = true;
+        } finally {
+            if (!accountedFor) {
+                LOGGER.warn(ConfigLogMessages.WARN.JWKS_REFRESH_FAILED, issuerName);
+            }
+            // The flag is still held, so only this refresh can have made fresh the current delegate.
+            endRefresh(fresh, snapshot.get().delegate() != fresh);
+        }
+    }
+
+    /**
+     * Ends one settled refresh: closes {@code fresh} when it was not published, then releases the
+     * in-flight flag. The flag is released even when closing fails, so a delegate that cannot be
+     * closed cannot switch the refresh off for the issuer.
+     *
+     * @param fresh      the refresh's delegate
+     * @param closeFresh whether {@code fresh} is to be closed, which is exactly when it is not the
+     *                   current delegate
+     */
+    private void endRefresh(JwksLoader fresh, boolean closeFresh) {
+        try {
+            if (closeFresh) {
+                closeDelegate(fresh);
+            }
         } finally {
             loadingRefresh.compareAndSet(fresh, null);
             refreshInFlight.set(false);
@@ -753,9 +834,11 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * except that a loaded key set whose delegate no longer reports {@link LoaderStatus#OK} — a library
      * loader that degraded it past the issuer's {@code jwks.max_staleness_seconds} bound — reads
      * {@link KeySetState#FAILED}. The degradation is read, not recorded: the published state stays
-     * {@link KeySetState#LOADED}, so an unknown key id can still claim a refresh that re-admits the
-     * issuer, and the next refresh of the delegate that installs usable keys ends the degradation by
-     * itself. A pure read that never fetches.
+     * {@link KeySetState#LOADED}, and the next background refresh of the delegate that installs usable
+     * keys ends the degradation by itself. No unknown-key-id refresh re-admits a degraded issuer: the
+     * library's issuer cache and the back-channel logout verifier refuse its tokens before any key is
+     * looked up, so no lookup of such a token reaches this wrapper (ADR-0063). A pure read that never
+     * fetches.
      *
      * @return the current key-set state
      */
@@ -819,8 +902,8 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * neither holds yields an empty answer for this call and, while a key set is loaded, may schedule
      * one refresh for a later one. A delegate degraded past its staleness bound still holds its keys and
      * answers from them here; rejecting the degraded issuer fail-closed is the library issuer cache's
-     * job, which reads {@link #getLoaderStatus()}. Its published state stays loaded, so it can still
-     * claim the refresh that re-admits it.
+     * job, which reads {@link #getLoaderStatus()} and refuses the issuer's tokens before any key is
+     * looked up. The delegate's own background refresh re-admits it, never a lookup of this wrapper.
      */
     @Override
     public Optional<KeyInfo> getKeyInfo(String kid) {

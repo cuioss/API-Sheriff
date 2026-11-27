@@ -117,6 +117,7 @@ class UniformNotFoundTest {
         table.put(EventType.PENDING_AUTHORIZATION_SATURATED,
                 "a reserved path has no selected route, and the session branch already discloses the route by its "
                         + "302 into the identity provider");
+        table.put(EventType.PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED, informational);
         return table;
     }
 

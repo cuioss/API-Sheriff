@@ -25,7 +25,6 @@ import java.util.TreeSet;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
@@ -76,7 +75,8 @@ import org.junit.jupiter.params.provider.MethodSource;
  * it, so a rule class that starts echoing without a row, or a row whose class was renamed or stopped
  * echoing, fails the build. Each case targets one echo of its class; a class with several echo sites
  * is covered at one of them, and the run-wide raw-character assertion holds every other echo the
- * planted value happens to reach.
+ * planted value happens to reach. {@link AnchorRules} carries a second row because it echoes two
+ * different configured scalars, an anchor reference and an anchor {@code path_prefix}.
  * <p>
  * The values are written directly into the bound model, bypassing the schema on purpose: the
  * endpoint and route ids are pattern-bound at load, but the escaping is the rules' own guarantee and
@@ -132,6 +132,12 @@ class RefusalEchoEscapingTest {
                 refusal("AnchorRules", validGateway().build(),
                         openOrders(routeWithId("orders-read").anchor("ghost" + ESCAPE + "[2J").build()),
                         topologyWith("ORDERS"), "/endpoint/routes", "references undefined anchor 'ghost\\u001B[2J'"),
+                // The anchor path_prefix is echoed beside the anchor name; the pair overlaps, and the
+                // fragment holds whichever order the anchors map iterates in.
+                refusal("AnchorRules", gatewayWithAnchors(Map.of(
+                        "api", anchor("api", "/api", null),
+                        "nested", anchor("nested", "/api/v" + LINE_FEED + "1", null))),
+                        List.of(), topologyWith(), "/anchors", "(/api/v\\u000A1)"),
                 refusal("AuthRules", validGateway().build(),
                         List.of(endpointSeed("orders").baseUrl("ORDERS")
                                 .routes(List.of(routeWithId(crRouteId).build())).build()),

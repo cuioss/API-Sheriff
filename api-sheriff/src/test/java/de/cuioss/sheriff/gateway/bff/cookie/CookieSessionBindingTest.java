@@ -28,6 +28,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
+import de.cuioss.sheriff.gateway.bff.session.SessionBinding.DestroyResult;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.PersistResult;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
@@ -578,6 +579,62 @@ class CookieSessionBindingTest {
             assertEquals(Optional.of(presented), first);
             assertEquals(Optional.of(presented), second,
                     "a second destroy finds nothing gone either: this binding cannot observe a destruction");
+        }
+    }
+
+    /**
+     * What {@code destroyIfCurrent} reports. The binding holds no record to compare the caller's basis
+     * against, so it reports every destruction done: it never answers {@code GONE} or
+     * {@code SUPERSEDED}, also for a basis a later re-seal replaced in the browser — the stated
+     * cookie-mode residual, under which a refused refresh always ends the session. The cases go red when
+     * the method starts reporting a destruction it cannot observe as not done, or stops refusing an
+     * absent basis.
+     */
+    @Nested
+    @DisplayName("Destroy if current")
+    class DestroyIfCurrent {
+
+        @Test
+        @DisplayName("Should report the destruction of the presented session done and leave its cookie unsealable as before")
+        void shouldReportTheCurrentSessionDestroyed() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+            SessionRecord presented = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+
+            DestroyResult result = binding.destroyIfCurrent(presented);
+
+            assertEquals(DestroyResult.DESTROYED, result, "the presented session is the current one");
+            assertTrue(binding.resolve(cookieHeaderOf(bound), LOGIN).isPresent(),
+                    "nothing is held server-side, so nothing is removed: the browser's copy is cleared by "
+                            + "the caller's clearing Set-Cookie, not by this method");
+        }
+
+        @Test
+        @DisplayName("Should report the destruction done for a basis a later re-seal replaced, never superseded")
+        void shouldReportAReplacedBasisDestroyedNotSuperseded() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+            SessionRecord basis = binding.resolve(cookieHeaderOf(bound), LOGIN).orElseThrow();
+            SessionRecord successor = SessionRecord.builder()
+                    .sessionId(basis.sessionId())
+                    .accessToken("widened-access-token")
+                    .refreshToken("widened-refresh-token")
+                    .idToken(basis.idToken())
+                    .sub(basis.sub())
+                    .sid(basis.sid())
+                    .expiresAt(basis.expiresAt())
+                    .sessionNonce(basis.sessionNonce())
+                    .build();
+            reseal(successor, LOGIN.plusSeconds(60));
+
+            DestroyResult result = binding.destroyIfCurrent(basis);
+
+            assertEquals(DestroyResult.DESTROYED, result,
+                    "the binding cannot see the successor, so the stale basis is reported destroyed as well");
+        }
+
+        @Test
+        @DisplayName("Should refuse an absent basis")
+        void shouldRefuseAnAbsentBasis() {
+            assertThrows(NullPointerException.class, () -> binding.destroyIfCurrent(null));
         }
     }
 

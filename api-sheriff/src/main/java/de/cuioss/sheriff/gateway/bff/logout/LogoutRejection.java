@@ -41,8 +41,23 @@ public enum LogoutRejection {
     /** The request body carried no usable {@code logout_token} form parameter. */
     MISSING_LOGOUT_TOKEN("missing-logout-token"),
 
-    /** The logout token failed signature or structural verification at the engine seam. */
+    /**
+     * The logout token failed signature or structural verification at the engine seam while the
+     * configured issuer's key source was healthy — or the seam could not tell the key source's state.
+     */
     SIGNATURE_REJECTED("signature-rejected"),
+
+    /**
+     * The engine refused the token because the configured issuer's key source is not usable: the
+     * refusal is a {@code NO_ISSUER_CONFIG} validation failure while the engine's issuer status
+     * reports the configured logout issuer with a loader status other than {@code OK}.
+     * <p>
+     * <strong>Accepted residual.</strong> The engine raises the same {@code NO_ISSUER_CONFIG} event for
+     * an issuer it does not know, so during an outage a token from a foreign issuer is also labelled
+     * {@code key-source-unavailable}. The label is diagnostic only: the token destroys nothing either
+     * way.
+     */
+    KEY_SOURCE_UNAVAILABLE("key-source-unavailable"),
 
     /** The token carries a {@code typ} header that is not {@code logout+jwt}. */
     TYPE_MISMATCH("type-mismatch"),

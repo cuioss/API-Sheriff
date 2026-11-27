@@ -71,7 +71,11 @@ public final class UpstreamGuards {
      * admits at once.
      */
     static final int BREAKER_SUCCESS_THRESHOLD = 2;
-    /** How long apart, in milliseconds, the retries of a retry-enabled route are. */
+    /**
+     * The nominal delay, in milliseconds, before each retry of a retry-enabled route. It is not a fixed gap:
+     * {@link #guardFor} sets this delay and no jitter, so SmallRye Fault Tolerance randomises each wait with its
+     * default jitter of 200 ms, and the wait before a retry is seldom exactly this long.
+     */
     private static final long RETRY_DELAY_MILLIS = 100L;
     /** How many times a retry-enabled route retries a failed attempt. */
     private static final int MAX_RETRIES = 2;
@@ -138,7 +142,8 @@ public final class UpstreamGuards {
      * {@link GatewayException} (see {@link DispatchStage}), so it neither dilutes the breaker's window nor
      * closes a half-open breaker. The timeout, {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds each attempt: it is
      * nested inside the retry, so a route that enables retry gives each of up to three attempts (two
-     * retries, 100 ms apart) its own timeout, about 90 s for the whole dispatch. The request-body idle
+     * retries, each after a nominal 100 ms delay that SmallRye randomises with its default jitter) its own
+     * timeout, about 90 s for the whole dispatch. The request-body idle
      * timeout, the request-body deadline and the gRPC message bound and pre-response deadline are shorter,
      * so a body the gateway is still waiting for ends as the request's, and the timeout ends an attempt the
      * upstream holds up — on a gRPC call, one whose request stream has ended or one whose upstream stopped

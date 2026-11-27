@@ -663,8 +663,9 @@ link:#_oidc_client_authentication[Client authentication].
   valid at a resource server until it expires. No request is sent when the session holds no refresh
   token (`session.refresh.enabled: false`, or the IdP granted none) or when the IdP publishes no
   `revocation_endpoint`; the latter is logged at `DEBUG` only. A failed revocation never changes the
-  logout's answer: the first failure is `WARN` `ApiSheriff-147`, once per runtime, and every failure
-  is a `DEBUG` line. See
+  logout's answer: the first failure of each reason is `WARN` `ApiSheriff-147`, once per reason per
+  runtime and carrying the bounded reason token (`provider-discovery` or `revocation-request`), and
+  every failure is a `DEBUG` line. See
   link:../adr/0080-RP-initiated_logout_revokes_the_sessions_refresh_token_at_the_identity_provider_before_the_end-session_redirect.adoc[ADR-0080].
 
   Without a usable `end_session_endpoint` (none, blank, or not an absolute `https` URI with a
@@ -1246,6 +1247,15 @@ token is answered.
 | None -- the refresh token the exchange returned is abandoned, not revoked: a session that replaced
   the destroyed one may share the IdP's user session, and a revocation could end it.
 | Not logged above `DEBUG`
+
+| *Superseded meanwhile* (`session.mode: server` only) -- the exchange succeeded, but a widening or
+  a step-up replaced the session's record while the refresh was in flight
+| *Kept*, as the widening or step-up left it. The rotated session is not written, so the later
+  grant's scopes, refresh token, `acr` and `auth_time` stay; the session cookie is *not* cleared, and
+  the request is answered through `on_failure` as "no session".
+| None -- the refresh token the exchange returned is abandoned, not revoked: revoking it could end
+  the client session the widened grant shares at the IdP.
+| Not logged above `DEBUG`
 |===
 
 *A refusal ends only the session it read* (`session.mode: server` only). A *credential rejected* or
@@ -1263,7 +1273,8 @@ which lapses under the IdP's refresh-token lifetime.
 
 *A logout wins over a refresh in server mode.* The rotated session is written only while the store
 still holds the session, so a session destroyed by `oidc.logout.path`, a back-channel logout, a
-login callback, an expiry sweep or an eviction during the refresh stays ended (last row). The refresh
+login callback, an expiry sweep or an eviction during the refresh stays ended (the *session
+terminated meanwhile* row). The refresh
 ends nothing itself and clears no cookie; the browser's next request presents the cookie of a session
 that is gone, which resolves no session and is answered like any unauthenticated request. The refresh
 revokes nothing, and that leaves a residual: `oidc.logout.path` revokes the refresh token of the

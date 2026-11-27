@@ -123,7 +123,8 @@ class SessionWideningTest {
 
     @BeforeEach
     void setUp() {
-        pendingStore = new InMemoryPendingAuthorizationStore(8);
+        pendingStore = new InMemoryPendingAuthorizationStore(8, _ -> {
+        });
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         flowContext = FlowContext.create(GATEWAY_ORIGIN + "/auth/callback");
         AuthorizationCodeFlow.AuthorizationRedirect redirect =
@@ -505,7 +506,8 @@ class SessionWideningTest {
 
         @BeforeEach
         void fillTheStore() {
-            full = new InMemoryPendingAuthorizationStore(1);
+            full = new InMemoryPendingAuthorizationStore(1, _ -> {
+            });
             Instant heldCreatedAt = T0.minus(PendingAuthorizationRecord.FIXED_TTL).plusSeconds(1);
             full.store(PendingAuthorizationRecord.create(flowContext, "/held", NEEDED, REDRIVE_QUOTA_KEY,
                     heldCreatedAt), heldCreatedAt);

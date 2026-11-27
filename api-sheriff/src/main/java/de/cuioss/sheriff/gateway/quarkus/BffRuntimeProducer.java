@@ -44,7 +44,6 @@ import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenReplayGuard;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
-import de.cuioss.sheriff.gateway.bff.logout.VerifiedLogoutToken;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
@@ -205,7 +204,10 @@ import org.jspecify.annotations.Nullable;
  * requester source, so one source's login flood cannot evict another user's live login. The source a
  * pending record is counted under is derived by one {@link PendingQuotaKeys}, built from the global
  * {@code forwarded.trusted_proxies} exactly as the edge's forward stage reads them, and handed to the
- * session stage and to the runtime, which puts it on every reserved-path request.
+ * session stage and to the runtime, which puts it on every reserved-path request. The store's event
+ * counter is bound to {@link SheriffMetrics#recordSessionEvent}, so every eviction of a source's own
+ * oldest record is counted on {@value SheriffMetrics#SESSION_EVENTS_TOTAL} under
+ * {@link EventType#PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED} (ADR-0085).
  * <p>
  * <strong>Response mode.</strong> Every authorization request — login, widening and the step-up
  * re-drive — is requested from the engine with {@code response_mode=query} through
@@ -398,6 +400,8 @@ public class BffRuntimeProducer {
     private final ExecutorService virtualThreadExecutor;
     private final GatewayJson gatewayJson;
     private final Vertx vertx;
+    /** The metrics adapter the pending-authorization store's own events are counted on. */
+    private final SheriffMetrics sheriffMetrics;
     /**
      * The id of the periodic session-sweep timer, {@link #NO_SWEEP_TIMER} while none is registered —
      * always so in cookie mode and on a bearer-only gateway. Held so shutdown can cancel the timer.
@@ -439,6 +443,8 @@ public class BffRuntimeProducer {
      *                              through
      * @param vertx                 the Quarkus-managed Vert.x instance the periodic session-sweep timer
      *                              is registered on, in server mode only
+     * @param sheriffMetrics        the metrics adapter the pending-authorization store's own-oldest
+     *                              evictions are counted on, under {@value SheriffMetrics#SESSION_EVENTS_TOTAL}
      */
     // Each parameter is one independently injected collaborator of the runtime assembly; a parameter
     // object would only regroup CDI injection points without removing one.
@@ -446,7 +452,8 @@ public class BffRuntimeProducer {
     public BffRuntimeProducer(GatewayConfig gatewayConfig, RouteTable routeTable,
             @GatewayValidator Instance<TokenValidator> tokenValidator,
             JwksTrustProfileResolver trustProfileResolver,
-            @VirtualThreads ExecutorService virtualThreadExecutor, GatewayJson gatewayJson, Vertx vertx) {
+            @VirtualThreads ExecutorService virtualThreadExecutor, GatewayJson gatewayJson, Vertx vertx,
+            SheriffMetrics sheriffMetrics) {
         this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
         this.routeTable = Objects.requireNonNull(routeTable, "routeTable");
         this.tokenValidator = Objects.requireNonNull(tokenValidator, "tokenValidator");
@@ -454,6 +461,7 @@ public class BffRuntimeProducer {
         this.virtualThreadExecutor = Objects.requireNonNull(virtualThreadExecutor, "virtualThreadExecutor");
         this.gatewayJson = Objects.requireNonNull(gatewayJson, "gatewayJson");
         this.vertx = Objects.requireNonNull(vertx, "vertx");
+        this.sheriffMetrics = Objects.requireNonNull(sheriffMetrics, "sheriffMetrics");
         EgressTlsConfig declaredEgressTls = gatewayConfig.egressTls();
         this.egressTls = declaredEgressTls == null ? EgressTlsConfig.defaults() : declaredEgressTls;
     }
@@ -670,7 +678,11 @@ public class BffRuntimeProducer {
             // Server mode only: cookie mode holds no session to sweep.
             registerSessionSweep(sessionStore, clock);
         }
-        PendingAuthorizationStore pendingStore = new InMemoryPendingAuthorizationStore(DEFAULT_MAX_PENDING);
+        // The store counts each eviction of a source's own oldest record on the session-events series
+        // (ADR-0085); the recorder only increments a cached meter, so calling it under the store's
+        // monitor neither blocks nor re-enters the store.
+        PendingAuthorizationStore pendingStore =
+                new InMemoryPendingAuthorizationStore(DEFAULT_MAX_PENDING, sheriffMetrics::recordSessionEvent);
 
         // Resolved once: the login flow, the login-initiation endpoint (through the flow), the session
         // widening, the step-up endpoint and the RFC 9470 step-up re-drive all fall back to the same
@@ -823,8 +835,10 @@ public class BffRuntimeProducer {
         // seam hands it the token's typ header beside the claims, and the replay guard lets each token
         // act once. The library's own logout.LogoutTokenValidator is not adopted: its events check does
         // not reproduce this one (see LogoutTokenValidator).
+        // The engine binding also reads the issuer status after a refusal, so a configured issuer
+        // whose key source is down is recorded as key-source-unavailable, not as a signature failure.
         BackchannelLogoutReceiver backchannelReceiver = new BackchannelLogoutReceiver(
-                rawLogoutToken -> VerifiedLogoutToken.of(validator.verifySignature(rawLogoutToken)),
+                BackchannelLogoutReceiver.LogoutTokenVerifier.engine(validator, issuer),
                 new LogoutTokenValidator(issuer, clientId, BACKCHANNEL_FRESHNESS_WINDOW),
                 sessionBinding,
                 new LogoutTokenReplayGuard(LOGOUT_TOKEN_REPLAY_CAPACITY));
@@ -1348,11 +1362,13 @@ public class BffRuntimeProducer {
      * and no request is sent. A provider that declares no {@code revocation_endpoint} sends nothing
      * either (see {@link #revokeRefreshToken}). The access token is never revoked.
      * <p>
-     * The provider metadata is read here, per logout, and not when the logout endpoint is assembled, so
-     * a discovery failure surfaces to the caller as the {@link RuntimeException} the supplier raises,
-     * exactly like a transport failure or a non-success answer of the revocation endpoint. The caller,
-     * {@link RpInitiatedLogout#initiate}, reports such a failure and completes the logout anyway. No log
-     * line written here carries the token value.
+     * The provider metadata is read here, per logout, and not when the logout endpoint is assembled. A
+     * failure of the metadata supplier is wrapped into
+     * {@link RpInitiatedLogout.RevocationDiscoveryException}, so the caller can tell a discovery failure
+     * from a failure of the revocation request itself — a transport failure, an egress refusal or a
+     * non-success answer of the revocation endpoint, which propagate unwrapped. The caller,
+     * {@link RpInitiatedLogout#initiate}, reports either and completes the logout anyway. No log line
+     * written here carries the token value.
      *
      * @param revocationClient     the runtime's one engine revocation client, on the pinned back-channel
      *                             posture
@@ -1368,7 +1384,16 @@ public class BffRuntimeProducer {
             LOGGER.debug("RP-initiated logout for a session without a refresh token — nothing to revoke at the identity provider");
             return;
         }
-        revokeRefreshToken(revocationClient, metadata.get(), refreshToken, clientAuthentication);
+        ProviderMetadata providerMetadata;
+        // The supplier reaches provider discovery, whose failure types are not part of this contract,
+        // so every failure of it is the one reason the marker names.
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
+        try {
+            providerMetadata = metadata.get();
+        } catch (RuntimeException discoveryFailure) {
+            throw new RpInitiatedLogout.RevocationDiscoveryException(discoveryFailure);
+        }
+        revokeRefreshToken(revocationClient, providerMetadata, refreshToken, clientAuthentication);
     }
 
     /**

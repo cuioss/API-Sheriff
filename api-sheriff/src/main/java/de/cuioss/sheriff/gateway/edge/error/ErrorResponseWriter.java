@@ -54,7 +54,10 @@ import org.jspecify.annotations.Nullable;
  * problem renderer, a failed OIDC callback and a {@code source: directory} asset miss — answer an
  * {@link ErrorPageClassifier HTML-eligible} exit with the portal's HTML error page instead, when the
  * request's {@code Accept} lists {@code text/html} explicitly; the status is identical either way
- * (see {@link #answeredWithErrorPage}).
+ * (see {@link #answeredWithErrorPage}). Because such an exit's answer depends on {@code Accept}, both
+ * variants — the HTML page and the {@code application/problem+json} fallback — carry
+ * {@code Vary: Accept}, merged into whatever {@code Vary} the request already announces; an exit that
+ * cannot negotiate carries no {@code Accept} in its {@code Vary}.
  * <p>
  * <strong>The trust-boundary branch.</strong> Before any other shape is chosen — the trailers-only
  * gRPC status included — a rejection is checked against {@link UniformNotFound}: one raised after
@@ -128,7 +131,10 @@ public final class ErrorResponseWriter {
      */
     public static final String RETRY_AFTER_HEADER = "Retry-After";
     private static final String PROBLEM_JSON = "application/problem+json";
-    /** The request header whose explicit {@code text/html} range selects an HTML error page. */
+    /**
+     * The request header whose explicit {@code text/html} range selects an HTML error page, and the
+     * field name a negotiable exit announces in {@code Vary}.
+     */
     private static final String ACCEPT_HEADER = "Accept";
     /** The {@code Cache-Control} response header a cookie-setting portal page governs. */
     private static final String CACHE_CONTROL_HEADER = "Cache-Control";
@@ -358,7 +364,17 @@ public final class ErrorResponseWriter {
      *       ({@link ErrorPageClassifier#offersHtml(String)} — a wildcard never qualifies).</li>
      * </ol>
      * Otherwise it writes nothing and reports {@code false}, and the caller answers in the exit's
-     * current shape. The status is preserved either way; the page carries the stage headers, the
+     * current shape.
+     * <p>
+     * <strong>{@code Vary: Accept}.</strong> When the first two hold — the exit is negotiable — the
+     * answer depends on the request's {@code Accept}, whichever variant is chosen, so {@code Accept} is
+     * merged into the request's response-header {@code Vary} ({@link SecurityHeadersStage#addVary})
+     * before the {@code Accept} value is read. The HTML page and the caller's fallback both write the
+     * request's gateway-authored response headers, so both carry it; a {@code Vary} already announced
+     * (the CORS reflection's {@code Origin}) is merged, never displaced. A non-negotiable exit — error
+     * pages off, an exit that is not HTML-eligible, no pipeline request — gets no {@code Vary: Accept}.
+     * <p>
+     * The status is preserved either way; the page carries the stage headers, the
      * stage {@code Set-Cookie} lines plus {@code extraSetCookies}, and the portal
      * {@code Content-Security-Policy} / {@code nosniff} composed by
      * {@link SecurityHeadersStage#applyPortalHeaders}. A response relayed from an origin never reaches
@@ -389,8 +405,14 @@ public final class ErrorResponseWriter {
             ErrorPageClassifier.Classification classification, int status, List<String> extraSetCookies,
             AnswerTiming timing) {
         if (request == null || !portalEndpoint.errorPagesEnabled()
-                || classification != ErrorPageClassifier.Classification.HTML_ELIGIBLE
-                || !ErrorPageClassifier.offersHtml(acceptHeader(request))) {
+                || classification != ErrorPageClassifier.Classification.HTML_ELIGIBLE) {
+            return false;
+        }
+        // The exit is negotiable: which variant answers depends on Accept, so both variants name it in
+        // Vary. Seeded onto the request's response headers before the branch, so the HTML page and every
+        // caller's fallback — which all apply those headers — carry it alike.
+        SecurityHeadersStage.addVary(request, ACCEPT_HEADER);
+        if (!ErrorPageClassifier.offersHtml(acceptHeader(request))) {
             return false;
         }
         PortalEndpoint.PortalResponse page;

@@ -93,7 +93,7 @@ import org.jspecify.annotations.Nullable;
  * connection's context: {@code GatewayEdgeRoute.handle()} captures it on the connection's event loop
  * before the virtual-thread hop, and {@link #relay} hops onto it whatever thread calls it. The upstream
  * dial and its success and failure callbacks, the client upgrade's completion, {@code establishRelay} and
- * every {@code RelaySession} handler — frame, pong, close, exception, idle timer and drain — run on the
+ * every {@code RelaySession} handler — frame, close, exception, idle timer and drain — run on the
  * client connection's context; the upstream connection is created from that context and shares its
  * event loop, so the frame relay is single-threaded. Before this fix the relay hopped onto the context
  * of whatever thread called {@code relay()}. In production, Quarkus's context-preserving virtual-thread
@@ -358,7 +358,7 @@ public final class WebSocketRelayStage {
 
     /**
      * <strong>Test-only</strong> observation seam on an established relay's wiring and first frames.
-     * Every established relay hands the installation of its frame, pong, close and exception handlers
+     * Every established relay hands the installation of its frame, close and exception handlers
      * ({@code RelaySession.start()}) to {@link #beforeWiring(Runnable)} rather than running it
      * directly, so a test can defer that installation and reproduce a frame that reaches a leg before
      * its handler exists. The relay then reports the moment its handlers are installed
@@ -524,11 +524,9 @@ public final class WebSocketRelayStage {
         }
 
         private void wire(WebSocketBase source, WebSocketBase target, RelayObserver.Direction direction) {
+            // The frame handler receives every frame, pongs included: relayFrame resets the idle timer
+            // first and forwards a pong to the other leg as a pong, so no separate pong handler is set.
             source.frameHandler(frame -> relayFrame(source, target, direction, frame));
-            // Vert.x delivers a received pong to BOTH the pong handler and the frame handler: relayFrame's
-            // pong branch forwards it to the other leg as a pong, and this handler only counts it as relay
-            // activity that resets the idle timer. Vert.x also auto-responds to pings.
-            source.pongHandler(pong -> resetIdle());
         }
 
         private void relayFrame(WebSocketBase source, WebSocketBase target, RelayObserver.Direction direction,

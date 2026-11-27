@@ -48,6 +48,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import javax.crypto.spec.SecretKeySpec;
 
 
@@ -512,6 +513,37 @@ class WebSocketRelayStageTest {
 
         // Assert — activity kept the relay alive; it was never reclaimed
         assertFalse(closed.isDone(), "a heartbeated relay is not reclaimed while activity continues");
+    }
+
+    /**
+     * A pong is relay activity: the relay sets no pong handler, so a received pong resets the idle timer
+     * through the frame handler alone. Only pongs cross the relay here, spaced across more than the
+     * route's one-second idle bound, so a relay that did not count them would have been reclaimed
+     * ({@link #reclaimsIdleRelay}).
+     */
+    @Test
+    @DisplayName("keeps a relay open past the idle window when only pongs arrive")
+    // NOSONAR java:S2925 - Thread.sleep is load-bearing for the same reason as heartbeatKeepsRelayOpen: the
+    // idle reclaim is a real Vert.x setTimer and only real elapsed time between the pongs exercises it.
+    @SuppressWarnings("java:S2925")
+    void pongResetsTheIdleTimer() throws Exception {
+        // Arrange — the /ws-idle route idles after 1s
+        WebSocket socket = connect("/ws-idle/room", ALLOWED_ORIGIN);
+        CompletableFuture<Void> closed = new CompletableFuture<>();
+        socket.closeHandler(closed::complete);
+
+        // Act — four unsolicited pongs 400ms apart span 1.6s, past the 1s idle window
+        for (int i = 0; i < 4; i++) {
+            socket.writeFrame(WebSocketFrame.pongFrame(Buffer.buffer("pong-" + i)));
+            Thread.sleep(400);
+        }
+
+        // Assert — the pongs kept the relay alive, and it still relays data
+        assertFalse(closed.isDone(), "a relay receiving only pongs is not reclaimed");
+        CompletableFuture<String> echoed = new CompletableFuture<>();
+        socket.textMessageHandler(echoed::complete);
+        writeRelayed(socket, "after-pongs");
+        assertEquals("after-pongs", awaitRelayed(echoed, "a data frame to echo after the pongs"));
     }
 
     /**
@@ -1088,8 +1120,7 @@ class WebSocketRelayStageTest {
 
     /**
      * A received pong is control traffic, not data. Vert.x hands a pong that reaches a relay leg to
-     * that leg's frame handler as well as to its pong handler, so the relay has to forward it as a pong
-     * itself. Were it to fall through to the data path, the other leg would receive it as a binary
+     * that leg's frame handler, so the relay has to forward it as a pong itself. Were it to fall through to the data path, the other leg would receive it as a binary
      * message, and it would take the direction's single first-data-frame report away from the first
      * real data frame.
      * <p>
@@ -1183,7 +1214,7 @@ class WebSocketRelayStageTest {
      * — so a relay that checked it only after data frames would let a peer throttled on data switch to
      * pings or unsolicited pongs and grow the other leg's write queue without bound.
      * <p>
-     * The relay dials through a {@link WebSocketRelayStageTest#queueFullDialer dialer} whose upstream leg reports a full write
+     * The relay dials through a {@link WebSocketRelayStageTest#decoratingDialer dialer} whose upstream leg reports a full write
      * queue and records every frame the relay writes to it. A relay that applies backpressure after a
      * control frame installs its drain handler on that leg right after writing the frame; one that does
      * not never installs it, so the await on the drain handler times out. The client's frame is the only
@@ -1221,7 +1252,8 @@ class WebSocketRelayStageTest {
             // Arrange — a relay over the setUp echo upstream whose upstream leg reports a full write queue
             CompletableFuture<List<WebSocketFrameType>> drainAwaited = new CompletableFuture<>();
             HttpServer relayServer = startHoppingRelayServer(upstreamPort,
-                    queueFullDialer(relayUpstreamClient, drainAwaited), RelayObserver.NO_OP, thread -> {
+                    decoratingDialer(relayUpstreamClient, leg -> queueFullLeg(leg, drainAwaited)),
+                    RelayObserver.NO_OP, thread -> {
                         // this fixture observes the upstream leg, not threads
                     });
             try {
@@ -1313,7 +1345,8 @@ class WebSocketRelayStageTest {
          */
         private HttpServer startThreadRecordingRelayServer() throws Exception {
             return startHoppingRelayServer(upstreamPort,
-                    frameThreadRecordingDialer(relayUpstreamClient, upstreamFrameThreads), wiring -> {
+                    decoratingDialer(relayUpstreamClient, leg -> frameThreadRecordingLeg(leg, upstreamFrameThreads)),
+                    wiring -> {
                         wiringThread.set(Thread.currentThread());
                         wiring.run();
                     }, routerThread::set);
@@ -1325,29 +1358,37 @@ class WebSocketRelayStageTest {
     }
 
     /**
-     * Wraps the stage's upstream dialer so that every upstream leg it dials records, in
-     * {@code frameThreads}, the thread each text frame reaching that leg's frame handler is handled on.
-     * Every call is forwarded to the real dialer and the real leg unchanged; only the frame handler the
-     * relay installs on the upstream leg is decorated. The relay's frame handlers are private, so the
-     * dialer — a constructor argument of the stage — is the one place the upstream leg can be observed
-     * without a production seam.
+     * Wraps the stage's upstream dialer so that every upstream leg it dials is handed to the relay as
+     * {@code decorateLeg} returns it. Every call is forwarded to the real dialer unchanged; only the leg
+     * a {@code connect} yields is replaced. The relay's frame handlers are private, so the dialer — a
+     * constructor argument of the stage — is the one place the upstream leg can be observed without a
+     * production seam.
      *
-     * @param delegate     the real dialer
-     * @param frameThreads receives the thread of every text frame the upstream leg's handler receives
-     * @return a dialer handing the relay thread-recording upstream legs
+     * @param delegate    the real dialer
+     * @param decorateLeg turns each dialed upstream leg into the leg the relay is handed, for example
+     *                    {@link #frameThreadRecordingLeg} or {@link #queueFullLeg}
+     * @return a dialer handing the relay decorated upstream legs
      */
-    private static WebSocketClient frameThreadRecordingDialer(WebSocketClient delegate, Set<Thread> frameThreads) {
+    private static WebSocketClient decoratingDialer(WebSocketClient delegate, UnaryOperator<WebSocket> decorateLeg) {
         return WebSocketClient.class.cast(Proxy.newProxyInstance(WebSocketClient.class.getClassLoader(),
                 new Class<?>[]{WebSocketClient.class}, (proxy, method, args) -> {
                     Object result = invokeOn(delegate, method, args);
                     if ("connect".equals(method.getName()) && result instanceof Future<?> dialed) {
-                        return dialed.map(upstreamWs -> frameThreadRecordingLeg(WebSocket.class.cast(upstreamWs),
-                                frameThreads));
+                        return dialed.map(upstreamWs -> decorateLeg.apply(WebSocket.class.cast(upstreamWs)));
                     }
                     return result;
                 }));
     }
 
+    /**
+     * An upstream leg that records, in {@code frameThreads}, the thread each text frame reaching its
+     * frame handler is handled on. Every call is forwarded to the real leg unchanged; only the frame
+     * handler the relay installs is decorated.
+     *
+     * @param delegate     the real leg
+     * @param frameThreads receives the thread of every text frame the leg's handler receives
+     * @return the thread-recording leg
+     */
     private static WebSocket frameThreadRecordingLeg(WebSocket delegate, Set<Thread> frameThreads) {
         return WebSocket.class.cast(Proxy.newProxyInstance(WebSocket.class.getClassLoader(),
                 new Class<?>[]{WebSocket.class}, (proxy, method, args) -> {
@@ -1369,28 +1410,15 @@ class WebSocketRelayStageTest {
     }
 
     /**
-     * Wraps the stage's upstream dialer so that every upstream leg it dials reports a full write queue
-     * and records the type of every frame the relay writes to it. When the relay installs a drain
-     * handler on such a leg, {@code drainAwaited} completes with the frame types written to it so far.
-     * Every other call is forwarded to the real dialer and the real leg unchanged, and the drain handler
-     * itself is installed on the real leg as well.
+     * An upstream leg that reports a full write queue and records the type of every frame the relay
+     * writes to it. When the relay installs a drain handler on it, {@code drainAwaited} completes with
+     * the frame types written so far. Every other call is forwarded to the real leg unchanged, and the
+     * drain handler itself is installed on the real leg as well.
      *
-     * @param delegate     the real dialer
+     * @param delegate     the real leg
      * @param drainAwaited completed with the frame types written before the first drain handler was installed
-     * @return a dialer handing the relay upstream legs that report a full write queue
+     * @return the queue-full leg
      */
-    private static WebSocketClient queueFullDialer(WebSocketClient delegate,
-            CompletableFuture<List<WebSocketFrameType>> drainAwaited) {
-        return WebSocketClient.class.cast(Proxy.newProxyInstance(WebSocketClient.class.getClassLoader(),
-                new Class<?>[]{WebSocketClient.class}, (proxy, method, args) -> {
-                    Object result = invokeOn(delegate, method, args);
-                    if ("connect".equals(method.getName()) && result instanceof Future<?> dialed) {
-                        return dialed.map(upstreamWs -> queueFullLeg(WebSocket.class.cast(upstreamWs), drainAwaited));
-                    }
-                    return result;
-                }));
-    }
-
     private static WebSocket queueFullLeg(WebSocket delegate,
             CompletableFuture<List<WebSocketFrameType>> drainAwaited) {
         List<WebSocketFrameType> written = new CopyOnWriteArrayList<>();

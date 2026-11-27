@@ -48,7 +48,7 @@ public final class BffLogMessages {
     private static final String PREFIX = "ApiSheriff";
 
     /**
-     * Info-level messages (INFO range 1-99; this catalogue owns 10-16, 20 and 21).
+     * Info-level messages (INFO range 1-99).
      */
     @UtilityClass
     public static final class INFO {
@@ -151,8 +151,7 @@ public final class BffLogMessages {
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 111-114, 127, 130-132, 135, 145,
-     * 147 and 153).
+     * Warn-level messages (WARN range 100-199).
      */
     @UtilityClass
     public static final class WARN {
@@ -175,12 +174,9 @@ public final class BffLogMessages {
         /**
          * A back-channel logout token was rejected. Records the non-sensitive rejection disposition
          * only — never the raw logout token, the subject, or the IdP {@code sid}. The accepted set of
-         * dispositions is closed and enumerated by
-         * {@code de.cuioss.sheriff.gateway.bff.logout.LogoutRejection}: {@code no-idp-destruction-capability},
-         * {@code missing-logout-token}, {@code signature-rejected}, {@code type-mismatch},
-         * {@code issuer-mismatch}, {@code audience-mismatch}, {@code iat-outside-window},
-         * {@code expired}, {@code events-missing}, {@code nonce-present}, {@code no-sub-or-sid},
-         * {@code jti-missing}, {@code replayed}, {@code replay-memory-full}.
+         * dispositions is closed: the substitution is always the fixed token of one member of
+         * {@link de.cuioss.sheriff.gateway.bff.logout.LogoutRejection}, which is the authoritative list of
+         * the dispositions and what each one means.
          * <p>
          * <strong>Latched per disposition.</strong> The back-channel path is reserved and
          * unauthenticated, so the record is emitted only on the FIRST occurrence of each disposition
@@ -342,29 +338,56 @@ public final class BffLogMessages {
                 .build();
 
         /**
+         * A source that already held its full per-source share of the pending-authorization store
+         * started one more login, step-up or widening, so the store evicted that source's own oldest
+         * pending record to admit the new one (ADR-0085). No other source's record was touched and the
+         * new start was admitted; the evicted login's callback will find no pending record. The template
+         * takes no substitution and therefore carries no request data — never a source address, quota
+         * key, {@code state}, nonce or record id.
+         * <p>
+         * <strong>Latched per eviction episode.</strong> The login-initiation path is reachable without a
+         * credential, and a caller must not be able to set the volume of {@code WARN} lines it produces
+         * (ADR-0051). The record is therefore emitted on the first own-oldest eviction, and every further
+         * eviction of the same episode drops to {@code DEBUG}. The episode is store-wide and ends only once
+         * no source holds half its per-source share or more — see
+         * {@code de.cuioss.sheriff.gateway.bff.pending.InMemoryPendingAuthorizationStore}. The eviction
+         * rate is {@code sheriff_session_events_total} under {@code PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED}.
+         */
+        public static final LogRecord PENDING_AUTHORIZATION_OWN_OLDEST_EVICTED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(154)
+                .template("A source reached its share of the pending-authorization store and its own oldest pending login was evicted to admit a new one — no other source's login was touched; further evictions in this episode stay at DEBUG")
+                .build();
+
+        /**
          * An RP-initiated logout could not revoke the session's refresh token at the identity provider
          * (RFC 7009): the revocation request failed in transport, the revocation endpoint answered
          * with a non-success status, or the provider metadata the request needs could not be obtained.
          * The gateway's own session was already ended and the logout completed as usual; the refresh
          * token stays valid at the identity provider until it expires.
          * <p>
-         * The template takes no substitution and is logged without a throwable, so it carries no
-         * value at all — never the refresh token, the session id, the subject, or the identity
-         * provider's answer, whose text is not sanitised. A {@code DEBUG} line
-         * written beside it names the exception types of the failure's cause chain and carries
-         * neither the throwable nor any exception message.
+         * The only substitution is the reason, the fixed token of one member of a closed set: the
+         * reasons and what each one means are defined by
+         * {@code de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout.RevocationFailureReason}, a
+         * package-private member of {@link de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout}, which
+         * classifies a failure into its reason by type alone. The record is logged without a throwable, so
+         * it carries no other value — never the
+         * refresh token, the session id, the subject, or the identity provider's answer, whose text is
+         * not sanitised. A {@code DEBUG} line written beside it names the exception types of the
+         * failure's cause chain and carries neither the throwable nor any exception message.
          * <p>
-         * <strong>Latched.</strong> A caller can repeat a logout at will and must not be able to set
-         * the volume of {@code WARN} lines it produces (ADR-0051), so the record is emitted on its
-         * FIRST occurrence per logout instance — once per runtime — and every repeat drops to
-         * {@code DEBUG}; see {@code de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout}. A session
-         * without a refresh token and a provider without a {@code revocation_endpoint} send no
-         * request and are not recorded here.
+         * <strong>Latched per reason.</strong> A caller can repeat a logout at will and must not be
+         * able to set the volume of {@code WARN} lines it produces (ADR-0051), so the record is emitted
+         * on the FIRST occurrence of each reason per logout instance — once per reason per runtime — and
+         * every repeat of that reason drops to {@code DEBUG}; see
+         * {@code de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout}. A session without a refresh
+         * token and a provider without a {@code revocation_endpoint} send no request and are not
+         * recorded here.
          */
         public static final LogRecord LOGOUT_REVOCATION_FAILED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(147)
-                .template("Logout could not revoke the session's refresh token at the identity provider — the gateway session is ended and the refresh token stays valid at the provider until it expires; further failures stay at DEBUG")
+                .template("Logout could not revoke the session's refresh token at the identity provider (%s) — the gateway session is ended and the refresh token stays valid at the provider until it expires; further failures with this reason stay at DEBUG")
                 .build();
 
         /**
